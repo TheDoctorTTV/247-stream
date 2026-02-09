@@ -1,4 +1,4 @@
-# Stream247 — 24/7 VOD streamer and Twitch relay (to any RTMP/RTMPS)
+# Stream247 — Web-based 24/7 VOD streamer and Twitch relay (to any RTMP/RTMPS)
 
 Stream247 can either:
 - Loop a **public or unlisted YouTube playlist or single video** as a **24/7 livestream**, or
@@ -31,20 +31,11 @@ Restream, custom Nginx-RTMP**, and more. Stream247 automatically selects the bes
 
 ## Usage
 
-1. Paste a **Source URL**:
-  - YouTube playlist (list=...), or
-  - YouTube video (watch?v=...), or
-  - Twitch channel (e.g., `https://www.twitch.tv/<channel>`), or
-  - Direct HLS `.m3u8` URL
-2. Enter your **RTMP/RTMPS ingest URL** for the destination (e.g.,
-  `rtmp://a.rtmp.youtube.com/live2`, `rtmp://live.twitch.tv/app`,
-  `rtmps://live-api-s.facebook.com:443/rtmp/`, `rtmp://<your-server>/live`).
-3. Enter your destination **Stream Key**.
-4. Choose your desired **quality** and **bitrate**.
-5. (Optional) Enable extras like overlays, shuffle (YouTube playlists only), or "RTMP live mode"
-  (Owncast).
-6. (Optional) Click **Test RTMP** to verify connectivity.
-7. Click **Start Stream** to go live!
+1. Configure `config.json` (at minimum: `playlist_url`, `rtmp_base`, `stream_key`).
+2. Start the app process.
+3. Open `http://127.0.0.1:7788` (or your configured host/port).
+4. Use the web dashboard to review/edit stream settings.
+5. Click **Start Stream** from the browser dashboard.
 
 ## Example
 
@@ -54,6 +45,12 @@ Restream, custom Nginx-RTMP**, and more. Stream247 automatically selects the bes
 
 - Destinations: Any platform that accepts **RTMP or RTMPS** should work. Check
   your platform’s recommended bitrates and resolutions.
+- Local web dashboard (primary interface):
+  - Default bind is `"web_server_host": "127.0.0.1"` and `"web_server_port": 7788`
+  - For remote LAN access, set host to `0.0.0.0` and secure network access appropriately
+  - Designed for headless Linux systems by default
+  - The web dashboard now exposes the main stream settings (source, RTMP target, quality, encoder, auth, behavior toggles)
+  - The app starts only the webserver; streaming begins when you click **Start Stream**
 - Input sources:
   - YouTube: playlists/videos should be **public or unlisted** so yt-dlp can fetch them.
   - Twitch: paste a channel URL and the app will resolve its HLS automatically; or paste a direct `.m3u8` URL.
@@ -81,6 +78,21 @@ Build:
 ```
 
 The output will be `Stream247.AppImage` in the repo root.
+
+## Server build scripts (Windows + Linux)
+
+For the webserver build, use the root helper scripts:
+
+- Linux:
+```bash
+./build_linux.sh
+```
+- Windows (PowerShell):
+```powershell
+.\build_windows.ps1
+```
+
+Both scripts produce a single-file binary in `dist/` named `stream247-server` (or `stream247-server.exe` on Windows) and copy `config.json` to `dist/config.json.example`.
 
 ### Current scope
 
