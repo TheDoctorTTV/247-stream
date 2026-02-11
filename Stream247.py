@@ -139,6 +139,7 @@ WEB_ALLOWED_BROWSERS = (
     "auto", "firefox", "chrome", "edge", "chromium", "brave", "vivaldi", "opera", "safari"
 )
 WEB_ALLOWED_UPDATE_CHANNELS = ("release", "prerelease")
+WEB_UPDATE_RELEASES_LIMIT = 100
 BITRATE_MIN_KBPS = 1500
 BITRATE_MAX_KBPS = 25000
 BITRATE_STEP_KBPS = 500
@@ -418,8 +419,8 @@ class LocalWebDashboard:
         binaries_status_provider: Callable[[], Dict[str, object]],
         binaries_update_trigger: Callable[[], Dict[str, object]],
         app_update_status_provider: Callable[[], Dict[str, object]],
-        app_update_check_trigger: Callable[[], Dict[str, object]],
-        app_update_download_trigger: Callable[[], Dict[str, object]],
+        app_update_check_trigger: Callable[[Optional[Dict[str, object]]], Dict[str, object]],
+        app_update_download_trigger: Callable[[Optional[Dict[str, object]]], Dict[str, object]],
         start_cb: Callable[[], None],
         stop_cb: Callable[[], None],
         skip_cb: Callable[[], None],
@@ -567,14 +568,14 @@ class LocalWebDashboard:
                     return
                 if path == "/api/app-update/download":
                     try:
-                        info = dashboard._app_update_download_trigger()
+                        info = dashboard._app_update_download_trigger(body if isinstance(body, dict) else None)
                         self._send_json({"ok": True, "app_update": info})
                     except Exception as e:
                         self._send_json({"ok": False, "error": str(e)}, status=400)
                     return
                 if path == "/api/app-update/check":
                     try:
-                        info = dashboard._app_update_check_trigger()
+                        info = dashboard._app_update_check_trigger(body if isinstance(body, dict) else None)
                         self._send_json({"ok": True, "app_update": info})
                     except Exception as e:
                         self._send_json({"ok": False, "error": str(e)}, status=400)
@@ -842,6 +843,10 @@ class LocalWebDashboard:
             <label for="app_update_channel">App Update Channel</label>
             <select id="app_update_channel"><option value="release">Releases</option><option value="prerelease">Pre-releases</option></select>
           </div>
+          <div class="field" style="min-width: 220px; margin: 0;">
+            <label for="app_update_version">Version</label>
+            <select id="app_update_version"><option value="">Latest in selected channel</option></select>
+          </div>
           <label class="check" style="margin: 0;"><input id="auto_app_updates" type="checkbox">Automatically install app updates</label>
         </div>
         <div class="row" style="margin:10px 0 8px;">
@@ -873,6 +878,7 @@ class LocalWebDashboard:
     const checkAppUpdateBtn = document.getElementById("checkAppUpdateBtn");
     const downloadAppUpdateBtn = document.getElementById("downloadAppUpdateBtn");
     const appUpdateStatus = document.getElementById("appUpdateStatus");
+    const appUpdateVersion = document.getElementById("app_update_version");
     const updateBinariesBtn = document.getElementById("updateBinariesBtn");
     const binariesStatus = document.getElementById("binariesStatus");
     const binariesProgressBar = document.getElementById("binariesProgressBar");
@@ -891,6 +897,7 @@ class LocalWebDashboard:
     let saveInFlight = false;
     let pendingAutoSave = false;
     let lastSavedPayload = "";
+    let appVersionsBoundToChannel = "";
     const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "rtmp_live", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel", "update_download_cap_mbps"];
 
     for (let kbps = 1500; kbps <= 25000; kbps += 500) {{
@@ -1109,6 +1116,8 @@ class LocalWebDashboard:
       if (!r) return "App update status not available yet.";
       const current = String(r.current_version || "unknown");
       const latest = String(r.latest_version || "unknown");
+      const selected = String(r.selected_version || latest || "unknown");
+      const latestChannel = String(r.latest_channel_version || latest || "unknown");
       const channel = String(r.channel || "release");
       const rel = compareVersions(current, latest);
       const shouldInstall = (!!r.should_install || !!r.is_newer || rel === -1 || rel === 1);
@@ -1116,21 +1125,55 @@ class LocalWebDashboard:
       let state = "Up to date";
       if (shouldInstall) state = "Install available";
       if (shouldInstall && !assetSupported) state = "Install available (no self-installable asset)";
-      let text = "Channel: " + channel + " | Current: " + current + " | Latest: " + latest + " | " + state;
+      let text = "Channel: " + channel + " | Current: " + current + " | Selected: " + selected + " | Latest in Channel: " + latestChannel + " | " + state;
       if (a.mode) text += " | Mode: " + String(a.mode);
       if (a.downloaded_path) text += " | Staged: " + a.downloaded_path;
       if (lastAppCheckAt) text += " | Checked: " + lastAppCheckAt;
       return text;
     }}
 
-    async function loadAppUpdateStatus() {{
+    function updateAppVersionDropdown(info) {{
+      if (!info || !info.last_result) return;
+      const result = info.last_result;
+      const channel = String(result.channel || document.getElementById("app_update_channel").value || "release");
+      const versions = Array.isArray(result.available_versions) ? result.available_versions : [];
+      const selected = String(result.selected_version || appUpdateVersion.value || "");
+      const previous = String(appUpdateVersion.value || "");
+      appUpdateVersion.innerHTML = "";
+      const fallback = document.createElement("option");
+      fallback.value = "";
+      fallback.textContent = "Latest in selected channel";
+      appUpdateVersion.appendChild(fallback);
+      for (const version of versions) {{
+        const v = String(version || "").trim();
+        if (!v) continue;
+        const opt = document.createElement("option");
+        opt.value = v;
+        opt.textContent = v;
+        appUpdateVersion.appendChild(opt);
+      }}
+      let want = selected || "";
+      if (want && !versions.includes(want)) want = "";
+      if (!want && previous && appVersionsBoundToChannel === channel && versions.includes(previous)) {{
+        want = previous;
+      }}
+      appUpdateVersion.value = want;
+      appVersionsBoundToChannel = channel;
+    }}
+
+    async function loadAppUpdateStatus(selectedVersion = "") {{
       try {{
         const res = await fetch("/api/app-update?ts=" + Date.now(), {{ cache: "no-store" }});
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
         const info = payload.app_update || {{}};
+        if (selectedVersion && !info.running) {{
+          await triggerAppUpdateCheck(selectedVersion);
+          return;
+        }}
         appUpdateRunning = !!info.running;
         const result = info.last_result || {{}};
+        updateAppVersionDropdown(info);
         const rel = compareVersions(result.current_version, result.latest_version);
         const shouldInstall = (!!result.should_install || !!result.is_newer || rel === -1 || rel === 1);
         const assetSupported = (result.asset_supported !== false);
@@ -1157,12 +1200,14 @@ class LocalWebDashboard:
     }}
 
     async function triggerAppUpdateDownload() {{
+      const selectedVersion = String(appUpdateVersion.value || "").trim();
+      const selectedChannel = String(document.getElementById("app_update_channel").value || "release").trim();
       setAppUpdateStatus("Starting app update install...", "warn");
       try {{
         const res = await fetch("/api/app-update/download", {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
-          body: "{{}}"
+          body: JSON.stringify({{ selected_version: selectedVersion, channel: selectedChannel }})
         }});
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
@@ -1172,13 +1217,17 @@ class LocalWebDashboard:
       }}
     }}
 
-    async function triggerAppUpdateCheck() {{
+    async function triggerAppUpdateCheck(selectedVersion = null) {{
+      const selected = (selectedVersion === null || selectedVersion === undefined)
+        ? String(appUpdateVersion.value || "").trim()
+        : String(selectedVersion || "").trim();
+      const selectedChannel = String(document.getElementById("app_update_channel").value || "release").trim();
       setAppUpdateStatus("Checking app update...", "warn");
       try {{
         const res = await fetch("/api/app-update/check", {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
-          body: "{{}}"
+          body: JSON.stringify({{ selected_version: selected, channel: selectedChannel }})
         }});
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
@@ -1281,6 +1330,12 @@ class LocalWebDashboard:
     reloadSettingsBtn.addEventListener("click", () => loadSettings());
     checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
+    appUpdateVersion.addEventListener("change", () => triggerAppUpdateCheck());
+    document.getElementById("app_update_channel").addEventListener("change", () => {{
+      appVersionsBoundToChannel = "";
+      appUpdateVersion.innerHTML = '<option value="">Latest in selected channel</option>';
+      triggerAppUpdateCheck("");
+    }});
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
     bindAutoSaveListeners();
     loadSettings();
@@ -1949,28 +2004,70 @@ def _pick_release_by_channel(releases: List[Dict[str, object]], update_channel: 
     return None
 
 
-def fetch_latest_app_release_info(update_channel: str = "release") -> Dict[str, object]:
-    """Return latest app release metadata for web updater."""
+def _release_version_string(release: Dict[str, object]) -> str:
+    """Return normalized version text from a GitHub release record."""
+    return str(release.get("tag_name", "")).strip().lstrip("vV")
+
+
+def _filter_releases_for_channel(releases: List[Dict[str, object]], update_channel: str) -> List[Dict[str, object]]:
+    """Return releases (newest-first) matching the configured app update channel."""
+    channel = str(update_channel or "release").strip().lower()
+    out: List[Dict[str, object]] = []
+    for rel in releases:
+        if not isinstance(rel, dict):
+            continue
+        if bool(rel.get("draft", False)):
+            continue
+        is_pre = bool(rel.get("prerelease", False))
+        if channel == "prerelease":
+            if is_pre:
+                out.append(rel)
+            continue
+        if not is_pre:
+            out.append(rel)
+    return out
+
+
+def _pick_release_by_version(
+    releases: List[Dict[str, object]],
+    selected_version: Optional[str] = None,
+) -> Optional[Dict[str, object]]:
+    """Pick selected release version when present; otherwise return newest for channel."""
+    if not releases:
+        return None
+    wanted = str(selected_version or "").strip().lstrip("vV")
+    if wanted:
+        for rel in releases:
+            if _release_version_string(rel) == wanted:
+                return rel
+    return releases[0]
+
+
+def fetch_latest_app_release_info(update_channel: str = "release", selected_version: Optional[str] = None) -> Dict[str, object]:
+    """Return app release metadata for web updater, including selectable channel versions."""
     channel = str(update_channel or "release").strip().lower()
     if channel not in WEB_ALLOWED_UPDATE_CHANNELS:
         channel = "release"
-    if channel == "release":
-        req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
-        req.add_header("User-Agent", f"{APP_NAME}/{APP_VERSION}")
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    else:
-        req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=30")
-        req.add_header("User-Agent", f"{APP_NAME}/{APP_VERSION}")
-        with urllib.request.urlopen(req, timeout=15) as response:
-            all_releases = json.loads(response.read().decode("utf-8"))
-        if not isinstance(all_releases, list):
-            raise RuntimeError("Invalid releases response from GitHub.")
-        selected_rel = _pick_release_by_channel(all_releases, channel)
-        if not isinstance(selected_rel, dict):
+    req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page={WEB_UPDATE_RELEASES_LIMIT}")
+    req.add_header("User-Agent", f"{APP_NAME}/{APP_VERSION}")
+    with urllib.request.urlopen(req, timeout=15) as response:
+        all_releases = json.loads(response.read().decode("utf-8"))
+    if not isinstance(all_releases, list):
+        raise RuntimeError("Invalid releases response from GitHub.")
+
+    channel_releases = _filter_releases_for_channel(all_releases, channel)
+    if not channel_releases:
+        if channel == "prerelease":
             raise RuntimeError("No pre-release found for this repository.")
-        data = selected_rel
-    latest_version = str(data.get("tag_name", "")).lstrip("v")
+        raise RuntimeError("No release found for this repository.")
+    latest_rel = channel_releases[0]
+    selected_rel = _pick_release_by_version(channel_releases, selected_version)
+    if not isinstance(selected_rel, dict):
+        raise RuntimeError("Unable to select app release version.")
+
+    latest_for_channel = _release_version_string(latest_rel)
+    selected_release_version = _release_version_string(selected_rel)
+    data = selected_rel
     release_url = str(data.get("html_url", ""))
     assets = data.get("assets", []) or []
     selected = _pick_release_asset(assets)
@@ -1979,16 +2076,20 @@ def fetch_latest_app_release_info(update_channel: str = "release") -> Dict[str, 
     if isinstance(selected, dict):
         download_url = str(selected.get("browser_download_url", ""))
         asset_name = str(selected.get("name", ""))
+    available_versions = [_release_version_string(rel) for rel in channel_releases if _release_version_string(rel)]
     return {
         "current_version": APP_VERSION,
-        "latest_version": latest_version,
-        "is_newer": _is_version_newer(latest_version, APP_VERSION),
-        "should_install": _should_install_selected_release(latest_version, APP_VERSION),
+        "latest_version": selected_release_version,
+        "selected_version": selected_release_version,
+        "latest_channel_version": latest_for_channel,
+        "is_newer": _is_version_newer(selected_release_version, APP_VERSION),
+        "should_install": _should_install_selected_release(selected_release_version, APP_VERSION),
         "release_url": release_url,
         "channel": channel,
         "download_url": download_url,
         "asset_name": asset_name,
         "asset_supported": _is_release_asset_self_installable(asset_name),
+        "available_versions": available_versions,
     }
 
 
@@ -3524,6 +3625,8 @@ class HeadlessRuntime:
             "downloaded_path": "",
             "progress_message": "",
             "mode": "manual",
+            "selected_version": "",
+            "selected_channel": "",
         }
         self.web_dashboard = LocalWebDashboard(
             host=self.host,
@@ -3668,21 +3771,45 @@ class HeadlessRuntime:
             if (not running) and self._app_update_state.get("last_result") is None and not self._app_update_state.get("last_error"):
                 try:
                     settings = web_settings_payload_from_config(load_config_json())
-                    channel = str(settings.get("app_update_channel", "release"))
-                    self._app_update_state["last_result"] = fetch_latest_app_release_info(channel)
+                    selected_channel = str(self._app_update_state.get("selected_channel", "") or "").strip().lower()
+                    channel = selected_channel or str(settings.get("app_update_channel", "release"))
+                    if channel not in WEB_ALLOWED_UPDATE_CHANNELS:
+                        channel = "release"
+                    selected_version = str(self._app_update_state.get("selected_version", "") or "").strip()
+                    self._app_update_state["last_result"] = fetch_latest_app_release_info(channel, selected_version=selected_version or None)
                     self._app_update_state["finished_at"] = time.time()
                 except Exception as e:
                     self._app_update_state["last_error"] = str(e)
                     self._app_update_state["finished_at"] = time.time()
             return dict(self._app_update_state)
 
-    def trigger_app_update_check(self) -> Dict[str, object]:
+    @staticmethod
+    def _sanitize_selected_version(payload: Optional[Dict[str, object]]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("selected_version", "") or "").strip().lstrip("vV")
+
+    @staticmethod
+    def _sanitize_selected_channel(payload: Optional[Dict[str, object]], fallback: str = "release") -> str:
+        channel = fallback
+        if isinstance(payload, dict):
+            channel = str(payload.get("channel", fallback) or fallback).strip().lower()
+        if channel not in WEB_ALLOWED_UPDATE_CHANNELS:
+            channel = "release"
+        return channel
+
+    def trigger_app_update_check(self, payload: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+        selected_version = self._sanitize_selected_version(payload)
+        settings = web_settings_payload_from_config(load_config_json())
+        channel = self._sanitize_selected_channel(payload, str(settings.get("app_update_channel", "release")))
         with self._app_update_lock:
             if self._app_update_state.get("running", False):
                 return dict(self._app_update_state)
             self._app_update_state["last_result"] = None
             self._app_update_state["last_error"] = ""
             self._app_update_state["progress_message"] = "Checking latest app release..."
+            self._app_update_state["selected_version"] = selected_version
+            self._app_update_state["selected_channel"] = channel
         status = self.get_app_update_status()
         with self._app_update_lock:
             if not self._app_update_state.get("running", False):
@@ -3775,15 +3902,17 @@ class HeadlessRuntime:
                 self.log_fh = None
         os._exit(0)
 
-    def _run_app_update_download(self, auto_mode: bool = False) -> None:
+    def _run_app_update_download(self, auto_mode: bool = False, selected_version: str = "", selected_channel: str = "") -> None:
         try:
             settings = web_settings_payload_from_config(load_config_json())
             cap = int(settings.get("update_download_cap_mbps", 25) or 25)
             cap = max(1, min(25, cap))
-            channel = str(settings.get("app_update_channel", "release"))
+            channel = str(selected_channel or settings.get("app_update_channel", "release")).strip().lower()
+            if channel not in WEB_ALLOWED_UPDATE_CHANNELS:
+                channel = "release"
             mode_label = "automatic" if auto_mode else "manual"
             self._set_app_update_progress("Checking latest app release...")
-            info = fetch_latest_app_release_info(channel)
+            info = fetch_latest_app_release_info(channel, selected_version=selected_version or None)
             if not bool(info.get("should_install", False)):
                 with self._app_update_lock:
                     self._app_update_state["last_result"] = info
@@ -3819,6 +3948,8 @@ class HeadlessRuntime:
                 self._app_update_state["finished_at"] = time.time()
                 self._app_update_state["downloaded_path"] = dest.as_posix()
                 self._app_update_state["progress_message"] = "Installing update and restarting..."
+                self._app_update_state["selected_version"] = str(info.get("selected_version", "") or "")
+                self._app_update_state["selected_channel"] = str(info.get("channel", channel) or channel)
             self.log(f"[INFO] App update downloaded: {dest}")
             if not getattr(sys, "frozen", False):
                 with self._app_update_lock:
@@ -3835,7 +3966,14 @@ class HeadlessRuntime:
                 self._app_update_state["progress_message"] = "App update failed."
             self.log(f"[ERROR] App update install failed: {e}")
 
-    def trigger_app_update_download(self, auto_mode: bool = False) -> Dict[str, object]:
+    def trigger_app_update_download(
+        self,
+        payload: Optional[Dict[str, object]] = None,
+        auto_mode: bool = False,
+    ) -> Dict[str, object]:
+        selected_version = self._sanitize_selected_version(payload)
+        settings = web_settings_payload_from_config(load_config_json())
+        channel = self._sanitize_selected_channel(payload, str(settings.get("app_update_channel", "release")))
         with self._app_update_lock:
             if self._app_update_state.get("running", False):
                 return dict(self._app_update_state)
@@ -3845,7 +3983,9 @@ class HeadlessRuntime:
             self._app_update_state["last_result"] = None
             self._app_update_state["progress_message"] = "Queued app update..."
             self._app_update_state["mode"] = "automatic" if auto_mode else "manual"
-        t = threading.Thread(target=self._run_app_update_download, args=(auto_mode,), daemon=True)
+            self._app_update_state["selected_version"] = selected_version
+            self._app_update_state["selected_channel"] = channel
+        t = threading.Thread(target=self._run_app_update_download, args=(auto_mode, selected_version, channel), daemon=True)
         t.start()
         return self.get_app_update_status()
 
