@@ -101,7 +101,7 @@ function Install-PythonIfMissing {
 function Invoke-Python {
     param(
         [string[]]$Command,
-        [string[]]$Args
+        [string[]]$PythonArgs
     )
 
     if (-not $Command -or $Command.Count -eq 0) {
@@ -114,7 +114,7 @@ function Invoke-Python {
         $prefixArgs = $Command[1..($Command.Count - 1)]
     }
 
-    & $exe @prefixArgs @Args
+    & $exe @prefixArgs @PythonArgs
 }
 
 if (-not (Test-Path -Path $AppEntry)) {
@@ -137,17 +137,17 @@ if (-not $pythonCmd) {
 Write-Host ("Using Python command: " + ($pythonCmd -join " "))
 
 Write-Host "Installing/updating pip and build dependencies..."
-Invoke-Python -Command $pythonCmd -Args @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+Invoke-Python -Command $pythonCmd -PythonArgs @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
 if ($LASTEXITCODE -ne 0) { throw "pip bootstrap failed." }
 
 if (Test-Path -Path "requirements.txt") {
     Write-Host "Installing project dependencies from requirements.txt..."
-    Invoke-Python -Command $pythonCmd -Args @("-m", "pip", "install", "-r", "requirements.txt")
+    Invoke-Python -Command $pythonCmd -PythonArgs @("-m", "pip", "install", "-r", "requirements.txt")
     if ($LASTEXITCODE -ne 0) { throw "Project dependency install failed." }
 }
 
 Write-Host "Installing/updating PyInstaller..."
-Invoke-Python -Command $pythonCmd -Args @("-m", "pip", "install", "--upgrade", "pyinstaller")
+Invoke-Python -Command $pythonCmd -PythonArgs @("-m", "pip", "install", "--upgrade", "pyinstaller")
 if ($LASTEXITCODE -ne 0) { throw "Dependency install failed." }
 
 Write-Host "Building $AppName from $AppEntry ..."
@@ -166,7 +166,7 @@ if ($addDataArgs.Count -gt 0) {
     $pyInstallerArgs += $addDataArgs
 }
 $pyInstallerArgs += $AppEntry
-Invoke-Python -Command $pythonCmd -Args $pyInstallerArgs
+Invoke-Python -Command $pythonCmd -PythonArgs $pyInstallerArgs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
 
 Write-Host ""
