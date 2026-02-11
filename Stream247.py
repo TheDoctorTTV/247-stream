@@ -1111,11 +1111,11 @@ class LocalWebDashboard:
       const latest = String(r.latest_version || "unknown");
       const channel = String(r.channel || "release");
       const rel = compareVersions(current, latest);
+      const shouldInstall = (!!r.should_install || !!r.is_newer || rel === -1 || rel === 1);
       const assetSupported = (r.asset_supported !== false);
       let state = "Up to date";
-      if (r.is_newer || rel === -1) state = "Update available";
-      else if (rel === 1) state = "Running newer than latest release";
-      if ((r.is_newer || rel === -1) && !assetSupported) state = "Update available (no self-installable asset)";
+      if (shouldInstall) state = "Install available";
+      if (shouldInstall && !assetSupported) state = "Install available (no self-installable asset)";
       let text = "Channel: " + channel + " | Current: " + current + " | Latest: " + latest + " | " + state;
       if (a.mode) text += " | Mode: " + String(a.mode);
       if (a.downloaded_path) text += " | Staged: " + a.downloaded_path;
@@ -1132,23 +1132,24 @@ class LocalWebDashboard:
         appUpdateRunning = !!info.running;
         const result = info.last_result || {{}};
         const rel = compareVersions(result.current_version, result.latest_version);
+        const shouldInstall = (!!result.should_install || !!result.is_newer || rel === -1 || rel === 1);
         const assetSupported = (result.asset_supported !== false);
-        const updateAvailable = (!!result.is_newer || rel === -1) && assetSupported;
+        const updateAvailable = shouldInstall && assetSupported;
         let level = "ok";
         if (info.running) level = "warn";
         if (info.last_error) level = "err";
-        if (!info.running && !info.last_error && (!!result.is_newer || rel === -1)) level = "warn";
+        if (!info.running && !info.last_error && shouldInstall) level = "warn";
         lastAppCheckAt = new Date().toLocaleTimeString();
         setAppUpdateStatus(formatAppUpdateSummary(info), level);
         checkAppUpdateBtn.disabled = !!info.running;
         checkAppUpdateBtn.title = !!info.running ? "Cannot check while install is running" : "Check for app updates now";
         downloadAppUpdateBtn.disabled = !!info.running || !updateAvailable;
         if (updateAvailable) {{
-          downloadAppUpdateBtn.title = "Install latest app update and restart";
-        }} else if ((!!result.is_newer || rel === -1) && !assetSupported) {{
-          downloadAppUpdateBtn.title = "Latest release does not include a self-installable asset for this platform";
+          downloadAppUpdateBtn.title = "Install selected app version and restart";
+        }} else if (shouldInstall && !assetSupported) {{
+          downloadAppUpdateBtn.title = "Selected release does not include a self-installable asset for this platform";
         }} else {{
-          downloadAppUpdateBtn.title = "No app update available";
+          downloadAppUpdateBtn.title = "No app install needed";
         }}
       }} catch (err) {{
         setAppUpdateStatus("Failed to load app update status.", "err");
@@ -1833,17 +1834,65 @@ def gather_binary_update_status() -> Dict[str, object]:
     return result
 
 
-def _is_version_newer(latest: str, current: str) -> bool:
-    """Compare semantic-like version strings (x.y.z)."""
+def _parse_app_version(version: str) -> Optional[Tuple[List[int], str]]:
+    """Parse app version into numeric core and optional pre-release suffix."""
+    text = str(version or "").strip().lstrip("vV")
+    if not text:
+        return None
+    m = re.match(r"^(\d+(?:\.\d+)*)(.*)$", text)
+    if not m:
+        return None
     try:
-        latest_parts = [int(x) for x in str(latest).split(".")]
-        current_parts = [int(x) for x in str(current).split(".")]
-        max_len = max(len(latest_parts), len(current_parts))
-        latest_parts.extend([0] * (max_len - len(latest_parts)))
-        current_parts.extend([0] * (max_len - len(current_parts)))
-        return latest_parts > current_parts
+        core = [int(part) for part in m.group(1).split(".")]
     except Exception:
-        return str(latest) != str(current) and str(latest) > str(current)
+        return None
+    suffix = str(m.group(2) or "").strip()
+    if suffix.startswith("-"):
+        suffix = suffix[1:].strip()
+    return core, suffix
+
+
+def _compare_app_versions(target: str, current: str) -> Optional[int]:
+    """Compare target vs current app versions: -1 older, 0 equal, 1 newer."""
+    p_target = _parse_app_version(target)
+    p_current = _parse_app_version(current)
+    if not p_target or not p_current:
+        return None
+    target_core, target_suffix = p_target
+    current_core, current_suffix = p_current
+    n = max(len(target_core), len(current_core))
+    for i in range(n):
+        tv = target_core[i] if i < len(target_core) else 0
+        cv = current_core[i] if i < len(current_core) else 0
+        if tv > cv:
+            return 1
+        if tv < cv:
+            return -1
+    # Same numeric core: stable release outranks pre-release.
+    if not target_suffix and current_suffix:
+        return 1
+    if target_suffix and not current_suffix:
+        return -1
+    if target_suffix == current_suffix:
+        return 0
+    # Both pre-release; lexical compare is sufficient for this updater.
+    return 1 if target_suffix > current_suffix else -1
+
+
+def _is_version_newer(latest: str, current: str) -> bool:
+    """Return True when latest is strictly newer than current."""
+    cmp = _compare_app_versions(latest, current)
+    if cmp is not None:
+        return cmp > 0
+    return str(latest) != str(current) and str(latest) > str(current)
+
+
+def _should_install_selected_release(latest: str, current: str) -> bool:
+    """Allow install when selected channel points to a different version (upgrade or downgrade)."""
+    cmp = _compare_app_versions(latest, current)
+    if cmp is not None:
+        return cmp != 0
+    return str(latest).strip() != str(current).strip()
 
 
 def _pick_release_asset(assets: List[Dict[str, object]]) -> Optional[Dict[str, object]]:
@@ -1934,6 +1983,7 @@ def fetch_latest_app_release_info(update_channel: str = "release") -> Dict[str, 
         "current_version": APP_VERSION,
         "latest_version": latest_version,
         "is_newer": _is_version_newer(latest_version, APP_VERSION),
+        "should_install": _should_install_selected_release(latest_version, APP_VERSION),
         "release_url": release_url,
         "channel": channel,
         "download_url": download_url,
@@ -3734,14 +3784,14 @@ class HeadlessRuntime:
             mode_label = "automatic" if auto_mode else "manual"
             self._set_app_update_progress("Checking latest app release...")
             info = fetch_latest_app_release_info(channel)
-            if not bool(info.get("is_newer", False)):
+            if not bool(info.get("should_install", False)):
                 with self._app_update_lock:
                     self._app_update_state["last_result"] = info
                     self._app_update_state["last_error"] = ""
                     self._app_update_state["running"] = False
                     self._app_update_state["finished_at"] = time.time()
-                    self._app_update_state["progress_message"] = "Already up to date."
-                self.log("[INFO] App is already up to date.")
+                    self._app_update_state["progress_message"] = "Already on selected channel/version."
+                self.log("[INFO] No app install needed for selected channel/version.")
                 return
             dl_url = str(info.get("download_url", "")).strip()
             asset_name = str(info.get("asset_name", "")).strip()
@@ -3819,11 +3869,11 @@ class HeadlessRuntime:
                 self._app_update_state["last_result"] = info
                 self._app_update_state["last_error"] = ""
                 self._app_update_state["finished_at"] = time.time()
-            if bool(info.get("is_newer", False)):
-                self.log("[INFO] New app version detected at startup; beginning automatic update.")
+            if bool(info.get("should_install", False)):
+                self.log("[INFO] Different app version detected at startup; beginning automatic install.")
                 self.trigger_app_update_download(auto_mode=True)
             else:
-                self.log("[INFO] Startup update check: app is up to date.")
+                self.log("[INFO] Startup update check: already on selected channel/version.")
         except Exception as e:
             self.log(f"[WARN] Startup app update check failed: {e}")
 
