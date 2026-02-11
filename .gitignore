@@ -155,3 +155,8 @@ ffmpeg
 ffmpeg.exe
 Flow_Background.mp4
 config.json
+stream247-linux/uninstall_systemd_user_service.sh
+stream247-linux/install_systemd_user_service.sh
+stream247-linux/LINUX_INSTALL.md
+stream247-linux-x86_64.tar.gz
+stream247-linux/stream247-server

@@ -88,6 +88,25 @@ Build output:
 - Linux: `dist/stream247-server`
 - Windows: `dist/stream247-server.exe`
 
+### Linux systemd user service (recommended for 24/7)
+
+After building:
+
+```bash
+./scripts/install_systemd_user_service.sh
+```
+
+This installs and starts `~/.config/systemd/user/stream247.service` with:
+- `ExecStart` pointing to `dist/stream247-server`
+- `Restart=always`
+- `STREAM247_SYSTEMD=1` so in-app updates hand restart control to `systemd`
+
+For startup on boot without logging in, enable linger once:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
 ## Notes
 
 - Stream247 is web-dashboard first; streaming starts only after clicking **Start Stream**.

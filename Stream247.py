@@ -96,6 +96,22 @@ def _app_dir() -> Path:
         return Path(sys.executable).parent  # packaged exe folder
     return Path.cwd()                       # running from source
 
+
+def _running_under_systemd() -> bool:
+    """Best-effort detection for Linux systemd-managed runtime."""
+    if IS_WIN:
+        return False
+    if platform.system().lower() != "linux":
+        return False
+    forced = str(os.environ.get("STREAM247_SYSTEMD", "")).strip().lower()
+    if forced in ("1", "true", "yes", "on"):
+        return True
+    for key in ("INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET", "SYSTEMD_EXEC_PID"):
+        if os.environ.get(key):
+            return True
+    return False
+
+
 CONFIG_PATH = _app_dir() / "config.json"
 
 def load_config_json() -> dict:
@@ -3834,6 +3850,7 @@ class HeadlessRuntime:
             raise RuntimeError("Downloaded update file is missing.")
         if not self._is_supported_update_asset(staged_abs):
             raise RuntimeError(f"Unsupported update asset for self-install: {staged_abs.name}")
+        managed_by_systemd = _running_under_systemd()
         if IS_WIN:
             helper_path = updates_dir / f"apply-update-{int(time.time())}.cmd"
             helper = (
@@ -3861,29 +3878,38 @@ class HeadlessRuntime:
                 close_fds=True,
             )
         else:
-            helper_path = updates_dir / f"apply-update-{int(time.time())}.sh"
-            helper = (
-                "#!/usr/bin/env sh\n"
-                "set -eu\n"
-                f"PID='{os.getpid()}'\n"
-                f"SRC={shlex.quote(str(staged_abs))}\n"
-                f"DST={shlex.quote(str(current_exe))}\n"
-                "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.25; done\n"
-                "mv -f \"$SRC\" \"$DST\"\n"
-                "chmod +x \"$DST\" || true\n"
-                "\"$DST\" >/dev/null 2>&1 &\n"
-                "rm -f \"$0\"\n"
-            )
-            helper_path.write_text(helper, encoding="utf-8")
-            os.chmod(helper_path, 0o755)
-            subprocess.Popen(
-                [str(helper_path)],
-                cwd=str(current_exe.parent),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                close_fds=True,
-            )
+            if managed_by_systemd:
+                # Replace binary in-place, then let systemd perform the restart.
+                os.replace(str(staged_abs), str(current_exe))
+                try:
+                    os.chmod(current_exe, 0o755)
+                except Exception:
+                    pass
+                self.log("[INFO] Systemd service detected; handing restart back to systemd.")
+            else:
+                helper_path = updates_dir / f"apply-update-{int(time.time())}.sh"
+                helper = (
+                    "#!/usr/bin/env sh\n"
+                    "set -eu\n"
+                    f"PID='{os.getpid()}'\n"
+                    f"SRC={shlex.quote(str(staged_abs))}\n"
+                    f"DST={shlex.quote(str(current_exe))}\n"
+                    "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.25; done\n"
+                    "mv -f \"$SRC\" \"$DST\"\n"
+                    "chmod +x \"$DST\" || true\n"
+                    "\"$DST\" >/dev/null 2>&1 &\n"
+                    "rm -f \"$0\"\n"
+                )
+                helper_path.write_text(helper, encoding="utf-8")
+                os.chmod(helper_path, 0o755)
+                subprocess.Popen(
+                    [str(helper_path)],
+                    cwd=str(current_exe.parent),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                    close_fds=True,
+                )
         try:
             self.stop_stream()
         except Exception:
