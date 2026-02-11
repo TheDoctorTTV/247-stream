@@ -134,7 +134,7 @@ def read_web_server_settings() -> Tuple[bool, str, int, bool]:
     """Return web dashboard settings from config.json."""
     cfg = load_config_json()
     enabled = bool(cfg.get("web_server_enabled", False))
-    host = str(cfg.get("web_server_host", "127.0.0.1")).strip() or "127.0.0.1"
+    host = str(cfg.get("web_server_host", "0.0.0.0")).strip() or "0.0.0.0"
     try:
         port = int(cfg.get("web_server_port", 7788))
     except Exception:

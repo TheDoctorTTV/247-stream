@@ -39,7 +39,7 @@ When running, open:
 - `http://127.0.0.1:7788`
 
 If `config.json` exists, host/port are read from:
-- `web_server_host` (default `127.0.0.1`)
+- `web_server_host` (default `0.0.0.0`)
 - `web_server_port` (default `7788`)
 
 ### Headless server quick install (Linux latest release)
@@ -146,7 +146,7 @@ sudo loginctl enable-linger "$USER"
 ## Notes
 
 - Stream247 is web-dashboard first; streaming starts only after clicking **Start Stream**.
-- For remote dashboard access, set `web_server_host` to `0.0.0.0` and secure network access yourself.
+- Dashboard binds to `0.0.0.0` by default; secure network access yourself (firewall/VPN/reverse proxy).
 - YouTube/Twitch source retrieval depends on `yt-dlp`.
 - Keep platform bitrate/resolution limits in mind for your destination ingest.
 
