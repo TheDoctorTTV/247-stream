@@ -48,7 +48,8 @@ If `config.json` exists, host/port are read from:
 curl -L -o stream247-linux-x86_64.tar.gz \
   https://github.com/TheDoctorTTV/247-stream/releases/latest/download/stream247-linux-x86_64.tar.gz
 tar -xzf stream247-linux-x86_64.tar.gz
-cd stream247-linux-x86_64
+PKG_DIR="$(tar -tzf stream247-linux-x86_64.tar.gz | head -n1 | cut -d/ -f1)"
+cd "$PKG_DIR"
 chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user_service.sh
 ./install_systemd_user_service.sh
 sudo loginctl enable-linger "$USER"
@@ -68,7 +69,8 @@ test -n "$PRE_TAG"
 curl -L -o stream247-linux-x86_64.tar.gz \
   "https://github.com/TheDoctorTTV/247-stream/releases/download/${PRE_TAG}/stream247-linux-x86_64.tar.gz"
 tar -xzf stream247-linux-x86_64.tar.gz
-cd stream247-linux-x86_64
+PKG_DIR="$(tar -tzf stream247-linux-x86_64.tar.gz | head -n1 | cut -d/ -f1)"
+cd "$PKG_DIR"
 chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user_service.sh
 ./install_systemd_user_service.sh
 sudo loginctl enable-linger "$USER"
