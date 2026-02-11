@@ -50,30 +50,51 @@ function Install-PythonIfMissing {
         throw "Python not found and winget is unavailable. Install Python 3.11+ manually and rerun."
     }
 
+    $addPythonPaths = {
+        $possiblePaths = @()
+        if ($env:LocalAppData) {
+            $possiblePaths += (Join-Path -Path $env:LocalAppData -ChildPath "Programs\Python\Python312\python.exe")
+            $possiblePaths += (Join-Path -Path $env:LocalAppData -ChildPath "Programs\Python\Python311\python.exe")
+            $possiblePaths += (Join-Path -Path $env:LocalAppData -ChildPath "Programs\Python\Launcher\py.exe")
+        }
+        if ($env:ProgramFiles) {
+            $possiblePaths += (Join-Path -Path $env:ProgramFiles -ChildPath "Python312\python.exe")
+            $possiblePaths += (Join-Path -Path $env:ProgramFiles -ChildPath "Python311\python.exe")
+        }
+
+        foreach ($path in $possiblePaths) {
+            if (Test-Path $path) {
+                $parent = Split-Path -Parent $path
+                if (-not ($env:Path -split ";" | Where-Object { $_ -eq $parent })) {
+                    $env:Path = "$parent;$env:Path"
+                }
+            }
+        }
+    }
+
     Write-Host "Python not found. Installing Python 3.12 with winget (source: winget)..."
     winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) {
+    $firstInstallExit = $LASTEXITCODE
+    & $addPythonPaths
+    if (Resolve-PythonCommand -Preferred "") {
+        return
+    }
+
+    if ($firstInstallExit -ne 0) {
         Write-Host "First winget install attempt failed. Resetting winget sources and retrying..."
         winget source reset --force
         winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
     }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Automatic Python install failed. Install Python manually from https://www.python.org/downloads/windows/ then rerun this script."
+    $secondInstallExit = $LASTEXITCODE
+    & $addPythonPaths
+    if (Resolve-PythonCommand -Preferred "") {
+        return
     }
 
-    $possiblePaths = @(
-        (Join-Path -Path $env:LocalAppData -ChildPath "Programs\Python\Python312\python.exe"),
-        (Join-Path -Path $env:LocalAppData -ChildPath "Programs\Python\Python311\python.exe"),
-        (Join-Path -Path ${env:ProgramFiles} -ChildPath "Python312\python.exe"),
-        (Join-Path -Path ${env:ProgramFiles} -ChildPath "Python311\python.exe")
-    )
-    foreach ($path in $possiblePaths) {
-        if (Test-Path $path) {
-            $parent = Split-Path -Parent $path
-            if (-not ($env:Path -split ";" | Where-Object { $_ -eq $parent })) {
-                $env:Path = "$parent;$env:Path"
-            }
-        }
+    if ($secondInstallExit -ne 0) {
+        throw "Automatic Python install failed. Install Python manually from https://www.python.org/downloads/windows/ then rerun this script."
+    } else {
+        throw "Python install command completed, but no usable python executable was found. Open a new PowerShell window and rerun this script."
     }
 }
 
