@@ -18,7 +18,17 @@ function Resolve-PythonCommand {
 
     foreach ($candidate in $candidates) {
         $cmd = $candidate[0]
-        if (Get-Command $cmd -ErrorAction SilentlyContinue) {
+        $cmdInfo = Get-Command $cmd -ErrorAction SilentlyContinue
+        if ($cmdInfo) {
+            $cmdSource = ""
+            if ($cmdInfo.Source) {
+                $cmdSource = [string]$cmdInfo.Source
+            } elseif ($cmdInfo.Path) {
+                $cmdSource = [string]$cmdInfo.Path
+            }
+            if (($cmd -eq "python" -or $cmd -eq "python3") -and $cmdSource -match "WindowsApps[\\/](python|python3)\.exe$") {
+                continue
+            }
             try {
                 $probeArgs = @()
                 if ($candidate.Count -gt 1) {
@@ -40,10 +50,15 @@ function Install-PythonIfMissing {
         throw "Python not found and winget is unavailable. Install Python 3.11+ manually and rerun."
     }
 
-    Write-Host "Python not found. Installing Python 3.12 with winget..."
-    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+    Write-Host "Python not found. Installing Python 3.12 with winget (source: winget)..."
+    winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
     if ($LASTEXITCODE -ne 0) {
-        throw "Automatic Python install failed. Install Python manually, then rerun this script."
+        Write-Host "First winget install attempt failed. Resetting winget sources and retrying..."
+        winget source reset --force
+        winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Automatic Python install failed. Install Python manually from https://www.python.org/downloads/windows/ then rerun this script."
     }
 
     $possiblePaths = @(
