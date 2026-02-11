@@ -46,7 +46,7 @@ If `config.json` exists, host/port are read from:
 
 ```bash
 curl -L -o stream247-linux-x86_64.tar.gz \
-  https://github.com/TheDoctorTTV/247-steam/releases/download/<TAG>/stream247-linux-x86_64.tar.gz
+  https://github.com/TheDoctorTTV/247-stream/releases/download/<TAG>/stream247-linux-x86_64.tar.gz
 tar -xzf stream247-linux-x86_64.tar.gz
 cd stream247-linux-x86_64
 chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user_service.sh

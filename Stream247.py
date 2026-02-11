@@ -71,7 +71,7 @@ import re
 # General application metadata and platform helpers
 APP_NAME = "Stream247"  # Name shown in logs and dashboard
 APP_VERSION = "2.0-pre-release-2"  # Current version
-GITHUB_REPO = "TheDoctorTTV/247-steam"  # GitHub repository for updates
+GITHUB_REPO = "TheDoctorTTV/247-stream"  # GitHub repository for updates
 IS_WIN = (os.name == "nt")  # True when running on Windows
 CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0  # Hide console windows
 CREATE_NEW_PROCESS_GROUP = 0x00000200 if IS_WIN else 0  # Allow child process killing
