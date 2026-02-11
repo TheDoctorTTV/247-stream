@@ -62,8 +62,10 @@ function Install-PythonIfMissing {
     }
 
     $possiblePaths = @(
-        Join-Path $env:LocalAppData "Programs\Python\Python312\python.exe",
-        Join-Path $env:LocalAppData "Programs\Python\Python311\python.exe"
+        (Join-Path -Path $env:LocalAppData -ChildPath "Programs\Python\Python312\python.exe"),
+        (Join-Path -Path $env:LocalAppData -ChildPath "Programs\Python\Python311\python.exe"),
+        (Join-Path -Path ${env:ProgramFiles} -ChildPath "Python312\python.exe"),
+        (Join-Path -Path ${env:ProgramFiles} -ChildPath "Python311\python.exe")
     )
     foreach ($path in $possiblePaths) {
         if (Test-Path $path) {
