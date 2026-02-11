@@ -18,8 +18,16 @@ if [[ ! -f "$APP_ENTRY" ]]; then
   exit 1
 fi
 
-echo "Installing/updating build dependencies..."
-"$PYTHON_BIN" -m pip install --upgrade pip pyinstaller
+echo "Installing/updating pip and build tooling..."
+"$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
+
+if [[ -f "requirements.txt" ]]; then
+  echo "Installing project dependencies from requirements.txt..."
+  "$PYTHON_BIN" -m pip install -r requirements.txt
+fi
+
+echo "Ensuring PyInstaller is installed..."
+"$PYTHON_BIN" -m pip install --upgrade pyinstaller
 
 echo "Building $APP_NAME from $APP_ENTRY ..."
 ADD_DATA_ARGS=()
