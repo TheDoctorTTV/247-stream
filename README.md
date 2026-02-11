@@ -42,6 +42,22 @@ If `config.json` exists, host/port are read from:
 - `web_server_host` (default `127.0.0.1`)
 - `web_server_port` (default `7788`)
 
+### Headless server quick install (Linux release)
+
+```bash
+curl -L -o stream247-linux-x86_64.tar.gz \
+  https://github.com/TheDoctorTTV/247-steam/releases/download/<TAG>/stream247-linux-x86_64.tar.gz
+tar -xzf stream247-linux-x86_64.tar.gz
+cd stream247-linux-x86_64
+chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user_service.sh
+./install_systemd_user_service.sh
+sudo loginctl enable-linger "$USER"
+systemctl --user status stream247.service
+journalctl --user -u stream247.service -f
+```
+
+Replace `<TAG>` with a release tag (example: `v2.0-pre-release-2`).
+
 ## Configuration
 
 `config.json` is read from the app runtime directory.
