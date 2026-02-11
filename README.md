@@ -42,11 +42,11 @@ If `config.json` exists, host/port are read from:
 - `web_server_host` (default `127.0.0.1`)
 - `web_server_port` (default `7788`)
 
-### Headless server quick install (Linux release)
+### Headless server quick install (Linux latest release)
 
 ```bash
 curl -L -o stream247-linux-x86_64.tar.gz \
-  https://github.com/TheDoctorTTV/247-stream/releases/download/<TAG>/stream247-linux-x86_64.tar.gz
+  https://github.com/TheDoctorTTV/247-stream/releases/latest/download/stream247-linux-x86_64.tar.gz
 tar -xzf stream247-linux-x86_64.tar.gz
 cd stream247-linux-x86_64
 chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user_service.sh
@@ -56,7 +56,25 @@ systemctl --user status stream247.service
 journalctl --user -u stream247.service -f
 ```
 
-Replace `<TAG>` with a release tag (example: `v2.0-pre-release-2`).
+### Headless server quick install (Linux latest prerelease)
+
+Requires `jq`.
+
+```bash
+PRE_TAG="$(curl -fsSL https://api.github.com/repos/TheDoctorTTV/247-stream/releases \
+  | jq -r '.[] | select(.prerelease==true and .draft==false) | .tag_name' \
+  | head -n1)"
+test -n "$PRE_TAG"
+curl -L -o stream247-linux-x86_64.tar.gz \
+  "https://github.com/TheDoctorTTV/247-stream/releases/download/${PRE_TAG}/stream247-linux-x86_64.tar.gz"
+tar -xzf stream247-linux-x86_64.tar.gz
+cd stream247-linux-x86_64
+chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user_service.sh
+./install_systemd_user_service.sh
+sudo loginctl enable-linger "$USER"
+systemctl --user status stream247.service
+journalctl --user -u stream247.service -f
+```
 
 ## Configuration
 
