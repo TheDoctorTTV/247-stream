@@ -1,26 +1,15 @@
-# Stream247_GUI.py — GUI YouTube 24/7 streamer
-# - Uses yt-dlp (next to the app) for playlist IDs / titles / direct URLs
-# - Auto-selects NVENC > QSV > AMF > x264 via safe probe
-# - Runs ffmpeg and yt-dlp with hidden windows (no console)
-# - Clean Start/Stop (kills ffmpeg reliably; Windows fallback uses taskkill /T /F)
-# - Saves config to config.json next to the EXE
-# - Overlay shows: "<TITLE> • <Pretty Date>" with title truncation (date preserved)
-
-import os, sys, time, json, random, shutil, subprocess, threading, datetime, webbrowser
+import os, sys, time, json, random, shlex, shutil, subprocess, threading, datetime
 import zipfile, tempfile, platform, tarfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple
 from collections import deque
 from pathlib import Path
 try:
-    from PySide6 import QtCore, QtGui, QtWidgets  # type: ignore
-    HAS_QT = True
+    from PySide6 import QtCore  # type: ignore
 except Exception:
-    HAS_QT = False
-
     class _SignalInstance:
         def __init__(self):
             self._callbacks: List[Callable[..., None]] = []
@@ -52,24 +41,12 @@ except Exception:
                 instance.__dict__[self._name] = sig
             return sig
 
-    class _QtDummy:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __call__(self, *args, **kwargs):
-            return _QtDummy()
-
-        def __getattr__(self, _name):
-            return _QtDummy()
-
     class _QObjectShim:
         def __init__(self, *args, **kwargs):
             pass
 
     class _QtCoreShim:
         QObject = _QObjectShim
-        QThread = _QtDummy
-        QTimer = _QtDummy
 
         @staticmethod
         def Signal(*args, **kwargs):
@@ -85,57 +62,20 @@ except Exception:
             class ConnectionType:
                 DirectConnection = 0
 
-            class AlignmentFlag:
-                AlignRight = 0
-                AlignVCenter = 0
-                AlignTop = 0
-
-            class ScrollBarPolicy:
-                ScrollBarAsNeeded = 0
-                ScrollBarAlwaysOff = 0
-
-            class WindowType:
-                WindowContextHelpButtonHint = 0
-                MSWindowsFixedSizeDialogHint = 0
-
-            class WindowModality:
-                ApplicationModal = 0
-
-    class _QtGuiShim(_QtDummy):
-        QCloseEvent = _QtDummy
-        QTextCursor = _QtDummy
-        QIcon = _QtDummy
-
-    class _QtWidgetsShim(_QtDummy):
-        QWidget = object
-        QMessageBox = _QtDummy
-
     QtCore = _QtCoreShim()  # type: ignore
-    QtGui = _QtGuiShim()    # type: ignore
-    QtWidgets = _QtWidgetsShim()  # type: ignore
 import urllib.request
 import urllib.error
 from urllib.parse import urlsplit
 import re
 
-if TYPE_CHECKING:
-    from PySide6.QtCore import QThread as QtThreadT
-    from PySide6.QtGui import QCloseEvent as QtCloseEventT
-    from PySide6.QtWidgets import QComboBox as QtComboBoxT
-    from PySide6.QtWidgets import QProgressDialog as QtProgressDialogT
-else:
-    QtThreadT = Any
-    QtCloseEventT = Any
-    QtComboBoxT = Any
-    QtProgressDialogT = Any
-
 # General application metadata and platform helpers
-APP_NAME = "Stream247"  # Name shown in the GUI and taskbar
+APP_NAME = "Stream247"  # Name shown in logs and dashboard
 APP_VERSION = "2.0"  # Current version
 GITHUB_REPO = "TheDoctorTTV/247-steam"  # GitHub repository for updates
 IS_WIN = (os.name == "nt")  # True when running on Windows
 CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0  # Hide console windows
 CREATE_NEW_PROCESS_GROUP = 0x00000200 if IS_WIN else 0  # Allow child process killing
+DETACHED_PROCESS = 0x00000008 if IS_WIN else 0  # Keep updater detached on Windows
 
 # Startup information for subprocesses (only meaningful on Windows)
 STARTUPINFO = None
@@ -198,6 +138,17 @@ WEB_ALLOWED_ENCODERS = (
 WEB_ALLOWED_BROWSERS = (
     "auto", "firefox", "chrome", "edge", "chromium", "brave", "vivaldi", "opera", "safari"
 )
+WEB_ALLOWED_UPDATE_CHANNELS = ("release", "prerelease")
+BITRATE_MIN_KBPS = 1500
+BITRATE_MAX_KBPS = 25000
+BITRATE_STEP_KBPS = 500
+BITRATE_DEFAULT_KBPS = 2500
+BUFFER_MODE_BUFSIZE_MULTIPLIER = {
+    "Low": 2.0,
+    "Medium": 3.0,
+    "High": 4.0,
+    "Ultra": 5.0,
+}
 
 
 def _to_bool(value: object, default: bool = False) -> bool:
@@ -212,6 +163,26 @@ def _to_bool(value: object, default: bool = False) -> bool:
         if v in ("0", "false", "no", "off"):
             return False
     return bool(default)
+
+
+def _parse_bitrate_kbps(value: object, default: int = BITRATE_DEFAULT_KBPS) -> int:
+    """Parse bitrate text (e.g. '6000k', '6000 kbps', '6000') into clamped kbps."""
+    try:
+        text = str(value or "").strip().lower()
+        m = re.search(r"(\d+)", text)
+        if not m:
+            return int(default)
+        raw = int(m.group(1))
+    except Exception:
+        return int(default)
+    clamped = max(BITRATE_MIN_KBPS, min(BITRATE_MAX_KBPS, raw))
+    offset = clamped - BITRATE_MIN_KBPS
+    rounded = BITRATE_MIN_KBPS + int(round(offset / BITRATE_STEP_KBPS) * BITRATE_STEP_KBPS)
+    return max(BITRATE_MIN_KBPS, min(BITRATE_MAX_KBPS, rounded))
+
+
+def _kbps_to_text(kbps: int) -> str:
+    return f"{int(kbps)}k"
 
 
 def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -> Dict[str, object]:
@@ -236,18 +207,21 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
     if browser not in WEB_ALLOWED_BROWSERS:
         browser = "auto"
     try:
-        cap = int(cfg.get("update_download_cap_mbps", 10))
+        cap = int(cfg.get("update_download_cap_mbps", 25))
     except Exception:
-        cap = 10
+        cap = 25
     cap = max(1, min(25, cap))
+    update_channel = str(cfg.get("app_update_channel", "release")).strip().lower()
+    if update_channel not in WEB_ALLOWED_UPDATE_CHANNELS:
+        update_channel = "release"
+    bitrate_kbps = _parse_bitrate_kbps(cfg.get("video_bitrate", f"{BITRATE_DEFAULT_KBPS}k"))
     return {
         "playlist_url": str(cfg.get("playlist_url", "")).strip(),
         "rtmp_base": str(cfg.get("rtmp_base", "rtmp://a.rtmp.youtube.com/live2")).strip(),
         "stream_key": str(cfg.get("stream_key", "")).strip(),
         "resolution": resolution,
         "framerate": framerate,
-        "video_bitrate": str(cfg.get("video_bitrate", "2300k")).strip(),
-        "bufsize": str(cfg.get("bufsize", "4600k")).strip(),
+        "video_bitrate": _kbps_to_text(bitrate_kbps),
         "buffer_mode": buffer_mode,
         "encoder_preference": encoder,
         "overlay_titles": _to_bool(cfg.get("overlay_titles", True), True),
@@ -256,6 +230,8 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
         "rtmp_live": _to_bool(cfg.get("rtmp_live", False), False),
         "remember": _to_bool(cfg.get("remember", True), True),
         "check_updates_startup": _to_bool(cfg.get("check_updates_startup", True), True),
+        "auto_app_updates": _to_bool(cfg.get("auto_app_updates", False), False),
+        "app_update_channel": update_channel,
         "yt_auth_enabled": _to_bool(cfg.get("yt_auth_enabled", False), False),
         "yt_auth_browser": browser,
         "yt_auth_profile": str(cfg.get("yt_auth_profile", "")).strip(),
@@ -272,6 +248,9 @@ def apply_web_settings_payload(base: Dict[str, object], payload: Dict[str, objec
     for key, value in normalized.items():
         if key in payload:
             out[key] = value
+    if ("buffer_mode" in payload) or ("video_bitrate" in payload):
+        # bufsize is now derived from stream-buffer mode and bitrate.
+        out.pop("bufsize", None)
     return out
 
 # ---------- misc utilities ----------
@@ -355,7 +334,7 @@ def find_ytdlp() -> Optional[str]:
 
 
 class RuntimeStateStore:
-    """Thread-safe runtime state used by GUI/headless and web dashboard."""
+    """Thread-safe runtime state used by the runtime and web dashboard."""
 
     def __init__(self, log_limit: int = 500):
         self._lock = threading.Lock()
@@ -439,6 +418,7 @@ class LocalWebDashboard:
         binaries_status_provider: Callable[[], Dict[str, object]],
         binaries_update_trigger: Callable[[], Dict[str, object]],
         app_update_status_provider: Callable[[], Dict[str, object]],
+        app_update_check_trigger: Callable[[], Dict[str, object]],
         app_update_download_trigger: Callable[[], Dict[str, object]],
         start_cb: Callable[[], None],
         stop_cb: Callable[[], None],
@@ -453,6 +433,7 @@ class LocalWebDashboard:
         self._binaries_status_provider = binaries_status_provider
         self._binaries_update_trigger = binaries_update_trigger
         self._app_update_status_provider = app_update_status_provider
+        self._app_update_check_trigger = app_update_check_trigger
         self._app_update_download_trigger = app_update_download_trigger
         self._start_cb = start_cb
         self._stop_cb = stop_cb
@@ -497,6 +478,17 @@ class LocalWebDashboard:
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     return
 
+            def _send_bytes(self, data: bytes, content_type: str, status: int = 200) -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+
             def _read_body(self) -> Dict[str, object]:
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -517,6 +509,16 @@ class LocalWebDashboard:
 
             def do_GET(self):  # noqa: N802
                 path = urlsplit(self.path).path
+                if path in ("/favicon.ico", "/icon.ico"):
+                    ico_path = Path(resource_path("icon.ico"))
+                    if not ico_path.exists():
+                        self.send_error(HTTPStatus.NOT_FOUND, "icon.ico not found")
+                        return
+                    try:
+                        self._send_bytes(ico_path.read_bytes(), "image/x-icon")
+                    except Exception:
+                        self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Failed to read icon.ico")
+                    return
                 if path == "/api/state":
                     self._send_json(dashboard._state_provider())
                     return
@@ -570,6 +572,13 @@ class LocalWebDashboard:
                     except Exception as e:
                         self._send_json({"ok": False, "error": str(e)}, status=400)
                     return
+                if path == "/api/app-update/check":
+                    try:
+                        info = dashboard._app_update_check_trigger()
+                        self._send_json({"ok": True, "app_update": info})
+                    except Exception as e:
+                        self._send_json({"ok": False, "error": str(e)}, status=400)
+                    return
                 self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
         return Handler
@@ -581,6 +590,7 @@ class LocalWebDashboard:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{APP_NAME} Dashboard</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
   <style>
     :root {{
       --bg: #0b1220;
@@ -694,6 +704,36 @@ class LocalWebDashboard:
     .statusline.err {{ color: var(--err); }}
     .statusline.warn {{ color: var(--warn); }}
     .about-list {{ margin: 0; padding-left: 18px; color: #c8d8f0; line-height: 1.5; }}
+    .progress-wrap {{
+      position: relative;
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #0a101b;
+      margin: 8px 0 6px;
+    }}
+    .progress-bar {{
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #2aa0f0, #5ed8ff);
+      transition: width 0.2s ease;
+    }}
+    .creator {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0 10px;
+      color: #c8d8f0;
+    }}
+    .creator img {{
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      object-fit: cover;
+    }}
     a {{ color: #7fd6ff; }}
     a:hover {{ color: #a8e8ff; }}
     pre {{
@@ -751,8 +791,7 @@ class LocalWebDashboard:
           <div class="field"><label for="stream_key">Stream Key</label><input id="stream_key" type="password"></div>
           <div class="field"><label for="resolution">Resolution</label><select id="resolution"><option>480p</option><option>720p</option><option>1080p</option><option>1440p</option><option>2160p</option></select></div>
           <div class="field"><label for="framerate">Frame Rate</label><select id="framerate"><option value="30">30</option><option value="60">60</option></select></div>
-          <div class="field"><label for="video_bitrate">Video Bitrate</label><input id="video_bitrate" type="text"></div>
-          <div class="field"><label for="bufsize">Buffer Size</label><input id="bufsize" type="text"></div>
+          <div class="field"><label for="video_bitrate">Video Bitrate</label><select id="video_bitrate"></select></div>
           <div class="field"><label for="buffer_mode">Stream Buffer</label><select id="buffer_mode"><option>Low</option><option>Medium</option><option>High</option><option>Ultra</option></select></div>
           <div class="field"><label for="encoder_preference">Encoder</label><select id="encoder_preference"><option value="auto">Auto</option><option value="libx264">CPU x264</option><option value="h264_nvenc">NVIDIA NVENC</option><option value="h264_qsv">Intel QSV</option><option value="h264_amf">AMD AMF</option><option value="h264_vaapi">VAAPI</option><option value="h264_videotoolbox">VideoToolbox</option></select></div>
           <div class="field"><label for="update_download_cap_mbps">Update Download Cap (Mbps)</label><select id="update_download_cap_mbps"></select></div>
@@ -769,7 +808,6 @@ class LocalWebDashboard:
           <label class="check"><input id="check_updates_startup" type="checkbox">Check updates on startup</label>
         </div>
         <div class="row" style="margin-top:12px;">
-          <button class="primary" id="saveSettingsBtn">Save Settings</button>
           <button id="reloadSettingsBtn">Reload Settings</button>
           <div id="settingsStatus" class="statusline"></div>
         </div>
@@ -789,20 +827,33 @@ class LocalWebDashboard:
       <div class="card">
         <h2>About</h2>
         <p><strong>{APP_NAME}</strong> - YouTube 24/7 VOD Streamer<br>Version {APP_VERSION}</p>
+        <div class="creator">
+          <img src="https://thetimevortex.net/media/creators/624961413500108830/c0483390-40d3-4d8c-b922-6997639b3d71.png" alt="TheDoctorTTV profile picture">
+          <div>Created by <strong>TheDoctorTTV</strong></div>
+        </div>
         <p><a href="https://github.com/{GITHUB_REPO}" target="_blank" rel="noreferrer">GitHub Repository</a></p>
         <div class="row" style="margin:10px 0 8px;">
           <button id="checkAppUpdateBtn">Check App Update</button>
-          <button class="primary" id="downloadAppUpdateBtn">Download App Update</button>
+          <button class="primary" id="downloadAppUpdateBtn">Install App Update</button>
         </div>
         <div id="appUpdateStatus" class="statusline">App update status not loaded.</div>
+        <div class="row" style="margin:10px 0 8px; align-items: end;">
+          <div class="field" style="min-width: 220px; margin: 0;">
+            <label for="app_update_channel">App Update Channel</label>
+            <select id="app_update_channel"><option value="release">Releases</option><option value="prerelease">Pre-releases</option></select>
+          </div>
+          <label class="check" style="margin: 0;"><input id="auto_app_updates" type="checkbox">Automatically install app updates</label>
+        </div>
         <div class="row" style="margin:10px 0 8px;">
-          <button id="checkBinariesBtn">Check Binaries</button>
           <button class="primary" id="updateBinariesBtn">Update Binaries (yt-dlp & FFmpeg)</button>
         </div>
         <div id="binariesStatus" class="statusline">Binary status not loaded.</div>
+        <div class="progress-wrap"><div id="binariesProgressBar" class="progress-bar"></div></div>
+        <div id="binariesProgressText" class="statusline"></div>
         <ul class="about-list">
           <li>Interface is fully web-based.</li>
           <li>Server bind is configured in <code>config.json</code>.</li>
+          <li>Use Install App Update for one-click update and restart.</li>
           <li>Use Update Binaries to refresh yt-dlp and FFmpeg next to the app.</li>
         </ul>
       </div>
@@ -817,21 +868,37 @@ class LocalWebDashboard:
     const stopBtn = document.getElementById("stopBtn");
     const skipBtn = document.getElementById("skipBtn");
     const refreshBtn = document.getElementById("refreshBtn");
-    const saveSettingsBtn = document.getElementById("saveSettingsBtn");
     const reloadSettingsBtn = document.getElementById("reloadSettingsBtn");
     const settingsStatus = document.getElementById("settingsStatus");
     const checkAppUpdateBtn = document.getElementById("checkAppUpdateBtn");
     const downloadAppUpdateBtn = document.getElementById("downloadAppUpdateBtn");
     const appUpdateStatus = document.getElementById("appUpdateStatus");
-    const checkBinariesBtn = document.getElementById("checkBinariesBtn");
     const updateBinariesBtn = document.getElementById("updateBinariesBtn");
     const binariesStatus = document.getElementById("binariesStatus");
+    const binariesProgressBar = document.getElementById("binariesProgressBar");
+    const binariesProgressText = document.getElementById("binariesProgressText");
     const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
     const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
     const subtabButtons = Array.from(document.querySelectorAll(".subtab-btn"));
     const subtabPanels = Array.from(document.querySelectorAll(".subtab-panel"));
     let busy = false;
-    const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "bufsize", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "rtmp_live", "remember", "check_updates_startup", "update_download_cap_mbps"];
+    let appUpdateRunning = false;
+    let binariesUpdateRunning = false;
+    let lastAppCheckAt = "";
+    let lastBinariesCheckAt = "";
+    let suppressAutoSave = false;
+    let autoSaveTimer = null;
+    let saveInFlight = false;
+    let pendingAutoSave = false;
+    let lastSavedPayload = "";
+    const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "rtmp_live", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel", "update_download_cap_mbps"];
+
+    for (let kbps = 1500; kbps <= 25000; kbps += 500) {{
+      const o = document.createElement("option");
+      o.value = String(kbps) + "k";
+      o.textContent = String(kbps) + " kbps";
+      document.getElementById("video_bitrate").appendChild(o);
+    }}
 
     for (let i = 1; i <= 25; i++) {{
       const o = document.createElement("option");
@@ -853,6 +920,32 @@ class LocalWebDashboard:
     function setAppUpdateStatus(text, level) {{
       appUpdateStatus.textContent = text || "";
       appUpdateStatus.className = "statusline" + (level ? (" " + level) : "");
+    }}
+
+    function setBinariesProgress(percent, text) {{
+      const p = Math.max(0, Math.min(100, Number(percent) || 0));
+      binariesProgressBar.style.width = p + "%";
+      binariesProgressText.textContent = text || (p > 0 ? ("Progress: " + p + "%") : "");
+    }}
+
+    function versionTuple(v) {{
+      const m = String(v || "").match(/(\d+(?:\.\d+)+)/);
+      if (!m) return null;
+      return m[1].split(".").map((x) => Number(x));
+    }}
+
+    function compareVersions(current, latest) {{
+      const a = versionTuple(current);
+      const b = versionTuple(latest);
+      if (!a || !b) return null;
+      const n = Math.max(a.length, b.length);
+      for (let i = 0; i < n; i++) {{
+        const av = a[i] || 0;
+        const bv = b[i] || 0;
+        if (av > bv) return 1;
+        if (av < bv) return -1;
+      }}
+      return 0;
     }}
 
     async function api(path) {{
@@ -882,7 +975,6 @@ class LocalWebDashboard:
         stateText.className = "status" + (streaming ? " on" : "");
         const meta = s.meta || {{}};
         const parts = [];
-        if (meta.mode) parts.push("mode: " + meta.mode);
         if (meta.source) parts.push("source: " + meta.source);
         metaText.textContent = parts.join(" | ");
         updateLogBox(otherLogBox, s.logs_other, forceScroll);
@@ -920,9 +1012,41 @@ class LocalWebDashboard:
         out[id] = (el.type === "checkbox") ? !!el.checked : el.value;
       }}
       out.framerate = Number(out.framerate || 30);
-      out.update_download_cap_mbps = Number(out.update_download_cap_mbps || 10);
+      out.update_download_cap_mbps = Number(out.update_download_cap_mbps || 25);
       out.yt_auth_enabled = (String(out.yt_auth_enabled).toLowerCase() === "true");
       return out;
+    }}
+
+    function payloadSignature(payload) {{
+      try {{
+        return JSON.stringify(payload || {{}});
+      }} catch (err) {{
+        return "";
+      }}
+    }}
+
+    function queueAutoSave(delayMs) {{
+      if (suppressAutoSave) return;
+      const delay = Number(delayMs || 550);
+      if (autoSaveTimer) clearTimeout(autoSaveTimer);
+      setSettingsStatus("Saving changes soon...", "warn");
+      autoSaveTimer = setTimeout(() => {{
+        autoSaveTimer = null;
+        saveSettings("auto");
+      }}, delay);
+    }}
+
+    function bindAutoSaveListeners() {{
+      for (const id of fieldIds) {{
+        const el = document.getElementById(id);
+        if (!el) continue;
+        if (el.type === "checkbox" || el.tagName === "SELECT") {{
+          el.addEventListener("change", () => queueAutoSave(180));
+        }} else {{
+          el.addEventListener("input", () => queueAutoSave(650));
+          el.addEventListener("change", () => queueAutoSave(180));
+        }}
+      }}
     }}
 
     async function loadSettings() {{
@@ -932,36 +1056,70 @@ class LocalWebDashboard:
         if (!res.ok) throw new Error("load settings failed");
         const payload = await res.json();
         if (!payload.ok || !payload.settings) throw new Error(payload.error || "invalid response");
+        suppressAutoSave = true;
         applySettingsToForm(payload.settings);
+        lastSavedPayload = payloadSignature(formToPayload());
         setSettingsStatus("Settings loaded.", "ok");
       }} catch (err) {{
         setSettingsStatus("Failed to load settings.", "err");
+      }} finally {{
+        suppressAutoSave = false;
       }}
     }}
 
-    async function saveSettings() {{
-      setSettingsStatus("Saving settings...", "");
+    async function saveSettings(mode) {{
+      if (saveInFlight) {{
+        pendingAutoSave = true;
+        return;
+      }}
+      const reason = String(mode || "manual");
+      const currentPayload = formToPayload();
+      const currentSig = payloadSignature(currentPayload);
+      if (reason === "auto" && currentSig && currentSig === lastSavedPayload) {{
+        setSettingsStatus("Settings saved.", "ok");
+        return;
+      }}
+      saveInFlight = true;
+      setSettingsStatus(reason === "auto" ? "Saving changes..." : "Saving settings...", "");
       try {{
-        const res = await fetch("/api/settings", {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: JSON.stringify(formToPayload()) }});
+        const res = await fetch("/api/settings", {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: JSON.stringify(currentPayload) }});
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "save failed");
+        suppressAutoSave = true;
         applySettingsToForm(payload.settings || {{}});
-        setSettingsStatus("Settings saved.", "ok");
+        lastSavedPayload = payloadSignature(formToPayload());
+        setSettingsStatus(reason === "auto" ? "Changes saved automatically." : "Settings saved.", "ok");
       }} catch (err) {{
         setSettingsStatus("Failed to save settings.", "err");
+      }} finally {{
+        suppressAutoSave = false;
+        saveInFlight = false;
+        if (pendingAutoSave) {{
+          pendingAutoSave = false;
+          queueAutoSave(220);
+        }}
       }}
     }}
 
     function formatAppUpdateSummary(a) {{
       if (!a) return "No app update status available.";
-      if (a.running) return "App update download is running...";
+      if (a.running) return a.progress_message || "App update install is running...";
       if (a.last_error) return "App update error: " + a.last_error;
       const r = a.last_result || null;
       if (!r) return "App update status not available yet.";
-      let text = "Current: " + (r.current_version || "unknown") + " | Latest: " + (r.latest_version || "unknown");
-      if (r.is_newer) text += " | Update available";
-      else text += " | Up to date";
-      if (a.downloaded_path) text += " | Downloaded: " + a.downloaded_path;
+      const current = String(r.current_version || "unknown");
+      const latest = String(r.latest_version || "unknown");
+      const channel = String(r.channel || "release");
+      const rel = compareVersions(current, latest);
+      const assetSupported = (r.asset_supported !== false);
+      let state = "Up to date";
+      if (r.is_newer || rel === -1) state = "Update available";
+      else if (rel === 1) state = "Running newer than latest release";
+      if ((r.is_newer || rel === -1) && !assetSupported) state = "Update available (no self-installable asset)";
+      let text = "Channel: " + channel + " | Current: " + current + " | Latest: " + latest + " | " + state;
+      if (a.mode) text += " | Mode: " + String(a.mode);
+      if (a.downloaded_path) text += " | Staged: " + a.downloaded_path;
+      if (lastAppCheckAt) text += " | Checked: " + lastAppCheckAt;
       return text;
     }}
 
@@ -971,18 +1129,34 @@ class LocalWebDashboard:
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
         const info = payload.app_update || {{}};
+        appUpdateRunning = !!info.running;
+        const result = info.last_result || {{}};
+        const rel = compareVersions(result.current_version, result.latest_version);
+        const assetSupported = (result.asset_supported !== false);
+        const updateAvailable = (!!result.is_newer || rel === -1) && assetSupported;
         let level = "ok";
         if (info.running) level = "warn";
         if (info.last_error) level = "err";
+        if (!info.running && !info.last_error && (!!result.is_newer || rel === -1)) level = "warn";
+        lastAppCheckAt = new Date().toLocaleTimeString();
         setAppUpdateStatus(formatAppUpdateSummary(info), level);
-        downloadAppUpdateBtn.disabled = !!info.running;
+        checkAppUpdateBtn.disabled = !!info.running;
+        checkAppUpdateBtn.title = !!info.running ? "Cannot check while install is running" : "Check for app updates now";
+        downloadAppUpdateBtn.disabled = !!info.running || !updateAvailable;
+        if (updateAvailable) {{
+          downloadAppUpdateBtn.title = "Install latest app update and restart";
+        }} else if ((!!result.is_newer || rel === -1) && !assetSupported) {{
+          downloadAppUpdateBtn.title = "Latest release does not include a self-installable asset for this platform";
+        }} else {{
+          downloadAppUpdateBtn.title = "No app update available";
+        }}
       }} catch (err) {{
         setAppUpdateStatus("Failed to load app update status.", "err");
       }}
     }}
 
     async function triggerAppUpdateDownload() {{
-      setAppUpdateStatus("Starting app update download...", "warn");
+      setAppUpdateStatus("Starting app update install...", "warn");
       try {{
         const res = await fetch("/api/app-update/download", {{
           method: "POST",
@@ -993,20 +1167,48 @@ class LocalWebDashboard:
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
         await loadAppUpdateStatus();
       }} catch (err) {{
-        setAppUpdateStatus("Failed to start app update download.", "err");
+        setAppUpdateStatus("Failed to start app update install.", "err");
+      }}
+    }}
+
+    async function triggerAppUpdateCheck() {{
+      setAppUpdateStatus("Checking app update...", "warn");
+      try {{
+        const res = await fetch("/api/app-update/check", {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: "{{}}"
+        }});
+        const payload = await res.json();
+        if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
+        await loadAppUpdateStatus();
+      }} catch (err) {{
+        setAppUpdateStatus("Failed to check app update.", "err");
       }}
     }}
 
     function formatBinariesSummary(b) {{
       if (!b) return "No binary status available.";
-      if (b.running) return "Binary update is running...";
+      if (b.running) return b.progress_message || "Binary update is running...";
       if (b.last_error) return "Binary update error: " + b.last_error;
       const r = b.last_result || null;
       if (!r) return "Binary status not available yet.";
       const y = r["yt-dlp"] || {{}};
       const f = r["ffmpeg"] || {{}};
-      return "yt-dlp: " + (y.current_version || "unknown") + " -> " + (y.latest_version || "unknown") + " (" + (y.status || "unknown") + ") | " +
-             "ffmpeg: " + (f.current_version || "unknown") + " -> " + (f.latest_version || "unknown") + " (" + (f.status || "unknown") + ")";
+      const label = (s) => {{
+        if (s === "up_to_date") return "Up to date";
+        if (s === "update_available") return "Update available";
+        return "Could not verify";
+      }};
+      const needs = [];
+      if (String(y.status || "") === "update_available") needs.push("yt-dlp");
+      if (String(f.status || "") === "update_available") needs.push("ffmpeg");
+      const prefix = needs.length ? ("Updates available: " + needs.join(", ") + " | ") : "Binary check complete | ";
+      let text = prefix +
+             "yt-dlp: " + label(String(y.status || "unknown")) + " (" + (y.current_version || "unknown") + " -> " + (y.latest_version || "unknown") + ") | " +
+             "ffmpeg: " + label(String(f.status || "unknown")) + " (" + (f.current_version || "unknown") + " -> " + (f.latest_version || "unknown") + ")";
+      if (lastBinariesCheckAt) text += " | Checked: " + lastBinariesCheckAt;
+      return text;
     }}
 
     async function loadBinariesStatus() {{
@@ -1015,13 +1217,26 @@ class LocalWebDashboard:
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
         const info = payload.binaries || {{}};
+        binariesUpdateRunning = !!info.running;
+        const result = info.last_result || {{}};
+        const y = result["yt-dlp"] || {{}};
+        const f = result["ffmpeg"] || {{}};
+        const hasUnknown = (String(y.status || "unknown") === "unknown") || (String(f.status || "unknown") === "unknown");
+        const updateAvailable = !!result.any_update_available;
         let level = "ok";
         if (info.running) level = "warn";
         if (info.last_error) level = "err";
+        if (!info.running && !info.last_error && (updateAvailable || hasUnknown)) level = "warn";
+        lastBinariesCheckAt = new Date().toLocaleTimeString();
         setBinariesStatus(formatBinariesSummary(info), level);
-        updateBinariesBtn.disabled = !!info.running;
+        const pct = Number(info.progress_percent || 0);
+        const msg = String(info.progress_message || "");
+        setBinariesProgress(pct, msg ? (msg + " (" + pct + "%)") : (pct > 0 ? ("Progress: " + pct + "%") : ""));
+        updateBinariesBtn.disabled = !!info.running || (!updateAvailable && !hasUnknown);
+        updateBinariesBtn.title = (updateAvailable || hasUnknown) ? "Update yt-dlp and FFmpeg" : "Binaries are already up to date";
       }} catch (err) {{
         setBinariesStatus("Failed to load binary status.", "err");
+        setBinariesProgress(0, "");
       }}
     }}
 
@@ -1035,9 +1250,11 @@ class LocalWebDashboard:
         }});
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
+        setBinariesProgress(1, "Preparing binary update... (1%)");
         await loadBinariesStatus();
       }} catch (err) {{
         setBinariesStatus("Failed to start binary update.", "err");
+        setBinariesProgress(0, "");
       }}
     }}
 
@@ -1060,23 +1277,24 @@ class LocalWebDashboard:
     stopBtn.addEventListener("click", () => api("/api/stop"));
     skipBtn.addEventListener("click", () => api("/api/skip"));
     refreshBtn.addEventListener("click", () => refreshState(true));
-    saveSettingsBtn.addEventListener("click", () => saveSettings());
     reloadSettingsBtn.addEventListener("click", () => loadSettings());
-    checkAppUpdateBtn.addEventListener("click", () => loadAppUpdateStatus());
+    checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
-    checkBinariesBtn.addEventListener("click", () => loadBinariesStatus());
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
+    bindAutoSaveListeners();
     loadSettings();
     loadAppUpdateStatus();
     loadBinariesStatus();
     refreshState(true);
     setInterval(() => {{
       refreshState(false);
+      if (binariesUpdateRunning) loadBinariesStatus();
+      if (appUpdateRunning) loadAppUpdateStatus();
     }}, 1200);
     setInterval(() => {{
       loadAppUpdateStatus();
       loadBinariesStatus();
-    }}, 60000);
+    }}, 300000);
   </script>
 </body>
 </html>
@@ -1114,7 +1332,7 @@ def _download_url(
     user_agent: Optional[str] = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     max_mbps: Optional[int] = None,
-    parallel_chunks: int = 4,
+    parallel_chunks: int = 8,
 ) -> None:
     """Download a URL to dest_path atomically.
 
@@ -1174,7 +1392,7 @@ def _download_url(
     headers = {}
     if user_agent:
         headers["User-Agent"] = user_agent
-    chunk_size = 1024 * 64
+    chunk_size = 1024 * 256
     capped_mbps = None
     if max_mbps is not None:
         try:
@@ -1192,7 +1410,7 @@ def _download_url(
         with urllib.request.urlopen(head_req, timeout=30) as head_resp:
             content_len = head_resp.headers.get("Content-Length")
             total_size = int(content_len) if content_len and content_len.isdigit() else 0
-            accepts_ranges = (head_resp.headers.get("Accept-Ranges", "").lower() == "bytes")
+            accepts_ranges = ("bytes" in head_resp.headers.get("Accept-Ranges", "").lower())
     except Exception:
         total_size = 0
         accepts_ranges = False
@@ -1246,7 +1464,7 @@ def _download_url(
                 if pos <= r_end:
                     raise RuntimeError("Incomplete range download")
 
-        with ThreadPoolExecutor(max_workers=max(2, min(8, parallel_chunks))) as ex:
+        with ThreadPoolExecutor(max_workers=max(2, min(12, parallel_chunks))) as ex:
             futures = [ex.submit(_download_range, s, e) for s, e in ranges]
             for fut in as_completed(futures):
                 fut.result()
@@ -1462,95 +1680,6 @@ def fmt_yt_date(upload_date: Optional[str], timestamp: Optional[int], release_ts
     return None
 
 
-# ---------- update checker ----------
-class UpdateChecker(QtCore.QObject):
-    """Background worker to check for application updates."""
-    
-    update_checked = QtCore.Signal(dict)  # Emits update info
-    error_occurred = QtCore.Signal(str)   # Emits error message
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.repo = GITHUB_REPO
-        
-    @QtCore.Slot()
-    def check_for_updates(self):
-        """Check GitHub releases for newer versions."""
-        try:
-            url = f"https://api.github.com/repos/{self.repo}/releases/latest"
-            req = urllib.request.Request(url)
-            req.add_header('User-Agent', f'{APP_NAME}/{APP_VERSION}')
-            
-            with urllib.request.urlopen(req, timeout=10) as response:
-                data = json.loads(response.read().decode('utf-8'))
-                
-            # Extract version info
-            latest_version = data.get('tag_name', '').lstrip('v')
-            release_name = data.get('name', '')
-            release_notes = data.get('body', '')
-            release_url = data.get('html_url', '')
-            published_at = data.get('published_at', '')
-            
-            # Parse published date
-            published_date = None
-            if published_at:
-                try:
-                    dt = datetime.datetime.fromisoformat(published_at.replace('Z', '+00:00'))
-                    published_date = dt.strftime("%b %d, %Y")
-                except Exception:
-                    published_date = published_at
-            
-            # Compare versions (simple string comparison for now)
-            current_version = APP_VERSION
-            is_newer = self._is_version_newer(latest_version, current_version)
-            
-            # Find download URL for Windows executable
-            download_url = None
-            assets = data.get('assets', [])
-            for asset in assets:
-                name = asset.get('name', '').lower()
-                if name.endswith('.exe') and 'stream247' in name:
-                    download_url = asset.get('browser_download_url')
-                    break
-            
-            result = {
-                'current_version': current_version,
-                'latest_version': latest_version,
-                'is_newer': is_newer,
-                'release_name': release_name,
-                'release_notes': release_notes,
-                'release_url': release_url,
-                'download_url': download_url,
-                'published_date': published_date
-            }
-            
-            self.update_checked.emit(result)
-            
-        except urllib.error.URLError as e:
-            self.error_occurred.emit(f"Network error: {e}")
-        except json.JSONDecodeError:
-            self.error_occurred.emit("Failed to parse update information")
-        except Exception as e:
-            self.error_occurred.emit(f"Update check failed: {e}")
-    
-    def _is_version_newer(self, latest: str, current: str) -> bool:
-        """Compare version strings to determine if latest is newer than current."""
-        try:
-            # Simple version comparison (handles x.y.z format)
-            latest_parts = [int(x) for x in latest.split('.')]
-            current_parts = [int(x) for x in current.split('.')]
-            
-            # Pad shorter version with zeros
-            max_len = max(len(latest_parts), len(current_parts))
-            latest_parts.extend([0] * (max_len - len(latest_parts)))
-            current_parts.extend([0] * (max_len - len(current_parts)))
-            
-            return latest_parts > current_parts
-        except (ValueError, AttributeError):
-            # Fallback to string comparison
-            return latest != current and latest > current
-
-
 def _binary_names_for_platform() -> Tuple[str, str]:
     """Return (yt-dlp-name, ffmpeg-name) for the current platform."""
     if platform.system().lower() == "windows":
@@ -1718,20 +1847,22 @@ def _is_version_newer(latest: str, current: str) -> bool:
 
 
 def _pick_release_asset(assets: List[Dict[str, object]]) -> Optional[Dict[str, object]]:
-    """Pick the best app update asset for current OS (prefers updater scripts)."""
+    """Pick the best app update asset for current OS (prefers runnable binaries)."""
     if not assets:
         return None
     sys_name = platform.system().lower()
-    target_script = "build_windows.ps1" if sys_name == "windows" else "build_linux.sh"
 
     def score(asset: Dict[str, object]) -> Tuple[int, int, int, int, int]:
         name = str(asset.get("name", "")).lower()
-        pri_exact_script = 0 if name == target_script else 1
-        pri_script_ext = 0 if ((sys_name == "windows" and name.endswith(".ps1")) or (sys_name == "linux" and name.endswith(".sh"))) else 1
+        exe_ext = (".exe", ".msi") if sys_name == "windows" else ("", ".appimage", ".bin")
+        pri_binary_ext = 0 if any(name.endswith(ext) for ext in exe_ext if ext) else 1
+        if sys_name != "windows" and "." not in name.split("/")[-1]:
+            pri_binary_ext = 0
+        pri_archive = 0 if name.endswith((".zip", ".tar.gz", ".tgz")) else 1
         pri_platform = 0 if ((sys_name == "windows" and "win" in name) or (sys_name == "linux" and "linux" in name)) else 1
         pri_server = 0 if "server" in name else 1
         pri_app = 0 if "stream247" in name else 1
-        return (pri_exact_script, pri_script_ext, pri_platform, pri_server, pri_app)
+        return (pri_binary_ext, pri_archive, pri_platform, pri_server, pri_app)
 
     try:
         return sorted(assets, key=score)[0]
@@ -1739,48 +1870,76 @@ def _pick_release_asset(assets: List[Dict[str, object]]) -> Optional[Dict[str, o
         return assets[0]
 
 
-def fetch_latest_app_release_info() -> Dict[str, object]:
+def _is_release_asset_self_installable(asset_name: str) -> bool:
+    """Return True when a release asset can be self-installed by this runtime."""
+    name = str(asset_name or "").strip().lower()
+    if not name:
+        return False
+    if IS_WIN:
+        return name.endswith(".exe")
+    if name.endswith((".sh", ".ps1", ".bat", ".cmd", ".msi", ".zip", ".tar.gz", ".tgz")):
+        return False
+    return True
+
+
+def _pick_release_by_channel(releases: List[Dict[str, object]], update_channel: str) -> Optional[Dict[str, object]]:
+    """Pick the newest release matching the requested channel."""
+    channel = str(update_channel or "release").strip().lower()
+    if channel == "prerelease":
+        for rel in releases:
+            if bool(rel.get("draft", False)):
+                continue
+            if bool(rel.get("prerelease", False)):
+                return rel
+        return None
+    for rel in releases:
+        if bool(rel.get("draft", False)):
+            continue
+        if not bool(rel.get("prerelease", False)):
+            return rel
+    return None
+
+
+def fetch_latest_app_release_info(update_channel: str = "release") -> Dict[str, object]:
     """Return latest app release metadata for web updater."""
-    req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
-    req.add_header("User-Agent", f"{APP_NAME}/{APP_VERSION}")
-    with urllib.request.urlopen(req, timeout=15) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    channel = str(update_channel or "release").strip().lower()
+    if channel not in WEB_ALLOWED_UPDATE_CHANNELS:
+        channel = "release"
+    if channel == "release":
+        req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
+        req.add_header("User-Agent", f"{APP_NAME}/{APP_VERSION}")
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    else:
+        req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=30")
+        req.add_header("User-Agent", f"{APP_NAME}/{APP_VERSION}")
+        with urllib.request.urlopen(req, timeout=15) as response:
+            all_releases = json.loads(response.read().decode("utf-8"))
+        if not isinstance(all_releases, list):
+            raise RuntimeError("Invalid releases response from GitHub.")
+        selected_rel = _pick_release_by_channel(all_releases, channel)
+        if not isinstance(selected_rel, dict):
+            raise RuntimeError("No pre-release found for this repository.")
+        data = selected_rel
     latest_version = str(data.get("tag_name", "")).lstrip("v")
     release_url = str(data.get("html_url", ""))
     assets = data.get("assets", []) or []
     selected = _pick_release_asset(assets)
     download_url = ""
     asset_name = ""
-    target_script = "build_windows.ps1" if platform.system().lower() == "windows" else "build_linux.sh"
     if isinstance(selected, dict):
         download_url = str(selected.get("browser_download_url", ""))
         asset_name = str(selected.get("name", ""))
-    # Fallback to script in repo if release does not include script assets.
-    if (not download_url) or (not asset_name.lower().endswith((".ps1", ".sh"))):
-        download_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{target_script}"
-        asset_name = target_script
     return {
         "current_version": APP_VERSION,
         "latest_version": latest_version,
         "is_newer": _is_version_newer(latest_version, APP_VERSION),
         "release_url": release_url,
+        "channel": channel,
         "download_url": download_url,
         "asset_name": asset_name,
+        "asset_supported": _is_release_asset_self_installable(asset_name),
     }
-
-
-class BinaryVersionChecker(QtCore.QObject):
-    """Background worker for yt-dlp/ffmpeg version checks."""
-
-    checked = QtCore.Signal(dict)
-    error_occurred = QtCore.Signal(str)
-
-    @QtCore.Slot()
-    def check(self):
-        try:
-            self.checked.emit(gather_binary_update_status())
-        except Exception as e:
-            self.error_occurred.emit(f"Binary version check failed: {e}")
 
 
 # ---------- buffer presets ----------
@@ -1811,13 +1970,13 @@ BUFFER_PRESETS = {
     }
 }
 
-# Shared presets for GUI and headless config parsing.
-RESOLUTION_PRESETS: Dict[str, Tuple[int, str, str]] = {
-    "480p": (480, "1000k", "2000k"),
-    "720p": (720, "2300k", "4600k"),
-    "1080p": (1080, "6000k", "9000k"),
-    "1440p": (1440, "9000k", "12000k"),
-    "2160p": (2160, "35000k", "35000k"),
+# Shared presets for runtime config parsing.
+RESOLUTION_PRESETS: Dict[str, Tuple[int, str]] = {
+    "480p": (480, "1500k"),
+    "720p": (720, "2500k"),
+    "1080p": (1080, "6000k"),
+    "1440p": (1440, "9000k"),
+    "2160p": (2160, "25000k"),
 }
 
 # ---------- streaming core ----------
@@ -1830,8 +1989,8 @@ class StreamConfig:
     rtmp_base: str = "rtmp://a.rtmp.youtube.com/live2"
     fps: int = 30
     height: int = 720
-    video_bitrate: str = "2300k"
-    bufsize: str = "4600k"
+    video_bitrate: str = "2500k"
+    bufsize: str = "7500k"
     audio_bitrate: str = "128k"
     overlay_titles: bool = True
     shuffle: bool = False
@@ -1842,7 +2001,7 @@ class StreamConfig:
     yt_auth_browser: str = "auto"  # auto, chrome, edge, firefox, ...
     yt_auth_profile: str = ""  # Optional custom profile root path
     yt_auth_allow_unauth_fallback: bool = True
-    update_download_cap_mbps: int = 10
+    update_download_cap_mbps: int = 25
     encoder_preference: str = "auto"  # auto or explicit encoder id
 
     # runtime-selected
@@ -1860,7 +2019,7 @@ class StreamConfig:
 def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
     """Build StreamConfig from a persisted settings dictionary."""
     resolution = str(data.get("resolution", "720p"))
-    height, preset_bitrate, preset_bufsize = RESOLUTION_PRESETS.get(
+    height, preset_bitrate = RESOLUTION_PRESETS.get(
         resolution, RESOLUTION_PRESETS["720p"]
     )
     fps_raw = data.get("framerate", 30)
@@ -1871,10 +2030,18 @@ def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
     if fps not in (30, 60):
         fps = 30
     try:
-        cap_mbps = int(data.get("update_download_cap_mbps", 10) or 10)
+        cap_mbps = int(data.get("update_download_cap_mbps", 25) or 25)
     except Exception:
-        cap_mbps = 10
+        cap_mbps = 25
     cap_mbps = max(1, min(25, cap_mbps))
+    buffer_mode = str(data.get("buffer_mode", "Medium")).strip() or "Medium"
+    if buffer_mode not in WEB_ALLOWED_BUFFER_MODES:
+        buffer_mode = "Medium"
+    preset_kbps = _parse_bitrate_kbps(preset_bitrate, BITRATE_DEFAULT_KBPS)
+    video_kbps = _parse_bitrate_kbps(data.get("video_bitrate", preset_bitrate), preset_kbps)
+    # Derive ffmpeg bufsize from selected stream-buffer mode.
+    buf_mult = float(BUFFER_MODE_BUFSIZE_MULTIPLIER.get(buffer_mode, BUFFER_MODE_BUFSIZE_MULTIPLIER["Medium"]))
+    bufsize_kbps = int(max(BITRATE_MIN_KBPS, round(video_kbps * buf_mult)))
 
     return StreamConfig(
         playlist_url=str(data.get("playlist_url", "")).strip(),
@@ -1882,14 +2049,14 @@ def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
         rtmp_base=str(data.get("rtmp_base", "rtmp://a.rtmp.youtube.com/live2")).strip(),
         fps=fps,
         height=height,
-        video_bitrate=str(data.get("video_bitrate", preset_bitrate)).strip() or preset_bitrate,
-        bufsize=str(data.get("bufsize", preset_bufsize)).strip() or preset_bufsize,
+        video_bitrate=_kbps_to_text(video_kbps),
+        bufsize=_kbps_to_text(bufsize_kbps),
         audio_bitrate=str(data.get("audio_bitrate", "128k")).strip() or "128k",
         overlay_titles=bool(data.get("overlay_titles", True)),
         shuffle=bool(data.get("shuffle", False)),
         title_file=str(data.get("title_file", "current_title.txt")).strip() or "current_title.txt",
         rtmp_live=bool(data.get("rtmp_live", False)),
-        buffer_mode=str(data.get("buffer_mode", "Medium")).strip() or "Medium",
+        buffer_mode=buffer_mode,
         yt_auth_enabled=bool(data.get("yt_auth_enabled", False)),
         yt_auth_browser=str(data.get("yt_auth_browser", "auto")).strip() or "auto",
         yt_auth_profile=str(data.get("yt_auth_profile", "")).strip(),
@@ -3274,1366 +3441,8 @@ class StreamWorker(QtCore.QObject):
         self.status.emit("Stopped")
         self.finished.emit()
 
-# ---------- GUI (modern, readable dark theme) ----------
-DARK_QSS = """
-* {
-  color: #e8edf7;
-  font-family: "Segoe UI", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
-  font-size: 10.5pt;
-}
-QWidget { background: #0c111b; }
-QLabel { background: transparent; }
-QLineEdit, QComboBox, QTextEdit, QSpinBox, QPlainTextEdit {
-  background: #141b28;
-  border: 1px solid #263246;
-  border-radius: 10px;
-  padding: 7px 9px;
-  selection-background-color: #2e7de4;
-}
-QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QSpinBox:focus, QPlainTextEdit:focus {
-  border: 1px solid #3f97ff;
-}
-QPushButton {
-  background: #1f6ad8;
-  border: 1px solid #2a7aef;
-  border-radius: 11px;
-  padding: 8px 14px;
-  font-weight: 600;
-}
-QPushButton:hover { background: #2d79e6; }
-QPushButton:pressed { background: #1d5fbe; }
-QPushButton:disabled {
-  background: #1a2231;
-  border: 1px solid #273448;
-  color: #7f8da3;
-}
-QTabWidget::pane {
-  border: 1px solid #253146;
-  border-radius: 12px;
-  background: #0f1624;
-  top: -1px;
-}
-QTabBar::tab {
-  background: #101826;
-  border: 1px solid #253146;
-  border-bottom: none;
-  border-top-left-radius: 10px;
-  border-top-right-radius: 10px;
-  padding: 8px 14px;
-  margin-right: 5px;
-}
-QTabBar::tab:selected {
-  background: #182337;
-  color: #ffffff;
-}
-QTabBar::tab:!selected { color: #99a6bc; }
-QGroupBox {
-  border: 1px solid #263246;
-  border-radius: 12px;
-  margin-top: 14px;
-  padding-top: 10px;
-}
-QGroupBox::title {
-  subcontrol-origin: margin;
-  left: 11px;
-  padding: 0 6px;
-  color: #c6d8f5;
-}
-QCheckBox::indicator {
-  width: 18px;
-  height: 18px;
-  border: 1px solid #2d3a52;
-  border-radius: 5px;
-  background: #141b28;
-}
-QCheckBox::indicator:checked {
-  background: #2d81f7;
-  border: 1px solid #2d81f7;
-  image: none;
-}
-QCheckBox::indicator:unchecked {
-  background: #141b28;
-  image: none;
-}
-QToolTip {
-  background: #131b2a;
-  color: #e8edf7;
-  border: 1px solid #2b3a52;
-  padding: 5px;
-}
-QScrollBar:vertical {
-  background: #0f1624;
-  width: 12px;
-  margin: 0;
-}
-QScrollBar::handle:vertical {
-  background: #2a3a53;
-  min-height: 28px;
-  border-radius: 6px;
-}
-QScrollBar::handle:vertical:hover { background: #385276; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-"""
-
-class MainWindow(QtWidgets.QWidget):
-    """Main application window housing the GUI and controls."""
-
-    RESOLUTION_PRESETS = RESOLUTION_PRESETS
-    
-    FRAMERATE_OPTIONS = [30, 60]
-    LOG_FLUSH_INTERVAL_MS = 50
-    APP_LOG_PREFIXES = (
-        "[INFO]", "[WARN]", "[ERROR]", "[STATUS]", "[PREFETCH]", "[CMD]", "[DETAIL]", "[DEBUG]"
-    )
-    web_start_requested = QtCore.Signal()
-    web_stop_requested = QtCore.Signal()
-    web_skip_requested = QtCore.Signal()
-    web_apply_settings_requested = QtCore.Signal(dict)
-
-    def _configure_combo_popup(self, combo: QtComboBoxT, max_visible: int = 8) -> None:
-        """Use a bounded, scrollable combo popup that behaves well across platforms."""
-        combo.setMaxVisibleItems(max_visible)
-        view = QtWidgets.QListView(combo)
-        combo.setView(view)
-        view.setUniformItemSizes(True)
-        view.setWordWrap(False)
-        view.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
-        view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-    def __init__(self):
-        """Initialise all widgets and connect signals."""
-        super().__init__()
-        self.setWindowTitle(f"{APP_NAME} — YouTube 24/7 VOD Streamer")
-        # Provide a sensible minimum size and allow resizing.
-        self.setMinimumSize(960, 480)
-        self.resize(1200, 700)
-        self.worker_thread: Optional[QtThreadT] = None
-        self.worker: Optional[StreamWorker] = None
-        self.streaming = False
-        self.log_fh = None
-        self.runtime_state = RuntimeStateStore()
-        self.runtime_state.set_meta(mode="gui")
-        self.web_dashboard: Optional[LocalWebDashboard] = None
-        
-        # Update checker components
-        self.update_thread: Optional[QtThreadT] = None
-        self.update_checker: Optional[UpdateChecker] = None
-        self.binary_check_thread: Optional[QtThreadT] = None
-        self.binary_checker: Optional[BinaryVersionChecker] = None
-        self.binary_update_thread: Optional[QtThreadT] = None
-        self.binary_update_worker = None
-        self.binary_check_dialog: Optional[QtProgressDialogT] = None
-        self.binary_update_dialog: Optional[QtProgressDialogT] = None
-
-        # Inputs
-        self.playlist_edit = QtWidgets.QLineEdit("")
-        self.playlist_edit.setPlaceholderText("YouTube playlist/video URL or Twitch stream URL…")
-        self.playlist_edit.setToolTip("Supports:\n• YouTube playlists (list=...)\n• YouTube videos (watch?v=...)\n• Twitch channels (twitch.tv/username)\n• Direct HLS streams (.m3u8 URLs)")
-        self.rtmp_edit = QtWidgets.QLineEdit("rtmp://a.rtmp.youtube.com/live2")
-        self.rtmp_edit.setPlaceholderText("RTMP ingest URL (e.g., rtmp://a.rtmp.youtube.com/live2)")
-        self.key_edit = QtWidgets.QLineEdit("")
-        self.key_edit.setPlaceholderText("Your YouTube stream key…")
-        self.key_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
-
-        self.res_combo = QtWidgets.QComboBox()
-        self.res_combo.addItems(["480p", "720p", "1080p", "1440p", "2160p"])
-        self.res_combo.setCurrentText("720p")
-        self._configure_combo_popup(self.res_combo)
-        
-        self.fps_combo = QtWidgets.QComboBox()
-        self.fps_combo.addItems(["30", "60"])
-        self.fps_combo.setCurrentText("30")
-        self._configure_combo_popup(self.fps_combo)
-        
-        self.buffer_combo = QtWidgets.QComboBox()
-        self.buffer_combo.addItems(["Low", "Medium", "High", "Ultra"])
-        self.buffer_combo.setCurrentText("Medium")
-        self.buffer_combo.setToolTip("Buffering helps smooth out network hiccups.\nLow: 3s, Medium: 7s (default), High: 12s, Ultra: 25s")
-        self._configure_combo_popup(self.buffer_combo)
-        self.encoder_combo = QtWidgets.QComboBox()
-        self.encoder_combo.addItem("Auto (recommended)", "auto")
-        self.encoder_combo.addItem("CPU x264", "libx264")
-        self.encoder_combo.addItem("NVIDIA NVENC", "h264_nvenc")
-        self.encoder_combo.addItem("Intel Quick Sync", "h264_qsv")
-        self.encoder_combo.addItem("AMD AMF", "h264_amf")
-        self.encoder_combo.addItem("VAAPI (Linux)", "h264_vaapi")
-        self.encoder_combo.addItem("Apple VideoToolbox (macOS)", "h264_videotoolbox")
-        self.encoder_combo.setToolTip("Auto picks the best available encoder. Manual mode forces your chosen encoder if supported.")
-        self._configure_combo_popup(self.encoder_combo)
-        self.update_cap_combo = QtWidgets.QComboBox()
-        for mbps in range(1, 26):
-            self.update_cap_combo.addItem(f"{mbps} Mbps", mbps)
-        self.update_cap_combo.setCurrentIndex(9)  # 10 Mbps default
-        self.update_cap_combo.setToolTip("Max download rate for updater (combined across update download threads).")
-        self._configure_combo_popup(self.update_cap_combo)
-        
-        self.bitrate_edit = QtWidgets.QLineEdit("2300k")
-        self.bufsize_edit = QtWidgets.QLineEdit("4600k")
-
-        self.overlay_chk = QtWidgets.QCheckBox("Overlay current VOD title")
-        self.overlay_chk.setChecked(True)
-        self.shuffle_chk = QtWidgets.QCheckBox("Shuffle playlist order")
-        self.shuffle_chk.setToolTip("Only applies to YouTube playlists")
-        self.logfile_chk = QtWidgets.QCheckBox("Log to file")
-        self.remember_chk = QtWidgets.QCheckBox("Save playlist and key")
-        self.remember_chk.setChecked(True)
-        self.check_updates_startup_chk = QtWidgets.QCheckBox("Check for updates on startup")
-        self.check_updates_startup_chk.setChecked(True)
-
-        self.console_ffmpeg = QtWidgets.QPlainTextEdit()
-        self.console_ffmpeg.setReadOnly(True)
-        self.console_ffmpeg.setVisible(True)
-        self.console_ffmpeg.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
-        self.console_ffmpeg.setMaximumBlockCount(5000)
-        self.console_other = QtWidgets.QPlainTextEdit()
-        self.console_other.setReadOnly(True)
-        self.console_other.setVisible(True)
-        self.console_other.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
-        self.console_other.setMaximumBlockCount(5000)
-        self._pending_logs: deque[Tuple[bool, str]] = deque()
-        self._log_flush_timer = QtCore.QTimer(self)
-        self._log_flush_timer.setInterval(self.LOG_FLUSH_INTERVAL_MS)
-        self._log_flush_timer.timeout.connect(self._flush_log_buffer)
-
-        self.start_btn = QtWidgets.QPushButton("Start Stream")
-        self.stop_btn = QtWidgets.QPushButton("Stop Stream")
-        self.stop_btn.setEnabled(False)
-        self.skip_btn = QtWidgets.QPushButton("Skip Video")
-        self.skip_btn.setEnabled(False)
-
-        # --- Tabs ---
-        tabs = QtWidgets.QTabWidget()
-        tabs.setDocumentMode(True)
-
-        # Stream Tab (scrollable for small window sizes)
-        stream_tab = QtWidgets.QScrollArea()
-        stream_tab.setWidgetResizable(True)
-        stream_tab.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        stream_content = QtWidgets.QWidget()
-        stream_layout = QtWidgets.QVBoxLayout(stream_content)
-        stream_layout.setContentsMargins(16, 16, 16, 16)
-        stream_layout.setSpacing(12)
-
-        stream_header = QtWidgets.QLabel("Streaming Session")
-        stream_header.setStyleSheet("font-size: 13pt; font-weight: 700; color: #d7e7ff;")
-        stream_layout.addWidget(stream_header)
-
-        stream_group = QtWidgets.QGroupBox("Connection")
-        stream_group_layout = QtWidgets.QFormLayout(stream_group)
-        stream_group_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        stream_group_layout.setLabelAlignment(
-            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
-        )
-        stream_group_layout.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        stream_group_layout.setHorizontalSpacing(14)
-        stream_group_layout.setVerticalSpacing(10)
-        stream_group_layout.addRow("Source URL", self.playlist_edit)
-        stream_group_layout.addRow("Stream URL", self.rtmp_edit)
-        stream_group_layout.addRow("Stream Key", self.key_edit)
-        stream_layout.addWidget(stream_group)
-
-        btns = QtWidgets.QHBoxLayout()
-        btns.setSpacing(10)
-        btns.addWidget(self.start_btn)
-        btns.addWidget(self.stop_btn)
-        btns.addWidget(self.skip_btn)
-        btns.addStretch(1)
-        stream_layout.addLayout(btns)
-
-        # Console Tab
-        console_tab = QtWidgets.QWidget()
-        console_layout = QtWidgets.QVBoxLayout(console_tab)
-        console_layout.setContentsMargins(16, 16, 16, 16)
-        console_layout.setSpacing(10)
-        self.console_tabs = QtWidgets.QTabWidget()
-        self.console_tabs.addTab(self.console_other, "App / Other Output")
-        self.console_tabs.addTab(self.console_ffmpeg, "FFmpeg Output")
-        console_layout.addWidget(self.console_tabs)
-        tabs.addTab(console_tab, "Console")
-
-        # Stream Settings Section (moved from the old Settings tab)
-        stream_settings_group = QtWidgets.QGroupBox("Stream Settings")
-        settings_layout = QtWidgets.QVBoxLayout(stream_settings_group)
-        settings_layout.setSpacing(12)
-
-        quality_group = QtWidgets.QGroupBox("Encoding and Quality")
-        quality_layout = QtWidgets.QGridLayout(quality_group)
-        quality_layout.setHorizontalSpacing(14)
-        quality_layout.setVerticalSpacing(10)
-        quality_layout.addWidget(QtWidgets.QLabel("Resolution"), 0, 0)
-        quality_layout.addWidget(self.res_combo, 0, 1)
-        quality_layout.addWidget(QtWidgets.QLabel("Frame Rate"), 0, 2)
-        quality_layout.addWidget(self.fps_combo, 0, 3)
-        quality_layout.addWidget(QtWidgets.QLabel("Video Bitrate"), 1, 0)
-        quality_layout.addWidget(self.bitrate_edit, 1, 1)
-        quality_layout.addWidget(QtWidgets.QLabel("Buffer Size"), 1, 2)
-        quality_layout.addWidget(self.bufsize_edit, 1, 3)
-        quality_layout.addWidget(QtWidgets.QLabel("Stream Buffer"), 2, 0)
-        quality_layout.addWidget(self.buffer_combo, 2, 1)
-        quality_layout.addWidget(QtWidgets.QLabel("Update Download Cap"), 2, 2)
-        quality_layout.addWidget(self.update_cap_combo, 2, 3)
-        quality_layout.addWidget(QtWidgets.QLabel("Encoder"), 3, 0)
-        quality_layout.addWidget(self.encoder_combo, 3, 1)
-        settings_layout.addWidget(quality_group)
-
-        behavior_group = QtWidgets.QGroupBox("Behavior")
-        behavior_layout = QtWidgets.QHBoxLayout(behavior_group)
-        behavior_layout.setSpacing(12)
-        behavior_layout.addWidget(self.overlay_chk)
-        behavior_layout.addWidget(self.shuffle_chk)
-        behavior_layout.addWidget(self.logfile_chk)
-        self.rtmp_live_chk = QtWidgets.QCheckBox("RTMP live mode (Owncast)")
-        self.rtmp_live_chk.setToolTip("Adds -rtmp_live live and tcurl for better compatibility with Owncast and some servers")
-        behavior_layout.addWidget(self.rtmp_live_chk)
-        behavior_layout.addStretch(1)
-
-        auth_group = QtWidgets.QGroupBox("YouTube Auth (Optional)")
-        auth_layout = QtWidgets.QGridLayout(auth_group)
-        self.yt_auth_chk = QtWidgets.QCheckBox("Use browser cookies for age-restricted/private-access videos")
-        self.yt_auth_chk.setToolTip(
-            "Uses yt-dlp --cookies-from-browser.\n"
-            "Useful for age-restricted, members-only, or region/account-gated videos."
-        )
-        auth_layout.addWidget(self.yt_auth_chk, 0, 0, 1, 4)
-
-        auth_layout.addWidget(QtWidgets.QLabel("Browser"), 1, 0)
-        self.yt_browser_combo = QtWidgets.QComboBox()
-        self.yt_browser_combo.addItem("Auto (try common browsers)", "auto")
-        self.yt_browser_combo.addItem("Firefox", "firefox")
-        self.yt_browser_combo.addItem("Chrome", "chrome")
-        self.yt_browser_combo.addItem("Edge", "edge")
-        self.yt_browser_combo.addItem("Chromium", "chromium")
-        self.yt_browser_combo.addItem("Brave", "brave")
-        self.yt_browser_combo.addItem("Vivaldi", "vivaldi")
-        self.yt_browser_combo.addItem("Opera", "opera")
-        self.yt_browser_combo.addItem("Safari", "safari")
-        self._configure_combo_popup(self.yt_browser_combo)
-        auth_layout.addWidget(self.yt_browser_combo, 1, 1)
-
-        auth_layout.addWidget(QtWidgets.QLabel("Profile Path"), 1, 2)
-        self.yt_profile_edit = QtWidgets.QLineEdit("")
-        self.yt_profile_edit.setPlaceholderText("Optional profile root path (supports Flatpak/Snap layouts)")
-        self.yt_profile_edit.setToolTip(
-            "Examples:\n"
-            "Linux Flatpak Firefox: ~/.var/app/org.mozilla.firefox/.mozilla/firefox\n"
-            "Linux Flatpak Chromium: ~/.var/app/org.chromium.Chromium/config/chromium\n"
-            "Leave blank to let yt-dlp auto-detect."
-        )
-        auth_layout.addWidget(self.yt_profile_edit, 1, 3)
-
-        self.advanced_toggle = QtWidgets.QCheckBox("Show advanced settings")
-        self.advanced_toggle.setChecked(False)
-        settings_layout.addWidget(self.advanced_toggle)
-
-        self.advanced_section = QtWidgets.QWidget()
-        advanced_layout = QtWidgets.QVBoxLayout(self.advanced_section)
-        advanced_layout.setContentsMargins(0, 0, 0, 0)
-        advanced_layout.setSpacing(12)
-        advanced_layout.addWidget(behavior_group)
-        advanced_layout.addWidget(auth_group)
-
-        bottom_opts = QtWidgets.QHBoxLayout()
-        bottom_opts.addWidget(self.remember_chk)
-        bottom_opts.addStretch(1)
-        advanced_layout.addLayout(bottom_opts)
-
-        settings_layout.addWidget(self.advanced_section)
-        self._set_advanced_visible(self.advanced_toggle.isChecked())
-
-        stream_layout.addWidget(stream_settings_group)
-        stream_layout.addStretch(1)
-        stream_tab.setWidget(stream_content)
-        tabs.insertTab(0, stream_tab, "Stream")
-
-        # About Tab
-        about_tab = QtWidgets.QWidget()
-        about_layout = QtWidgets.QVBoxLayout(about_tab)
-        about_layout.setContentsMargins(16, 16, 16, 16)
-        about_layout.setSpacing(12)
-        
-        # Version info
-        version_layout = QtWidgets.QHBoxLayout()
-        about_text = QtWidgets.QLabel(f"<b>{APP_NAME}</b> - YouTube 24/7 VOD Streamer<br>Version {APP_VERSION}")
-        about_text.setWordWrap(True)
-        version_layout.addWidget(about_text)
-        version_layout.addStretch(1)
-        
-        # Update checker section
-        update_group = QtWidgets.QGroupBox("Updates")
-        update_group_layout = QtWidgets.QVBoxLayout(update_group)
-        
-        # Update status and buttons
-        update_controls_layout = QtWidgets.QHBoxLayout()
-        self.check_update_btn = QtWidgets.QPushButton("Check for Updates")
-        self.check_update_btn.clicked.connect(self.check_for_updates)
-        update_controls_layout.addWidget(self.check_update_btn)
-        self.force_update_btn = QtWidgets.QPushButton("Force Update Binaries (yt-dlp & FFmpeg)")
-        self.force_update_btn.setToolTip("Re-download latest yt-dlp and FFmpeg next to the app")
-        self.force_update_btn.clicked.connect(self.on_force_update_binaries)
-        update_controls_layout.addWidget(self.force_update_btn)
-        update_controls_layout.addStretch(1)
-        
-        # Update status label
-        self.update_status_label = QtWidgets.QLabel("Click 'Check for Updates' to check for new versions")
-        self.update_status_label.setWordWrap(True)
-        self.update_status_label.setStyleSheet("color: #888; font-style: italic;")
-        
-        # Check on startup toggle
-        startup_check_layout = QtWidgets.QHBoxLayout()
-        startup_check_layout.addWidget(self.check_updates_startup_chk)
-        startup_check_layout.addStretch(1)
-        
-        update_group_layout.addLayout(update_controls_layout)
-        update_group_layout.addWidget(self.update_status_label)
-        update_group_layout.addLayout(startup_check_layout)
-        
-        # Credits
-        credits_text = QtWidgets.QLabel("Open-source tool created by TheDoctorTTV<br>"
-                                       f"<a href='https://github.com/{GITHUB_REPO}' style='color: #5DADE2;'>GitHub Repository</a>")
-        credits_text.setWordWrap(True)
-        credits_text.setOpenExternalLinks(True)
-        
-        about_layout.addLayout(version_layout)
-        about_layout.addWidget(update_group)
-        about_layout.addStretch(1)
-        about_layout.addWidget(credits_text)
-        tabs.addTab(about_tab, "About")
-        tabs.setCurrentIndex(0)
-
-        main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.addWidget(tabs)
-
-        # Signals
-        self.start_btn.clicked.connect(self.on_start)
-        self.stop_btn.clicked.connect(self.on_stop)
-        self.skip_btn.clicked.connect(self.on_skip)
-        self.res_combo.currentIndexChanged.connect(self.on_quality_change)
-        self.fps_combo.currentIndexChanged.connect(self.on_quality_change)
-        self.web_start_requested.connect(self.on_start)
-        self.web_stop_requested.connect(self.on_stop)
-        self.web_skip_requested.connect(self.on_skip)
-        self.web_apply_settings_requested.connect(self._apply_web_settings_from_web)
-
-        # restore persisted settings before wiring save handlers
-        self.on_quality_change()
-        self.load_settings()
-
-        self._update_auth_ui_state()
-
-        # persist as you tweak
-        self.remember_chk.toggled.connect(lambda _: self.save_settings())
-        self.overlay_chk.toggled.connect(lambda _: self.save_settings())
-        self.shuffle_chk.toggled.connect(lambda _: self.save_settings())
-        self.logfile_chk.toggled.connect(lambda _: self.save_settings())
-        if hasattr(self, "rtmp_live_chk"):
-            self.rtmp_live_chk.toggled.connect(lambda _: self.save_settings())
-        self.check_updates_startup_chk.toggled.connect(lambda _: self.save_settings())
-        self.res_combo.currentIndexChanged.connect(lambda _: self.save_settings())
-        self.fps_combo.currentIndexChanged.connect(lambda _: self.save_settings())
-        self.buffer_combo.currentIndexChanged.connect(lambda _: self.save_settings())
-        self.encoder_combo.currentIndexChanged.connect(lambda _: self.save_settings())
-        self.update_cap_combo.currentIndexChanged.connect(lambda _: self.save_settings())
-        self.bitrate_edit.textChanged.connect(lambda _: self.save_settings())
-        self.bufsize_edit.textChanged.connect(lambda _: self.save_settings())
-        self.rtmp_edit.textChanged.connect(lambda _: self.save_settings())
-        self.yt_auth_chk.toggled.connect(self._update_auth_ui_state)
-        self.yt_auth_chk.toggled.connect(lambda _: self.save_settings())
-        self.yt_browser_combo.currentIndexChanged.connect(lambda _: self.save_settings())
-        self.yt_profile_edit.textChanged.connect(lambda _: self.save_settings())
-        self.advanced_toggle.toggled.connect(self._set_advanced_visible)
-        self.advanced_toggle.toggled.connect(lambda _: self.save_settings())
-        self._init_web_dashboard_from_config()
-        
-        # Check for updates on startup if enabled
-        if self.check_updates_startup_chk.isChecked():
-            QtCore.QTimer.singleShot(2000, self.check_for_updates_silent)
-
-    def _update_auth_ui_state(self):
-        enabled = self.yt_auth_chk.isChecked()
-        self.yt_browser_combo.setEnabled(enabled)
-        self.yt_profile_edit.setEnabled(enabled)
-
-    def _set_advanced_visible(self, visible: bool):
-        self.advanced_section.setVisible(bool(visible))
-
-    def _web_state_snapshot(self) -> Dict[str, object]:
-        return self.runtime_state.snapshot()
-
-    def _web_get_settings(self) -> Dict[str, object]:
-        return {
-            "playlist_url": self.playlist_edit.text().strip(),
-            "rtmp_base": self.rtmp_edit.text().strip(),
-            "stream_key": self.key_edit.text().strip(),
-            "resolution": self.res_combo.currentText(),
-            "framerate": int(self.fps_combo.currentText()),
-            "video_bitrate": self.bitrate_edit.text().strip(),
-            "bufsize": self.bufsize_edit.text().strip(),
-            "buffer_mode": self.buffer_combo.currentText(),
-            "encoder_preference": str(self.encoder_combo.currentData() or "auto"),
-            "overlay_titles": self.overlay_chk.isChecked(),
-            "shuffle": self.shuffle_chk.isChecked(),
-            "log_to_file": self.logfile_chk.isChecked(),
-            "rtmp_live": (self.rtmp_live_chk.isChecked() if hasattr(self, "rtmp_live_chk") else False),
-            "remember": self.remember_chk.isChecked(),
-            "check_updates_startup": self.check_updates_startup_chk.isChecked(),
-            "yt_auth_enabled": self.yt_auth_chk.isChecked(),
-            "yt_auth_browser": str(self.yt_browser_combo.currentData() or "auto"),
-            "yt_auth_profile": self.yt_profile_edit.text().strip(),
-            "update_download_cap_mbps": int(self.update_cap_combo.currentData() or 10),
-        }
-
-    def _web_set_settings(self, payload: Dict[str, object]) -> Dict[str, object]:
-        current = load_config_json()
-        merged = apply_web_settings_payload(current, payload)
-        save_config_json(merged)
-        self.web_apply_settings_requested.emit(dict(merged))
-        return web_settings_payload_from_config(merged)
-
-    def _web_get_binaries(self) -> Dict[str, object]:
-        info = gather_binary_update_status()
-        return {
-            "running": False,
-            "last_result": info,
-            "last_error": "",
-            "started_at": 0.0,
-            "finished_at": time.time(),
-        }
-
-    def _web_trigger_binaries_update(self) -> Dict[str, object]:
-        # GUI runtime keeps native updater flow; web call triggers the same action.
-        try:
-            self.on_force_update_binaries()
-        except Exception:
-            pass
-        return self._web_get_binaries()
-
-    def _web_get_app_update(self) -> Dict[str, object]:
-        try:
-            info = fetch_latest_app_release_info()
-            return {
-                "running": False,
-                "last_result": info,
-                "last_error": "",
-                "started_at": 0.0,
-                "finished_at": time.time(),
-                "downloaded_path": "",
-            }
-        except Exception as e:
-            return {
-                "running": False,
-                "last_result": None,
-                "last_error": str(e),
-                "started_at": 0.0,
-                "finished_at": time.time(),
-                "downloaded_path": "",
-            }
-
-    def _web_trigger_app_update_download(self) -> Dict[str, object]:
-        # GUI runtime path: we only report latest release; manual desktop updater flow remains in GUI.
-        return self._web_get_app_update()
-
-    @QtCore.Slot(dict)
-    def _apply_web_settings_from_web(self, cfg: Dict[str, object]) -> None:
-        remember = _to_bool(cfg.get("remember", True), True)
-        self.remember_chk.setChecked(remember)
-        self.playlist_edit.setText(str(cfg.get("playlist_url", "")).strip())
-        self.rtmp_edit.setText(str(cfg.get("rtmp_base", "rtmp://a.rtmp.youtube.com/live2")).strip())
-        self.key_edit.setText(str(cfg.get("stream_key", "")).strip())
-
-        self.overlay_chk.setChecked(_to_bool(cfg.get("overlay_titles", True), True))
-        self.shuffle_chk.setChecked(_to_bool(cfg.get("shuffle", False), False))
-        self.logfile_chk.setChecked(_to_bool(cfg.get("log_to_file", False), False))
-        self.check_updates_startup_chk.setChecked(_to_bool(cfg.get("check_updates_startup", True), True))
-        self.yt_auth_chk.setChecked(_to_bool(cfg.get("yt_auth_enabled", False), False))
-        self.yt_profile_edit.setText(str(cfg.get("yt_auth_profile", "")).strip())
-        self._update_auth_ui_state()
-        if hasattr(self, "rtmp_live_chk"):
-            self.rtmp_live_chk.setChecked(_to_bool(cfg.get("rtmp_live", False), False))
-
-        res = str(cfg.get("resolution", "720p"))
-        idx = self.res_combo.findText(res)
-        if idx >= 0:
-            self.res_combo.setCurrentIndex(idx)
-        fps = str(cfg.get("framerate", 30))
-        idx = self.fps_combo.findText(fps)
-        if idx >= 0:
-            self.fps_combo.setCurrentIndex(idx)
-        buf_mode = str(cfg.get("buffer_mode", "Medium"))
-        idx = self.buffer_combo.findText(buf_mode)
-        if idx >= 0:
-            self.buffer_combo.setCurrentIndex(idx)
-        enc = str(cfg.get("encoder_preference", "auto")).strip().lower()
-        idx = self.encoder_combo.findData(enc)
-        if idx < 0:
-            idx = self.encoder_combo.findData("auto")
-        if idx >= 0:
-            self.encoder_combo.setCurrentIndex(idx)
-        br = str(cfg.get("yt_auth_browser", "auto")).strip().lower()
-        idx = self.yt_browser_combo.findData(br)
-        if idx < 0:
-            idx = self.yt_browser_combo.findData("auto")
-        if idx >= 0:
-            self.yt_browser_combo.setCurrentIndex(idx)
-        try:
-            cap = int(cfg.get("update_download_cap_mbps", 10))
-        except Exception:
-            cap = 10
-        cap = max(1, min(25, cap))
-        idx = self.update_cap_combo.findData(cap)
-        if idx >= 0:
-            self.update_cap_combo.setCurrentIndex(idx)
-        self.bitrate_edit.setText(str(cfg.get("video_bitrate", "")).strip())
-        self.bufsize_edit.setText(str(cfg.get("bufsize", "")).strip())
-
-    def _init_web_dashboard_from_config(self) -> None:
-        enabled, host, port, _autostart = read_web_server_settings()
-        if not enabled:
-            return
-        self.web_dashboard = LocalWebDashboard(
-            host=host,
-            port=port,
-            state_provider=self._web_state_snapshot,
-            settings_provider=self._web_get_settings,
-            settings_updater=self._web_set_settings,
-            binaries_status_provider=self._web_get_binaries,
-            binaries_update_trigger=self._web_trigger_binaries_update,
-            app_update_status_provider=self._web_get_app_update,
-            app_update_download_trigger=self._web_trigger_app_update_download,
-            start_cb=lambda: self.web_start_requested.emit(),
-            stop_cb=lambda: self.web_stop_requested.emit(),
-            skip_cb=lambda: self.web_skip_requested.emit(),
-            log_cb=self.append_log,
-        )
-        self.web_dashboard.start()
-
-    def _prepare_fixed_update_dialog(self, dialog: QtProgressDialogT, width: int = 760):
-        """Make updater dialogs wider and non-resizable."""
-        dialog.setWindowFlag(QtCore.Qt.WindowType.WindowContextHelpButtonHint, False)
-        dialog.setWindowFlag(QtCore.Qt.WindowType.MSWindowsFixedSizeDialogHint, True)
-        dialog.setSizeGripEnabled(False)
-        h = max(120, dialog.sizeHint().height())
-        dialog.setFixedSize(width, h)
-
-    # --- Force update binaries ---
-    def on_force_update_binaries(self):
-        if self.streaming:
-            QtWidgets.QMessageBox.information(self, APP_NAME, "Stop streaming before updating binaries.")
-            return
-        if self.binary_check_thread and self.binary_check_thread.isRunning():
-            return
-        if self.binary_update_thread and self.binary_update_thread.isRunning():
-            return
-
-        self.force_update_btn.setEnabled(False)
-        self.append_log("[INFO] Checking yt-dlp and FFmpeg versions...")
-
-        self.binary_check_dialog = QtWidgets.QProgressDialog("Checking current and latest binary versions...", "", 0, 0, self)
-        self.binary_check_dialog.setWindowTitle("Binary Updates")
-        self.binary_check_dialog.setCancelButton(None)
-        self.binary_check_dialog.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
-        self.binary_check_dialog.setMinimumDuration(0)
-        self._prepare_fixed_update_dialog(self.binary_check_dialog)
-        self.binary_check_dialog.show()
-
-        self.binary_check_thread = QtCore.QThread(self)
-        self.binary_checker = BinaryVersionChecker()
-        self.binary_checker.moveToThread(self.binary_check_thread)
-        self.binary_check_thread.started.connect(self.binary_checker.check)
-        self.binary_checker.checked.connect(self._on_binary_versions_checked)
-        self.binary_checker.error_occurred.connect(self._on_binary_versions_error)
-        self.binary_checker.checked.connect(self.binary_check_thread.quit)
-        self.binary_checker.error_occurred.connect(self.binary_check_thread.quit)
-        self.binary_check_thread.finished.connect(self._cleanup_binary_check_thread)
-        self.binary_check_thread.start()
-
-    def _cleanup_binary_check_thread(self):
-        if self.binary_checker:
-            self.binary_checker.deleteLater()
-            self.binary_checker = None
-        if self.binary_check_thread:
-            self.binary_check_thread.deleteLater()
-            self.binary_check_thread = None
-        if self.binary_check_dialog:
-            self.binary_check_dialog.close()
-            self.binary_check_dialog.deleteLater()
-            self.binary_check_dialog = None
-
-    def _format_binary_summary(self, info: dict) -> str:
-        def fmt(tool: str) -> str:
-            row = info.get(tool, {})
-            current = row.get("current_version") or "Unknown"
-            latest = row.get("latest_version") or "Unknown"
-            status = row.get("status") or "unknown"
-            label = {
-                "up_to_date": "Up to date",
-                "update_available": "Update available",
-                "unknown": "Could not verify",
-            }.get(status, "Unknown")
-            return f"{tool}: current {current} | latest {latest} | {label}"
-        return "\n".join([fmt("yt-dlp"), fmt("ffmpeg")])
-
-    def _on_binary_versions_checked(self, info: dict):
-        if self.binary_check_dialog:
-            self.binary_check_dialog.close()
-        summary = self._format_binary_summary(info)
-        self.append_log("[INFO] Binary version check complete.")
-        self.append_log(f"[INFO] {summary.replace(chr(10), ' || ')}")
-
-        if info.get("all_up_to_date"):
-            QtWidgets.QMessageBox.information(
-                self,
-                APP_NAME,
-                f"You're already on the latest versions.\n\n{summary}",
-            )
-            self.force_update_btn.setEnabled(True)
-            return
-
-        prompt = (
-            "Binary update status:\n\n"
-            f"{summary}\n\n"
-            "Do you want to update yt-dlp and FFmpeg now?"
-        )
-        reply = QtWidgets.QMessageBox.question(
-            self,
-            APP_NAME,
-            prompt,
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.Yes,
-        )
-        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
-            self.append_log("[INFO] Binary update canceled by user.")
-            self.force_update_btn.setEnabled(True)
-            return
-
-        self._start_binary_update(info)
-
-    def _on_binary_versions_error(self, message: str):
-        if self.binary_check_dialog:
-            self.binary_check_dialog.close()
-        self.append_log(f"[WARN] {message}")
-        reply = QtWidgets.QMessageBox.question(
-            self,
-            APP_NAME,
-            f"{message}\n\nDo you still want to force update binaries?",
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.Yes,
-        )
-        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
-            self._start_binary_update()
-        else:
-            self.force_update_btn.setEnabled(True)
-
-    def _start_binary_update(self, info: Optional[dict] = None):
-        self.append_log("[INFO] Starting binaries update (yt-dlp, FFmpeg)…")
-        update_ytdlp = True
-        update_ffmpeg = True
-        update_cap_mbps = int(self.update_cap_combo.currentData() or 10)
-        if info:
-            update_ytdlp = ((info.get("yt-dlp", {}) or {}).get("status") == "update_available")
-            update_ffmpeg = ((info.get("ffmpeg", {}) or {}).get("status") == "update_available")
-            if not update_ytdlp and not update_ffmpeg:
-                self.force_update_btn.setEnabled(True)
-                QtWidgets.QMessageBox.information(self, APP_NAME, "You're already on the latest versions.")
-                return
-
-        self.binary_update_dialog = QtWidgets.QProgressDialog("Preparing binary update...", "", 0, 100, self)
-        self.binary_update_dialog.setWindowTitle("Updating Binaries")
-        self.binary_update_dialog.setCancelButton(None)
-        self.binary_update_dialog.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
-        self.binary_update_dialog.setMinimumDuration(0)
-        self.binary_update_dialog.setValue(0)
-        self._prepare_fixed_update_dialog(self.binary_update_dialog)
-        self.binary_update_dialog.show()
-
-        class _BinaryUpdater(QtCore.QObject):
-            done = QtCore.Signal(bool, object)
-            log = QtCore.Signal(str)
-            progress = QtCore.Signal(str, int)
-
-            def __init__(self, do_ytdlp: bool, do_ffmpeg: bool, cap_mbps: int):
-                super().__init__()
-                self.do_ytdlp = do_ytdlp
-                self.do_ffmpeg = do_ffmpeg
-                self.cap_mbps = max(1, min(25, int(cap_mbps)))
-
-            @QtCore.Slot()
-            def run(self):
-                try:
-                    cfg = StreamConfig(playlist_url="", stream_key="", update_download_cap_mbps=self.cap_mbps)
-                    worker = StreamWorker(cfg)
-                    worker.log.connect(self.log)
-                    self.progress.emit("Preparing update...", 2)
-                    worker.ensure_binaries(
-                        force=False,
-                        progress_cb=lambda msg, pct: self.progress.emit(msg, pct),
-                        force_ytdlp=self.do_ytdlp,
-                        force_ffmpeg=self.do_ffmpeg,
-                    )
-                    self.progress.emit("Verifying installed versions...", 98)
-                    status = gather_binary_update_status()
-                    self.done.emit(True, status)
-                except Exception as e:
-                    self.done.emit(False, str(e))
-
-        self.binary_update_thread = QtCore.QThread(self)
-        self.binary_update_worker = _BinaryUpdater(update_ytdlp, update_ffmpeg, update_cap_mbps)
-        self.binary_update_worker.moveToThread(self.binary_update_thread)
-        self.binary_update_thread.started.connect(self.binary_update_worker.run)
-        self.binary_update_worker.log.connect(self._on_binary_update_log)
-        self.binary_update_worker.progress.connect(self._on_binary_update_progress)
-        self.binary_update_worker.done.connect(self._on_binary_update_done)
-        self.binary_update_worker.done.connect(self.binary_update_thread.quit)
-        self.binary_update_thread.finished.connect(self._cleanup_binary_update_thread)
-        self.binary_update_thread.start()
-
-    def _cleanup_binary_update_thread(self):
-        if self.binary_update_worker:
-            self.binary_update_worker.deleteLater()
-            self.binary_update_worker = None
-        if self.binary_update_thread:
-            self.binary_update_thread.deleteLater()
-            self.binary_update_thread = None
-
-    def _on_binary_update_log(self, text: str):
-        self.append_log(text)
-
-    def _on_binary_update_progress(self, message: str, percent: int):
-        if not self.binary_update_dialog:
-            return
-        self.binary_update_dialog.setLabelText(message)
-        self.binary_update_dialog.setValue(max(0, min(100, int(percent))))
-
-    def _on_binary_update_done(self, ok: bool, payload: object):
-        if self.binary_update_dialog:
-            if ok:
-                self.binary_update_dialog.setValue(100)
-            self.binary_update_dialog.close()
-            self.binary_update_dialog.deleteLater()
-            self.binary_update_dialog = None
-
-        self.force_update_btn.setEnabled(True)
-
-        if not ok:
-            self.append_log(f"[ERROR] Force update failed: {payload}")
-            QtWidgets.QMessageBox.warning(self, APP_NAME, f"Binary update failed:\n{payload}")
-            return
-
-        info = payload if isinstance(payload, dict) else {}
-        summary = self._format_binary_summary(info) if info else "Binary update finished."
-        self.append_log("[INFO] Binaries update finished.")
-        if info.get("all_up_to_date"):
-            QtWidgets.QMessageBox.information(self, APP_NAME, f"Update complete.\n\n{summary}")
-        else:
-            QtWidgets.QMessageBox.warning(
-                self,
-                APP_NAME,
-                f"Update completed, but version status is not fully up to date.\n\n{summary}",
-            )
-
-    # --- settings (config.json) ---
-    def load_settings(self):
-        """Restore persisted settings from ``config.json``."""
-        cfg = load_config_json()
-        remember = str(cfg.get("remember", True)).lower() in ("1", "true", "yes", "on")
-        self.remember_chk.setChecked(remember)
-
-        if remember:
-            self.playlist_edit.setText(cfg.get("playlist_url", ""))
-            self.rtmp_edit.setText(cfg.get("rtmp_base", "rtmp://a.rtmp.youtube.com/live2"))
-            self.key_edit.setText(cfg.get("stream_key", ""))
-
-        self.overlay_chk.setChecked(bool(cfg.get("overlay_titles", True)))
-        self.shuffle_chk.setChecked(bool(cfg.get("shuffle", False)))
-        self.logfile_chk.setChecked(bool(cfg.get("log_to_file", False)))
-        self.check_updates_startup_chk.setChecked(bool(cfg.get("check_updates_startup", True)))
-        self.yt_auth_chk.setChecked(bool(cfg.get("yt_auth_enabled", False)))
-        saved_browser = str(cfg.get("yt_auth_browser", "auto")).strip().lower()
-        idx = self.yt_browser_combo.findData(saved_browser)
-        if idx < 0:
-            idx = self.yt_browser_combo.findData("auto")
-        if idx >= 0:
-            self.yt_browser_combo.setCurrentIndex(idx)
-        self.yt_profile_edit.setText(str(cfg.get("yt_auth_profile", "")))
-        self._update_auth_ui_state()
-        self.advanced_toggle.setChecked(bool(cfg.get("show_advanced_settings", False)))
-        self._set_advanced_visible(self.advanced_toggle.isChecked())
-        # RTMP live mode compatibility toggle
-        try:
-            self.rtmp_live_chk.setChecked(bool(cfg.get("rtmp_live", False)))
-        except Exception:
-            pass
-
-        if "resolution" in cfg:
-            idx = self.res_combo.findText(cfg["resolution"])
-            if idx >= 0:
-                self.res_combo.setCurrentIndex(idx)
-        
-        if "framerate" in cfg:
-            idx = self.fps_combo.findText(str(cfg["framerate"]))
-            if idx >= 0:
-                self.fps_combo.setCurrentIndex(idx)
-        
-        if "buffer_mode" in cfg:
-            idx = self.buffer_combo.findText(cfg["buffer_mode"])
-            if idx >= 0:
-                self.buffer_combo.setCurrentIndex(idx)
-        saved_encoder = str(cfg.get("encoder_preference", "auto")).strip().lower()
-        idx = self.encoder_combo.findData(saved_encoder)
-        if idx < 0:
-            idx = self.encoder_combo.findData("auto")
-        if idx >= 0:
-            self.encoder_combo.setCurrentIndex(idx)
-        try:
-            cap = int(cfg.get("update_download_cap_mbps", 10))
-        except Exception:
-            cap = 10
-        cap = max(1, min(25, cap))
-        idx = self.update_cap_combo.findData(cap)
-        if idx >= 0:
-            self.update_cap_combo.setCurrentIndex(idx)
-                
-        if "video_bitrate" in cfg:
-            self.bitrate_edit.setText(cfg["video_bitrate"])
-        if "bufsize" in cfg:
-            self.bufsize_edit.setText(cfg["bufsize"])
-        self.runtime_state.set_meta(
-            source=self.playlist_edit.text().strip(),
-            resolution=self.res_combo.currentText(),
-            fps=self.fps_combo.currentText(),
-        )
-
-    def save_settings(self):
-        """Persist user settings to ``config.json``."""
-        data = load_config_json()
-        data.update({
-            "remember": self.remember_chk.isChecked(),
-            "overlay_titles": self.overlay_chk.isChecked(),
-            "shuffle": self.shuffle_chk.isChecked(),
-            "log_to_file": self.logfile_chk.isChecked(),
-            "rtmp_live": (self.rtmp_live_chk.isChecked() if hasattr(self, "rtmp_live_chk") and self.rtmp_live_chk is not None else False),
-            "check_updates_startup": self.check_updates_startup_chk.isChecked(),
-            "resolution": self.res_combo.currentText(),
-            "framerate": int(self.fps_combo.currentText()),
-            "buffer_mode": self.buffer_combo.currentText(),
-            "encoder_preference": (self.encoder_combo.currentData() or "auto"),
-            "video_bitrate": self.bitrate_edit.text().strip(),
-            "bufsize": self.bufsize_edit.text().strip(),
-            "update_download_cap_mbps": int(self.update_cap_combo.currentData() or 10),
-            "yt_auth_enabled": self.yt_auth_chk.isChecked(),
-            "yt_auth_browser": (self.yt_browser_combo.currentData() or "auto"),
-            "yt_auth_profile": self.yt_profile_edit.text().strip(),
-            "show_advanced_settings": self.advanced_toggle.isChecked(),
-        })
-        if self.remember_chk.isChecked():
-            data["playlist_url"] = self.playlist_edit.text().strip()
-            data["rtmp_base"] = self.rtmp_edit.text().strip()
-            data["stream_key"] = self.key_edit.text().strip()
-        else:
-            data.pop("playlist_url", None)
-            data.pop("rtmp_base", None)
-            data.pop("stream_key", None)
-        save_config_json(data)
-        self.runtime_state.set_meta(
-            source=self.playlist_edit.text().strip(),
-            resolution=self.res_combo.currentText(),
-            fps=self.fps_combo.currentText(),
-        )
-
-    def closeEvent(self, event: QtCloseEventT) -> None:
-        """Persist settings when the window is closed."""
-        self._flush_log_buffer()
-        self.save_settings()
-        if self.web_dashboard:
-            self.web_dashboard.stop()
-        return super().closeEvent(event)
-
-    # --- UI helpers ---
-    def _is_ffmpeg_log(self, text: str) -> bool:
-        """Route untagged process output to FFmpeg tab while keeping app logs separate."""
-        s = (text or "").strip()
-        if not s:
-            return False
-        lower = s.lower()
-        if "[cmd] ffmpeg" in lower or "ffmpeg exited with code" in lower:
-            return True
-        if s.startswith("frame=") or s.startswith("size="):
-            return True
-        if any(s.startswith(prefix) for prefix in self.APP_LOG_PREFIXES):
-            return False
-        return True
-
-    def append_log(self, text: str):
-        """Queue a log line for batched console and file writes."""
-        self.runtime_state.append_log(text)
-        self._pending_logs.append((self._is_ffmpeg_log(text), text))
-        if not self._log_flush_timer.isActive():
-            self._log_flush_timer.start()
-
-    @QtCore.Slot(str)
-    def _on_worker_status(self, status: str) -> None:
-        self.runtime_state.set_status(status)
-        self.append_log(f"[STATUS] {status}")
-
-    def _flush_log_buffer(self):
-        """Flush queued log lines in batches to reduce UI churn."""
-        if not self._pending_logs:
-            self._log_flush_timer.stop()
-            return
-        batch = list(self._pending_logs)
-        self._pending_logs.clear()
-        ffmpeg_lines = [line for is_ffmpeg, line in batch if is_ffmpeg]
-        other_lines = [line for is_ffmpeg, line in batch if not is_ffmpeg]
-
-        if other_lines:
-            joined_other = "\n".join(other_lines)
-            self.console_other.appendPlainText(joined_other)
-            self.console_other.moveCursor(QtGui.QTextCursor.MoveOperation.End)
-        if ffmpeg_lines:
-            joined_ffmpeg = "\n".join(ffmpeg_lines)
-            self.console_ffmpeg.appendPlainText(joined_ffmpeg)
-            self.console_ffmpeg.moveCursor(QtGui.QTextCursor.MoveOperation.End)
-
-        joined = "\n".join(line for _is_ffmpeg, line in batch)
-        if self.log_fh:
-            try:
-                self.log_fh.write(joined + "\n")
-                self.log_fh.flush()
-            except Exception:
-                pass
-        if not self._pending_logs:
-            self._log_flush_timer.stop()
-
-    def on_quality_change(self):
-        """Update internal FPS/height presets when the quality dropdown changes."""
-        resolution = self.res_combo.currentText()
-        framerate = int(self.fps_combo.currentText())
-        
-        height, suggested_bitrate, suggested_bufsize = self.RESOLUTION_PRESETS.get(
-            resolution, self.RESOLUTION_PRESETS["720p"]
-        )
-        
-        self._fps = framerate
-        self._height = height
-        
-        # Only update bitrate/bufsize if not currently streaming
-        if not self.streaming:
-            self.bitrate_edit.setText(suggested_bitrate)
-            self.bufsize_edit.setText(suggested_bufsize)
-
-    def make_config(self) -> StreamConfig:
-        """Create a StreamConfig from the current UI state."""
-        return StreamConfig(
-            playlist_url=self.playlist_edit.text().strip(),
-            stream_key=self.key_edit.text().strip(),
-            rtmp_base=self.rtmp_edit.text().strip(),
-            fps=self._fps,
-            height=self._height,
-            video_bitrate=self.bitrate_edit.text().strip(),
-            bufsize=self.bufsize_edit.text().strip(),
-            audio_bitrate="128k",
-            overlay_titles=self.overlay_chk.isChecked(),
-            shuffle=self.shuffle_chk.isChecked(),
-            title_file="current_title.txt",
-            rtmp_live=(self.rtmp_live_chk.isChecked() if hasattr(self, "rtmp_live_chk") and self.rtmp_live_chk is not None else False),
-            buffer_mode=self.buffer_combo.currentText(),
-            encoder_preference=str(self.encoder_combo.currentData() or "auto"),
-            update_download_cap_mbps=int(self.update_cap_combo.currentData() or 10),
-            yt_auth_enabled=self.yt_auth_chk.isChecked(),
-            yt_auth_browser=str(self.yt_browser_combo.currentData() or "auto"),
-            yt_auth_profile=self.yt_profile_edit.text().strip(),
-        )
-
-    # --- update checker ---
-    def check_for_updates(self):
-        """Manually check for updates (triggered by button click)."""
-        if self.update_thread and self.update_thread.isRunning():
-            return  # Already checking
-            
-        self.check_update_btn.setEnabled(False)
-        self.check_update_btn.setText("Checking...")
-        self.update_status_label.setText("Checking for updates...")
-        self.update_status_label.setStyleSheet("color: #888; font-style: italic;")
-        
-        self._start_update_check()
-    
-    def check_for_updates_silent(self):
-        """Silently check for updates on startup."""
-        if self.update_thread and self.update_thread.isRunning():
-            return  # Already checking
-            
-        self._start_update_check()
-    
-    def _start_update_check(self):
-        """Start the update checking process in a background thread."""
-        self.update_thread = QtCore.QThread(self)
-        self.update_checker = UpdateChecker()
-        self.update_checker.moveToThread(self.update_thread)
-        
-        self.update_thread.started.connect(self.update_checker.check_for_updates)
-        self.update_checker.update_checked.connect(self._on_update_checked)
-        self.update_checker.error_occurred.connect(self._on_update_error)
-        self.update_checker.update_checked.connect(self.update_thread.quit)
-        self.update_checker.error_occurred.connect(self.update_thread.quit)
-        self.update_thread.finished.connect(self._on_update_check_finished)
-        
-        self.update_thread.start()
-    
-    def _on_update_checked(self, update_info: dict):
-        """Handle successful update check."""
-        current_version = update_info.get('current_version', APP_VERSION)
-        latest_version = update_info.get('latest_version', 'Unknown')
-        is_newer = update_info.get('is_newer', False)
-        release_url = update_info.get('release_url', '')
-        download_url = update_info.get('download_url', '')
-        published_date = update_info.get('published_date', '')
-        
-        if is_newer:
-            # Update available
-            self.update_status_label.setText(
-                f"<b>Update available!</b> v{latest_version} "
-                f"(Current: v{current_version})"
-            )
-            self.update_status_label.setStyleSheet("color: #5DADE2; font-weight: bold;")
-            
-            # Show update dialog
-            self._show_update_dialog(update_info)
-        else:
-            # Up to date
-            self.update_status_label.setText(f"You're up to date! (v{current_version})")
-            self.update_status_label.setStyleSheet("color: #58D68D; font-weight: bold;")
-    
-    def _on_update_error(self, error_message: str):
-        """Handle update check error."""
-        self.update_status_label.setText(f"Update check failed: {error_message}")
-        self.update_status_label.setStyleSheet("color: #E74C3C; font-style: italic;")
-    
-    def _on_update_check_finished(self):
-        """Re-enable the check button after update check completes."""
-        self.check_update_btn.setEnabled(True)
-        self.check_update_btn.setText("Check for Updates")
-        
-        # Clean up
-        if self.update_thread:
-            self.update_thread.deleteLater()
-            self.update_thread = None
-        if self.update_checker:
-            self.update_checker.deleteLater()
-            self.update_checker = None
-    
-    def _show_update_dialog(self, update_info: dict):
-        """Show a dialog with update information."""
-        latest_version = update_info.get('latest_version', 'Unknown')
-        release_name = update_info.get('release_name', '')
-        release_notes = update_info.get('release_notes', '')
-        release_url = update_info.get('release_url', '')
-        download_url = update_info.get('download_url', '')
-        published_date = update_info.get('published_date', '')
-        
-        dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle(f"Update Available - {APP_NAME}")
-        dialog.setMinimumWidth(500)
-        dialog.setMinimumHeight(400)
-        
-        layout = QtWidgets.QVBoxLayout(dialog)
-        
-        # Header
-        header = QtWidgets.QLabel(f"<h2>Update Available!</h2>")
-        layout.addWidget(header)
-        
-        # Version info
-        version_text = f"<b>Current Version:</b> {APP_VERSION}<br>"
-        version_text += f"<b>Latest Version:</b> {latest_version}"
-        if published_date:
-            version_text += f"<br><b>Released:</b> {published_date}"
-        
-        version_label = QtWidgets.QLabel(version_text)
-        layout.addWidget(version_label)
-        
-        # Release notes
-        if release_notes:
-            notes_label = QtWidgets.QLabel("<b>Release Notes:</b>")
-            layout.addWidget(notes_label)
-            
-            notes_text = QtWidgets.QTextEdit()
-            notes_text.setPlainText(release_notes)
-            notes_text.setMaximumHeight(200)
-            notes_text.setReadOnly(True)
-            layout.addWidget(notes_text)
-        
-        # Buttons
-        button_layout = QtWidgets.QHBoxLayout()
-        
-        if download_url:
-            download_btn = QtWidgets.QPushButton("Download Update")
-            download_btn.clicked.connect(lambda: self._open_url(download_url))
-            button_layout.addWidget(download_btn)
-        
-        if release_url:
-            view_btn = QtWidgets.QPushButton("View on GitHub")
-            view_btn.clicked.connect(lambda: self._open_url(release_url))
-            button_layout.addWidget(view_btn)
-        
-        button_layout.addStretch()
-        
-        close_btn = QtWidgets.QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        button_layout.addWidget(close_btn)
-        
-        layout.addLayout(button_layout)
-        
-        dialog.exec()
-    
-    def _open_url(self, url: str):
-        """Open URL in default browser."""
-        QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
-
-    # --- start/stop wiring ---
-    def on_start(self):
-        """Validate input and start the background streaming worker."""
-        if self.streaming:
-            return
-        cfg = self.make_config()
-        if not cfg.playlist_url or not cfg.rtmp_base or not cfg.stream_key:
-            QtWidgets.QMessageBox.warning(self, APP_NAME, "Please enter Source URL, Stream URL, and Stream Key.")
-            return
-
-        # save settings right when starting (if 'remember' is checked)
-        self.save_settings()
-
-        if self.log_fh:
-            try:
-                self.log_fh.close()
-            except Exception:
-                pass
-            self.log_fh = None
-        if self.logfile_chk.isChecked():
-            self.log_fh, _ = open_rotating_latest_log()
-
-        self.streaming = True
-        self.runtime_state.set_streaming(True)
-        self.runtime_state.set_status("Starting")
-        self.runtime_state.set_meta(
-            source=cfg.playlist_url,
-            resolution=f"{cfg.height}p",
-            fps=str(cfg.fps),
-        )
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.skip_btn.setEnabled(True)
-        self.append_log("[INFO] Starting stream…")
-
-        self.worker_thread = QtCore.QThread(self)
-        self.worker = StreamWorker(cfg)
-        self.worker.moveToThread(self.worker_thread)
-
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.log.connect(self.append_log)
-        self.worker.status.connect(self._on_worker_status)
-        self.worker.finished.connect(self.on_finished)
-
-        self.worker_thread.start()
-
-    def on_stop(self):
-        """Stop the streaming worker gracefully."""
-        if not self.streaming:
-            return
-        self.runtime_state.set_status("Stopping")
-        self.append_log("[INFO] Stopping…")
-
-        # Call directly so stop is immediate even while worker loop is busy.
-        try:
-            if self.worker:
-                self.worker.stop()
-        except Exception:
-            pass
-
-        # Do not quit the thread here; let on_finished() handle cleanup
-        self.stop_btn.setEnabled(False)
-        self.skip_btn.setEnabled(False)
-
-    def on_skip(self):
-        """Skip the current video."""
-        if not self.streaming or not self.worker:
-            return
-        self.append_log("[INFO] Skipping…")
-        try:
-            self.worker.skip()
-        except Exception:
-            pass
-
-    def on_test_rtmp(self):
-        """Run a 1-second RTMP preflight without starting the full stream."""
-        if self.streaming:
-            QtWidgets.QMessageBox.information(self, APP_NAME, "Stop streaming to test RTMP.")
-            return
-        cfg = self.make_config()
-        if not cfg.rtmp_base or not cfg.stream_key:
-            QtWidgets.QMessageBox.warning(self, APP_NAME, "Please enter Stream URL and Stream Key to test RTMP.")
-            return
-        self.append_log("[INFO] Testing RTMP connectivity…")
-
-        class _RTMPTester(QtCore.QObject):
-            done = QtCore.Signal(bool)
-            log = QtCore.Signal(str)
-            def __init__(self, cfg: StreamConfig):
-                super().__init__()
-                self.cfg = cfg
-            def run(self):
-                ok = False
-                try:
-                    worker = StreamWorker(self.cfg)
-                    worker.log.connect(self.log)
-                    worker.ensure_binaries()
-                    worker.select_encoder()
-                    ok = worker.preflight_rtmp()
-                except Exception as e:
-                    self.log.emit(f"[ERROR] RTMP test failed: {e}")
-                finally:
-                    self.done.emit(ok)
-
-        self._rtmp_thread = QtCore.QThread(self)
-        self._rtmp_worker = _RTMPTester(cfg)
-        self._rtmp_worker.moveToThread(self._rtmp_thread)
-        self._rtmp_thread.started.connect(self._rtmp_worker.run)
-        self._rtmp_worker.log.connect(self.append_log)
-        def _finish(ok: bool):
-            if ok:
-                self.append_log("[INFO] RTMP test succeeded.")
-            else:
-                self.append_log("[WARN] RTMP test failed. Check URL/port/app/key and TLS (rtmp vs rtmps).")
-            self._rtmp_worker.deleteLater()
-            self._rtmp_thread.deleteLater()
-        self._rtmp_worker.done.connect(_finish)
-        self._rtmp_thread.start()
-
-    def on_finished(self):
-        """Cleanup once the worker thread stops."""
-        self.append_log("[INFO] Worker finished.")
-        self._flush_log_buffer()
-        if self.log_fh:
-            try:
-                self.log_fh.close()
-            except Exception:
-                pass
-            self.log_fh = None
-        try:
-            if self.worker_thread:
-                self.worker_thread.quit()
-                self.worker_thread.wait(5000)
-        except Exception:
-            pass
-        self.worker = None
-        self.worker_thread = None
-        self.streaming = False
-        self.runtime_state.set_streaming(False)
-        self.runtime_state.set_status("Stopped")
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.skip_btn.setEnabled(False)
-
 class HeadlessRuntime:
-    """Run stream worker and optional web dashboard without a GUI window."""
+    """Run stream worker and web dashboard."""
 
     def __init__(self, host: str, port: int):
         self.host = host
@@ -4652,6 +3461,8 @@ class HeadlessRuntime:
             "last_error": "",
             "started_at": 0.0,
             "finished_at": 0.0,
+            "progress_percent": 0,
+            "progress_message": "",
         }
         self._app_update_lock = threading.Lock()
         self._app_update_state: Dict[str, object] = {
@@ -4661,6 +3472,8 @@ class HeadlessRuntime:
             "started_at": 0.0,
             "finished_at": 0.0,
             "downloaded_path": "",
+            "progress_message": "",
+            "mode": "manual",
         }
         self.web_dashboard = LocalWebDashboard(
             host=self.host,
@@ -4671,6 +3484,7 @@ class HeadlessRuntime:
             binaries_status_provider=self.get_binaries_status,
             binaries_update_trigger=self.trigger_binaries_update,
             app_update_status_provider=self.get_app_update_status,
+            app_update_check_trigger=self.trigger_app_update_check,
             app_update_download_trigger=self.trigger_app_update_download,
             start_cb=self.start_stream,
             stop_cb=self.stop_stream,
@@ -4697,8 +3511,7 @@ class HeadlessRuntime:
             return
 
     def _sync_file_logging(self, rotate: bool = False) -> None:
-        # In headless mode, always persist logs so latest.log mirrors dashboard console output.
-        enabled = True
+        enabled = _to_bool(load_config_json().get("log_to_file", False), False)
         with self._log_fh_lock:
             if not enabled:
                 if self.log_fh:
@@ -4725,6 +3538,10 @@ class HeadlessRuntime:
         current = load_config_json()
         merged = apply_web_settings_payload(current, payload)
         save_config_json(merged)
+        with self._app_update_lock:
+            self._app_update_state["last_result"] = None
+            self._app_update_state["last_error"] = ""
+            self._app_update_state["finished_at"] = 0.0
         self._sync_file_logging(rotate=False)
         snapshot = web_settings_payload_from_config(merged)
         self.runtime_state.set_meta(
@@ -4752,24 +3569,33 @@ class HeadlessRuntime:
     def _run_binaries_update(self) -> None:
         try:
             settings = web_settings_payload_from_config(load_config_json())
-            cap = int(settings.get("update_download_cap_mbps", 10) or 10)
+            cap = int(settings.get("update_download_cap_mbps", 25) or 25)
             cap = max(1, min(25, cap))
             worker = StreamWorker(StreamConfig(playlist_url="", stream_key="", update_download_cap_mbps=cap))
             worker.log.connect(self.log, QtCore.Qt.ConnectionType.DirectConnection)
             self.log("[INFO] Starting binaries update (yt-dlp, FFmpeg)...")
-            worker.ensure_binaries(force=True)
+            def _progress_cb(message: str, percent: int) -> None:
+                with self._binary_lock:
+                    self._binary_state["progress_message"] = str(message)
+                    self._binary_state["progress_percent"] = max(0, min(100, int(percent)))
+
+            _progress_cb("Preparing binary update...", 2)
+            worker.ensure_binaries(force=True, progress_cb=_progress_cb)
             result = gather_binary_update_status()
             with self._binary_lock:
                 self._binary_state["last_result"] = result
                 self._binary_state["last_error"] = ""
                 self._binary_state["running"] = False
                 self._binary_state["finished_at"] = time.time()
+                self._binary_state["progress_percent"] = 100
+                self._binary_state["progress_message"] = "Binary update complete."
             self.log("[INFO] Binaries update finished.")
         except Exception as e:
             with self._binary_lock:
                 self._binary_state["last_error"] = str(e)
                 self._binary_state["running"] = False
                 self._binary_state["finished_at"] = time.time()
+                self._binary_state["progress_message"] = "Binary update failed."
             self.log(f"[ERROR] Binaries update failed: {e}")
 
     def trigger_binaries_update(self) -> Dict[str, object]:
@@ -4779,6 +3605,9 @@ class HeadlessRuntime:
             self._binary_state["running"] = True
             self._binary_state["started_at"] = time.time()
             self._binary_state["last_error"] = ""
+            self._binary_state["last_result"] = None
+            self._binary_state["progress_percent"] = 0
+            self._binary_state["progress_message"] = "Queued binary update..."
         t = threading.Thread(target=self._run_binaries_update, daemon=True)
         t.start()
         return self.get_binaries_status()
@@ -4788,28 +3617,146 @@ class HeadlessRuntime:
             running = bool(self._app_update_state.get("running", False))
             if (not running) and self._app_update_state.get("last_result") is None and not self._app_update_state.get("last_error"):
                 try:
-                    self._app_update_state["last_result"] = fetch_latest_app_release_info()
+                    settings = web_settings_payload_from_config(load_config_json())
+                    channel = str(settings.get("app_update_channel", "release"))
+                    self._app_update_state["last_result"] = fetch_latest_app_release_info(channel)
                     self._app_update_state["finished_at"] = time.time()
                 except Exception as e:
                     self._app_update_state["last_error"] = str(e)
                     self._app_update_state["finished_at"] = time.time()
             return dict(self._app_update_state)
 
-    def _run_app_update_download(self) -> None:
+    def trigger_app_update_check(self) -> Dict[str, object]:
+        with self._app_update_lock:
+            if self._app_update_state.get("running", False):
+                return dict(self._app_update_state)
+            self._app_update_state["last_result"] = None
+            self._app_update_state["last_error"] = ""
+            self._app_update_state["progress_message"] = "Checking latest app release..."
+        status = self.get_app_update_status()
+        with self._app_update_lock:
+            if not self._app_update_state.get("running", False):
+                self._app_update_state["progress_message"] = ""
+            status = dict(self._app_update_state)
+        return status
+
+    def _set_app_update_progress(self, message: str) -> None:
+        with self._app_update_lock:
+            self._app_update_state["progress_message"] = str(message or "")
+
+    def _is_supported_update_asset(self, asset_path: Path) -> bool:
+        return _is_release_asset_self_installable(asset_path.name)
+
+    def _spawn_update_helper_and_exit(self, staged_path: Path) -> None:
+        if not getattr(sys, "frozen", False):
+            raise RuntimeError("Self-install requires packaged binary mode.")
+        current_exe = Path(sys.executable).resolve()
+        staged_abs = staged_path.resolve()
+        updates_dir = staged_abs.parent
+        if not staged_abs.exists():
+            raise RuntimeError("Downloaded update file is missing.")
+        if not self._is_supported_update_asset(staged_abs):
+            raise RuntimeError(f"Unsupported update asset for self-install: {staged_abs.name}")
+        if IS_WIN:
+            helper_path = updates_dir / f"apply-update-{int(time.time())}.cmd"
+            helper = (
+                "@echo off\r\n"
+                "setlocal\r\n"
+                f"set \"PID={os.getpid()}\"\r\n"
+                ":waitloop\r\n"
+                "tasklist /FI \"PID eq %PID%\" 2>NUL | find /I \"%PID%\" >NUL\r\n"
+                "if %ERRORLEVEL%==0 (\r\n"
+                "  timeout /t 1 /nobreak >NUL\r\n"
+                "  goto waitloop\r\n"
+                ")\r\n"
+                f"move /Y \"{str(staged_abs)}\" \"{str(current_exe)}\" >NUL\r\n"
+                f"start \"\" \"{str(current_exe)}\"\r\n"
+                "del \"%~f0\" >NUL 2>&1\r\n"
+            )
+            helper_path.write_text(helper, encoding="utf-8")
+            subprocess.Popen(
+                ["cmd", "/c", str(helper_path)],
+                cwd=str(current_exe.parent),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                startupinfo=STARTUPINFO,
+                creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
+                close_fds=True,
+            )
+        else:
+            helper_path = updates_dir / f"apply-update-{int(time.time())}.sh"
+            helper = (
+                "#!/usr/bin/env sh\n"
+                "set -eu\n"
+                f"PID='{os.getpid()}'\n"
+                f"SRC={shlex.quote(str(staged_abs))}\n"
+                f"DST={shlex.quote(str(current_exe))}\n"
+                "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.25; done\n"
+                "mv -f \"$SRC\" \"$DST\"\n"
+                "chmod +x \"$DST\" || true\n"
+                "\"$DST\" >/dev/null 2>&1 &\n"
+                "rm -f \"$0\"\n"
+            )
+            helper_path.write_text(helper, encoding="utf-8")
+            os.chmod(helper_path, 0o755)
+            subprocess.Popen(
+                [str(helper_path)],
+                cwd=str(current_exe.parent),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
         try:
-            info = fetch_latest_app_release_info()
+            self.stop_stream()
+        except Exception:
+            pass
+        try:
+            self.web_dashboard.stop()
+        except Exception:
+            pass
+        with self._log_fh_lock:
+            if self.log_fh:
+                try:
+                    self.log_fh.flush()
+                    self.log_fh.close()
+                except Exception:
+                    pass
+                self.log_fh = None
+        os._exit(0)
+
+    def _run_app_update_download(self, auto_mode: bool = False) -> None:
+        try:
+            settings = web_settings_payload_from_config(load_config_json())
+            cap = int(settings.get("update_download_cap_mbps", 25) or 25)
+            cap = max(1, min(25, cap))
+            channel = str(settings.get("app_update_channel", "release"))
+            mode_label = "automatic" if auto_mode else "manual"
+            self._set_app_update_progress("Checking latest app release...")
+            info = fetch_latest_app_release_info(channel)
+            if not bool(info.get("is_newer", False)):
+                with self._app_update_lock:
+                    self._app_update_state["last_result"] = info
+                    self._app_update_state["last_error"] = ""
+                    self._app_update_state["running"] = False
+                    self._app_update_state["finished_at"] = time.time()
+                    self._app_update_state["progress_message"] = "Already up to date."
+                self.log("[INFO] App is already up to date.")
+                return
             dl_url = str(info.get("download_url", "")).strip()
             asset_name = str(info.get("asset_name", "")).strip()
             if not dl_url:
                 raise RuntimeError("No downloadable release asset found for this platform.")
             if not asset_name:
-                asset_name = Path(urlsplit(dl_url).path).name or "app-update-script"
+                asset_name = Path(urlsplit(dl_url).path).name or "app-update"
             base_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else _app_dir()
             updates_dir = base_dir / "updates"
             updates_dir.mkdir(parents=True, exist_ok=True)
             dest = updates_dir / asset_name
+            self.log(f"[INFO] Starting {mode_label} app update install.")
             self.log(f"[INFO] Downloading app update to {dest} ...")
-            _download_url(dl_url, dest, user_agent=f"{APP_NAME}/{APP_VERSION}")
+            self._set_app_update_progress("Downloading app update...")
+            _download_url(dl_url, dest, user_agent=f"{APP_NAME}/{APP_VERSION}", max_mbps=cap)
             if (not IS_WIN) and dest.exists():
                 try:
                     os.chmod(dest, 0o755)
@@ -4821,28 +3768,64 @@ class HeadlessRuntime:
                 self._app_update_state["running"] = False
                 self._app_update_state["finished_at"] = time.time()
                 self._app_update_state["downloaded_path"] = dest.as_posix()
+                self._app_update_state["progress_message"] = "Installing update and restarting..."
             self.log(f"[INFO] App update downloaded: {dest}")
-            if dest.suffix.lower() in (".ps1", ".sh"):
-                self.log("[INFO] Manual install: run the downloaded update script for your OS.")
-            else:
-                self.log("[INFO] Manual install: stop service and replace current binary with the downloaded file.")
+            if not getattr(sys, "frozen", False):
+                with self._app_update_lock:
+                    self._app_update_state["progress_message"] = "Downloaded update (source mode: install manually)."
+                self.log("[INFO] Source mode detected. Automatic install/restart is only available in packaged builds.")
+                return
+            self.log("[INFO] Installing app update and restarting...")
+            self._spawn_update_helper_and_exit(dest)
         except Exception as e:
             with self._app_update_lock:
                 self._app_update_state["last_error"] = str(e)
                 self._app_update_state["running"] = False
                 self._app_update_state["finished_at"] = time.time()
-            self.log(f"[ERROR] App update download failed: {e}")
+                self._app_update_state["progress_message"] = "App update failed."
+            self.log(f"[ERROR] App update install failed: {e}")
 
-    def trigger_app_update_download(self) -> Dict[str, object]:
+    def trigger_app_update_download(self, auto_mode: bool = False) -> Dict[str, object]:
         with self._app_update_lock:
             if self._app_update_state.get("running", False):
                 return dict(self._app_update_state)
             self._app_update_state["running"] = True
             self._app_update_state["started_at"] = time.time()
             self._app_update_state["last_error"] = ""
-        t = threading.Thread(target=self._run_app_update_download, daemon=True)
+            self._app_update_state["last_result"] = None
+            self._app_update_state["progress_message"] = "Queued app update..."
+            self._app_update_state["mode"] = "automatic" if auto_mode else "manual"
+        t = threading.Thread(target=self._run_app_update_download, args=(auto_mode,), daemon=True)
         t.start()
         return self.get_app_update_status()
+
+    def _maybe_startup_auto_app_update(self) -> None:
+        settings = web_settings_payload_from_config(load_config_json())
+        check_on_start = bool(settings.get("check_updates_startup", True))
+        auto_updates = bool(settings.get("auto_app_updates", False))
+        channel = str(settings.get("app_update_channel", "release"))
+        if not check_on_start:
+            self.log("[INFO] Startup update check is disabled.")
+            return
+        if not auto_updates:
+            self.log("[INFO] Automatic app updates are disabled (manual install mode).")
+            return
+        if not getattr(sys, "frozen", False):
+            self.log("[INFO] Automatic app updates skipped in source mode.")
+            return
+        try:
+            info = fetch_latest_app_release_info(channel)
+            with self._app_update_lock:
+                self._app_update_state["last_result"] = info
+                self._app_update_state["last_error"] = ""
+                self._app_update_state["finished_at"] = time.time()
+            if bool(info.get("is_newer", False)):
+                self.log("[INFO] New app version detected at startup; beginning automatic update.")
+                self.trigger_app_update_download(auto_mode=True)
+            else:
+                self.log("[INFO] Startup update check: app is up to date.")
+        except Exception as e:
+            self.log(f"[WARN] Startup app update check failed: {e}")
 
     def _on_worker_status(self, status: str) -> None:
         self.runtime_state.set_status(status)
@@ -4927,6 +3910,7 @@ class HeadlessRuntime:
         except BaseException:
             pass
         self.log("[INFO] Headless runtime active.")
+        threading.Thread(target=self._maybe_startup_auto_app_update, daemon=True).start()
         try:
             while True:
                 time.sleep(0.5)

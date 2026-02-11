@@ -1,6 +1,6 @@
 param(
     [string]$PythonExe = "python",
-    [string]$AppEntry = "Stream247_GUI.py",
+    [string]$AppEntry = "Stream247.py",
     [string]$AppName = "stream247-server"
 )
 
@@ -20,19 +20,19 @@ Write-Host "Installing/updating build dependencies..."
 if ($LASTEXITCODE -ne 0) { throw "Dependency install failed." }
 
 Write-Host "Building $AppName from $AppEntry ..."
+$addDataArgs = @()
+if (Test-Path -Path "icon.ico") {
+    $addDataArgs = @("--add-data", "icon.ico;.")
+}
 & $PythonExe -m PyInstaller `
     --noconfirm `
     --clean `
     --onefile `
     --name $AppName `
+    @addDataArgs `
     $AppEntry
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
-
-if (Test-Path -Path "config.json") {
-    Copy-Item -Path "config.json" -Destination "dist/config.json.example" -Force
-}
 
 Write-Host ""
 Write-Host "Build complete:"
 Write-Host "  Binary: dist/$AppName.exe"
-Write-Host "  Config template: dist/config.json.example"
