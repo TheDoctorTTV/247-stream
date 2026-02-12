@@ -93,7 +93,6 @@ Common fields:
 - `overlay_titles`
 - `shuffle`
 - `log_to_file`
-- `rtmp_live`
 - `remember`
 - `yt_auth_enabled`
 - `yt_auth_browser`

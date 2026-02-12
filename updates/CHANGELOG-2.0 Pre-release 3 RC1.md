@@ -17,6 +17,7 @@ This release candidate focuses on transition stability (especially Owncast), das
   - Better prefetch handoff and consumption of in-flight prefetch results.
   - Reduced unnecessary inter-item delays.
   - Retry timing now adapts better for non-YouTube ingest destinations.
+- RTMP live protocol options are now automatic (enabled by default, then disabled for the session if connection startup fails), and the dashboard toggle was removed.
 - Non-YouTube RTMP preflight probe is skipped to avoid extra start/end session churn on platforms like Owncast.
 - About tab update status UI now uses compact dot indicators instead of full text color switching.
   - App + binaries statuses now expose clear state signals (updated, outdated, just-updated, downgrading, running, error, unknown).

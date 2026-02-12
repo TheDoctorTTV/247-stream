@@ -70,7 +70,7 @@ import re
 
 # General application metadata and platform helpers
 APP_NAME = "Stream247"  # Name shown in logs and dashboard
-APP_VERSION = "2.0-pre-release-3"  # Current version
+APP_VERSION = "2.0-pre-release-4"  # Current version
 GITHUB_REPO = "TheDoctorTTV/247-stream"  # GitHub repository for updates
 APP_UPDATE_MIN_VERSION = "2.0-pre-release-2"  # Oldest version eligible for in-app updater
 
@@ -190,9 +190,46 @@ def _kbps_to_text(kbps: int) -> str:
     return f"{int(kbps)}k"
 
 
+def _normalize_sources(value: object) -> List[str]:
+    """Normalize sources into an ordered, de-duplicated URL list."""
+    raw_items: List[object]
+    if isinstance(value, str):
+        raw_items = value.splitlines()
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    out: List[str] = []
+    seen = set()
+    for item in raw_items:
+        src = str(item or "").strip()
+        if not src or src in seen:
+            continue
+        seen.add(src)
+        out.append(src)
+    return out
+
+
+def _resolved_sources_and_playlist(cfg: Dict[str, object]) -> Tuple[List[str], str]:
+    """Resolve a normalized source list and selected playlist URL."""
+    selected = str(cfg.get("playlist_url", "")).strip()
+    sources = _normalize_sources(cfg.get("sources", []))
+    # Backward compatibility for older single-source configs.
+    if selected and not sources:
+        sources = [selected]
+    if len(sources) == 1:
+        selected = sources[0]
+    elif selected and selected in sources:
+        pass
+    elif sources:
+        selected = sources[0]
+    return sources, selected
+
+
 def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -> Dict[str, object]:
     """Return normalized stream settings for the web UI/API."""
     cfg = data or {}
+    sources, playlist_url = _resolved_sources_and_playlist(cfg)
     resolution = str(cfg.get("resolution", "720p"))
     if resolution not in WEB_ALLOWED_RESOLUTIONS:
         resolution = "720p"
@@ -221,7 +258,8 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
         update_channel = "release"
     bitrate_kbps = _parse_bitrate_kbps(cfg.get("video_bitrate", f"{BITRATE_DEFAULT_KBPS}k"))
     return {
-        "playlist_url": str(cfg.get("playlist_url", "")).strip(),
+        "playlist_url": playlist_url,
+        "sources": sources,
         "rtmp_base": str(cfg.get("rtmp_base", "rtmp://a.rtmp.youtube.com/live2")).strip(),
         "stream_key": str(cfg.get("stream_key", "")).strip(),
         "resolution": resolution,
@@ -232,7 +270,6 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
         "overlay_titles": _to_bool(cfg.get("overlay_titles", True), True),
         "shuffle": _to_bool(cfg.get("shuffle", False), False),
         "log_to_file": _to_bool(cfg.get("log_to_file", False), False),
-        "rtmp_live": _to_bool(cfg.get("rtmp_live", False), False),
         "remember": _to_bool(cfg.get("remember", True), True),
         "check_updates_startup": _to_bool(cfg.get("check_updates_startup", True), True),
         "auto_app_updates": _to_bool(cfg.get("auto_app_updates", False), False),
@@ -253,6 +290,8 @@ def apply_web_settings_payload(base: Dict[str, object], payload: Dict[str, objec
     for key, value in normalized.items():
         if key in payload:
             out[key] = value
+    if ("sources" in payload) and ("playlist_url" not in payload):
+        out["playlist_url"] = normalized.get("playlist_url", "")
     if ("buffer_mode" in payload) or ("video_bitrate" in payload):
         # bufsize is now derived from stream-buffer mode and bitrate.
         out.pop("bufsize", None)
@@ -1415,7 +1454,6 @@ class StreamConfig:
     overlay_titles: bool = True
     shuffle: bool = False
     title_file: str = "current_title.txt"
-    rtmp_live: bool = False
     buffer_mode: str = "Medium"  # Low, Medium, or High
     yt_auth_enabled: bool = False
     yt_auth_browser: str = "auto"  # auto, chrome, edge, firefox, ...
@@ -1438,6 +1476,7 @@ class StreamConfig:
 
 def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
     """Build StreamConfig from a persisted settings dictionary."""
+    _, playlist_url = _resolved_sources_and_playlist(data)
     resolution = str(data.get("resolution", "720p"))
     height, preset_bitrate = RESOLUTION_PRESETS.get(
         resolution, RESOLUTION_PRESETS["720p"]
@@ -1464,7 +1503,7 @@ def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
     bufsize_kbps = int(max(BITRATE_MIN_KBPS, round(video_kbps * buf_mult)))
 
     return StreamConfig(
-        playlist_url=str(data.get("playlist_url", "")).strip(),
+        playlist_url=playlist_url,
         stream_key=str(data.get("stream_key", "")).strip(),
         rtmp_base=str(data.get("rtmp_base", "rtmp://a.rtmp.youtube.com/live2")).strip(),
         fps=fps,
@@ -1475,7 +1514,6 @@ def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
         overlay_titles=bool(data.get("overlay_titles", True)),
         shuffle=bool(data.get("shuffle", False)),
         title_file=str(data.get("title_file", "current_title.txt")).strip() or "current_title.txt",
-        rtmp_live=bool(data.get("rtmp_live", False)),
         buffer_mode=buffer_mode,
         yt_auth_enabled=bool(data.get("yt_auth_enabled", False)),
         yt_auth_browser=str(data.get("yt_auth_browser", "auto")).strip() or "auto",
@@ -1513,6 +1551,7 @@ class StreamWorker(QtCore.QObject):
         self.ff_proc = None
         self._rtmp_bridge_proc: Optional[subprocess.Popen] = None
         self._rtmp_bridge_write_fd: Optional[int] = None
+        self._rtmp_live_protocol_opts_enabled = True
         # Prefetch cache for next video
         self._prefetch_video_id: Optional[str] = None
         self._prefetch_title: Optional[str] = None
@@ -2329,6 +2368,17 @@ class StreamWorker(QtCore.QObject):
         out_url = self.cfg.rtmp_url().lower()
         return out_url.startswith(("rtmp://", "rtmps://")) and (not self._is_youtube_rtmp())
 
+    def _use_rtmp_live_protocol_opts(self, out_url: str) -> bool:
+        """Enable RTMP live/tcurl options by default, with runtime fallback disable."""
+        return self._rtmp_live_protocol_opts_enabled and out_url.lower().startswith(("rtmp://", "rtmps://"))
+
+    def _disable_rtmp_live_protocol_opts(self, context: str) -> None:
+        """Disable RTMP live/tcurl options for this session after a connection failure."""
+        if not self._rtmp_live_protocol_opts_enabled:
+            return
+        self._rtmp_live_protocol_opts_enabled = False
+        self.log.emit(f"[WARN] RTMP live protocol options disabled for this session ({context}).")
+
     def _start_rtmp_bridge(self) -> bool:
         """Start persistent FFmpeg bridge that remuxes mpegts stdin to RTMP."""
         if not self._use_persistent_rtmp_bridge():
@@ -2348,7 +2398,8 @@ class StreamWorker(QtCore.QObject):
             "-f", "mpegts", "-i", "pipe:0",
             "-c", "copy",
         ]
-        if out_url.lower().startswith(("rtmp://", "rtmps://")) and self.cfg.rtmp_live:
+        used_rtmp_live_opts = self._use_rtmp_live_protocol_opts(out_url)
+        if used_rtmp_live_opts:
             cmd += ["-rtmp_live", "live", "-rtmp_tcurl", self.cfg.rtmp_base]
         cmd += ["-f", "flv", out_url]
 
@@ -2398,6 +2449,10 @@ class StreamWorker(QtCore.QObject):
             rc = proc.poll()
             self.log.emit(f"[ERROR] RTMP bridge exited early with code {rc}")
             self._stop_rtmp_bridge()
+            if used_rtmp_live_opts and not self._stop.is_set():
+                self._disable_rtmp_live_protocol_opts("bridge connection failed")
+                self.log.emit("[INFO] Retrying RTMP bridge without live protocol options.")
+                return self._start_rtmp_bridge()
             return False
         self.log.emit("[INFO] RTMP bridge started (persistent ingest session active).")
         return True
@@ -2649,9 +2704,9 @@ class StreamWorker(QtCore.QObject):
             return cmd
 
         cmd += ["-rtmp_buffer", buffer_settings["buffer_size"]]
-        # Add RTMP-specific protocol options if enabled
+        # Add RTMP live protocol options by default (runtime fallback can disable them).
         out_url = self.cfg.rtmp_url()
-        if out_url.lower().startswith(("rtmp://", "rtmps://")) and self.cfg.rtmp_live:
+        if self._use_rtmp_live_protocol_opts(out_url):
             cmd += ["-rtmp_live", "live", "-rtmp_tcurl", self.cfg.rtmp_base]
         cmd += [
             "-f", "flv", out_url
@@ -2702,68 +2757,78 @@ class StreamWorker(QtCore.QObject):
             self.cfg._overlay_fontsize = 24
             safe_write_text(Path(self.cfg.title_file), overlay_text)
         
-        ff_cmd = self.build_ffmpeg_cmd(vurl, aurl)
-        self.log.emit(f"[CMD] ffmpeg: {' '.join(ff_cmd)}")
-        self._skip.clear()
-        self.ff_proc = subprocess.Popen(
-            ff_cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
-        )
+        for attempt in range(2):
+            ff_cmd = self.build_ffmpeg_cmd(vurl, aurl)
+            used_rtmp_live_opts = "-rtmp_live" in ff_cmd
+            self.log.emit(f"[CMD] ffmpeg: {' '.join(ff_cmd)}")
+            self._skip.clear()
+            self.ff_proc = subprocess.Popen(
+                ff_cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1
+            )
 
-        def _reader(stream):
-            for line in iter(stream.readline, ""):
-                self._emit_ffmpeg_line(line)
+            def _reader(stream):
+                for line in iter(stream.readline, ""):
+                    self._emit_ffmpeg_line(line)
 
-        readers = []
-        if self.ff_proc.stdout:
-            t = threading.Thread(target=_reader, args=(self.ff_proc.stdout,))
-            t.daemon = True
-            t.start()
-            readers.append(t)
-        if self.ff_proc.stderr:
-            t = threading.Thread(target=_reader, args=(self.ff_proc.stderr,))
-            t.daemon = True
-            t.start()
-            readers.append(t)
+            readers = []
+            if self.ff_proc.stdout:
+                t = threading.Thread(target=_reader, args=(self.ff_proc.stdout,))
+                t.daemon = True
+                t.start()
+                readers.append(t)
+            if self.ff_proc.stderr:
+                t = threading.Thread(target=_reader, args=(self.ff_proc.stderr,))
+                t.daemon = True
+                t.start()
+                readers.append(t)
 
-        # Wait until ffmpeg finishes or a stop is requested
-        while self.ff_proc and self.ff_proc.poll() is None and not self._stop.is_set():
-            time.sleep(0.05)
-        
-        if self._stop.is_set():
-            self._terminate_ff_proc()
-        else:
-            try:
-                self.ff_proc.wait(timeout=2.0)
-            except Exception:
+            # Wait until ffmpeg finishes or a stop is requested
+            while self.ff_proc and self.ff_proc.poll() is None and not self._stop.is_set():
+                time.sleep(0.05)
+
+            if self._stop.is_set():
                 self._terminate_ff_proc()
+            else:
+                try:
+                    self.ff_proc.wait(timeout=2.0)
+                except Exception:
+                    self._terminate_ff_proc()
 
-        join_timeout = self._io_join_timeout()
-        for t in readers:
-            t.join(timeout=join_timeout)
+            join_timeout = self._io_join_timeout()
+            for t in readers:
+                t.join(timeout=join_timeout)
 
-        # Ensure any buffered ffmpeg output is flushed after the process exits
-        rc = None
-        if self.ff_proc:
-            rc = self.ff_proc.poll()
-            for stream in (self.ff_proc.stdout, self.ff_proc.stderr):
-                if stream:
-                    leftover = stream.read()
-                    if leftover:
-                        for line in leftover.splitlines():
-                            self._emit_ffmpeg_line(line)
-                    stream.close()
-            self.ff_proc = None
-        if rc is not None and not self._stop.is_set():
+            # Ensure any buffered ffmpeg output is flushed after the process exits
+            rc = None
+            if self.ff_proc:
+                rc = self.ff_proc.poll()
+                for stream in (self.ff_proc.stdout, self.ff_proc.stderr):
+                    if stream:
+                        leftover = stream.read()
+                        if leftover:
+                            for line in leftover.splitlines():
+                                self._emit_ffmpeg_line(line)
+                        stream.close()
+                self.ff_proc = None
+
+            if rc is None or self._stop.is_set():
+                return
+
             self.log.emit(f"[INFO] ffmpeg exited with code {rc}")
             if rc < 0 and self._maybe_switch_to_system_ffmpeg("ffmpeg crashed during Twitch stream"):
                 raise RuntimeError("ffmpeg crashed; switched to system ffmpeg, retrying")
-            if rc != 0:
-                raise RuntimeError(f"ffmpeg exited with code {rc}")
+            if rc == 0:
+                return
+            if used_rtmp_live_opts and attempt == 0:
+                self._disable_rtmp_live_protocol_opts("direct RTMP output failed")
+                self.log.emit("[INFO] Retrying stream without RTMP live protocol options.")
+                continue
+            raise RuntimeError(f"ffmpeg exited with code {rc}")
 
     def run_one_video(self, video_id: str):
         """Stream a single video using ffmpeg."""
@@ -2806,88 +2871,97 @@ class StreamWorker(QtCore.QObject):
             self.cfg._overlay_fontsize = 24
 
         use_bridge = self._use_persistent_rtmp_bridge()
-        bridge_out_fd: Optional[int] = None
         if use_bridge and not self._start_rtmp_bridge():
             raise RuntimeError("Could not start persistent RTMP bridge")
+        for attempt in range(2):
+            bridge_out_fd: Optional[int] = None
+            ff_cmd = self.build_ffmpeg_cmd(vurl, aurl, to_pipe=use_bridge)
+            used_rtmp_live_opts = "-rtmp_live" in ff_cmd
+            self.log.emit(f"[CMD] ffmpeg: {' '.join(ff_cmd)}")
+            self._skip.clear()
+            popen_kwargs: Dict[str, Any] = {
+                "stdin": subprocess.DEVNULL,
+                "stderr": subprocess.PIPE,
+                "text": True,
+                "bufsize": 1,
+            }
+            if use_bridge:
+                if self._rtmp_bridge_write_fd is None:
+                    raise RuntimeError("RTMP bridge write pipe is not available")
+                bridge_out_fd = os.dup(self._rtmp_bridge_write_fd)
+                popen_kwargs["stdout"] = bridge_out_fd
+                popen_kwargs["close_fds"] = True
+            else:
+                popen_kwargs["stdout"] = subprocess.PIPE
+            try:
+                self.ff_proc = subprocess.Popen(ff_cmd, **popen_kwargs)
+            finally:
+                if bridge_out_fd is not None:
+                    try:
+                        os.close(bridge_out_fd)
+                    except Exception:
+                        pass
 
-        ff_cmd = self.build_ffmpeg_cmd(vurl, aurl, to_pipe=use_bridge)
-        self.log.emit(f"[CMD] ffmpeg: {' '.join(ff_cmd)}")
-        self._skip.clear()
-        popen_kwargs: Dict[str, Any] = {
-            "stdin": subprocess.DEVNULL,
-            "stderr": subprocess.PIPE,
-            "text": True,
-            "bufsize": 1,
-        }
-        if use_bridge:
-            if self._rtmp_bridge_write_fd is None:
-                raise RuntimeError("RTMP bridge write pipe is not available")
-            bridge_out_fd = os.dup(self._rtmp_bridge_write_fd)
-            popen_kwargs["stdout"] = bridge_out_fd
-            popen_kwargs["close_fds"] = True
-        else:
-            popen_kwargs["stdout"] = subprocess.PIPE
-        try:
-            self.ff_proc = subprocess.Popen(ff_cmd, **popen_kwargs)
-        finally:
-            if bridge_out_fd is not None:
+            def _reader(stream):
+                for line in iter(stream.readline, ""):
+                    self._emit_ffmpeg_line(line)
+
+            readers = []
+            if self.ff_proc.stdout and not use_bridge:
+                t = threading.Thread(target=_reader, args=(self.ff_proc.stdout,))
+                t.daemon = True
+                t.start()
+                readers.append(t)
+            if self.ff_proc.stderr:
+                t = threading.Thread(target=_reader, args=(self.ff_proc.stderr,))
+                t.daemon = True
+                t.start()
+                readers.append(t)
+
+            # Wait until ffmpeg finishes or a stop/skip is requested
+            while self.ff_proc and self.ff_proc.poll() is None and not (
+                self._stop.is_set() or self._skip.is_set()
+            ):
+                time.sleep(0.05)
+            if self._stop.is_set() or self._skip.is_set():
+                self._terminate_ff_proc()
+            else:
                 try:
-                    os.close(bridge_out_fd)
+                    if self.ff_proc:
+                        self.ff_proc.wait(timeout=1.0)
                 except Exception:
                     pass
 
-        def _reader(stream):
-            for line in iter(stream.readline, ""):
-                self._emit_ffmpeg_line(line)
+            join_timeout = self._io_join_timeout()
+            for t in readers:
+                t.join(timeout=join_timeout)
 
-        readers = []
-        if self.ff_proc.stdout and not use_bridge:
-            t = threading.Thread(target=_reader, args=(self.ff_proc.stdout,))
-            t.daemon = True
-            t.start()
-            readers.append(t)
-        if self.ff_proc.stderr:
-            t = threading.Thread(target=_reader, args=(self.ff_proc.stderr,))
-            t.daemon = True
-            t.start()
-            readers.append(t)
+            # Ensure any buffered ffmpeg output is flushed after the process exits
+            rc = None
+            if self.ff_proc:
+                rc = self.ff_proc.poll()
+                for stream in (self.ff_proc.stdout, self.ff_proc.stderr):
+                    if stream:
+                        leftover = stream.read()
+                        if leftover:
+                            for line in leftover.splitlines():
+                                self._emit_ffmpeg_line(line)
+                        stream.close()
+                self.ff_proc = None
 
-        # Wait until ffmpeg finishes or a stop/skip is requested
-        while self.ff_proc and self.ff_proc.poll() is None and not (
-            self._stop.is_set() or self._skip.is_set()
-        ):
-            time.sleep(0.05)
-        if self._stop.is_set() or self._skip.is_set():
-            self._terminate_ff_proc()
-        else:
-            try:
-                if self.ff_proc:
-                    self.ff_proc.wait(timeout=1.0)
-            except Exception:
-                pass
+            if rc is None or (self._stop.is_set() or self._skip.is_set()):
+                break
 
-        join_timeout = self._io_join_timeout()
-        for t in readers:
-            t.join(timeout=join_timeout)
-
-        # Ensure any buffered ffmpeg output is flushed after the process exits
-        rc = None
-        if self.ff_proc:
-            rc = self.ff_proc.poll()
-            for stream in (self.ff_proc.stdout, self.ff_proc.stderr):
-                if stream:
-                    leftover = stream.read()
-                    if leftover:
-                        for line in leftover.splitlines():
-                            self._emit_ffmpeg_line(line)
-                    stream.close()
-            self.ff_proc = None
-        if rc is not None and not (self._stop.is_set() or self._skip.is_set()):
             self.log.emit(f"[INFO] ffmpeg exited with code {rc}")
             if rc < 0 and self._maybe_switch_to_system_ffmpeg("ffmpeg crashed during YouTube stream"):
                 raise RuntimeError("ffmpeg crashed; switched to system ffmpeg, retrying")
-            if rc != 0:
-                raise RuntimeError(f"ffmpeg exited with code {rc}")
+            if rc == 0:
+                break
+            if (not use_bridge) and used_rtmp_live_opts and attempt == 0:
+                self._disable_rtmp_live_protocol_opts("direct RTMP output failed")
+                self.log.emit("[INFO] Retrying current item without RTMP live protocol options.")
+                continue
+            raise RuntimeError(f"ffmpeg exited with code {rc}")
 
         if use_bridge and self._rtmp_bridge_proc and self._rtmp_bridge_proc.poll() is not None:
             raise RuntimeError(f"RTMP bridge exited with code {self._rtmp_bridge_proc.poll()}")

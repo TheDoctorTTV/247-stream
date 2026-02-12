@@ -16,6 +16,9 @@
     const binariesStatus = document.getElementById("binariesStatus");
     const binariesProgressBar = document.getElementById("binariesProgressBar");
     const binariesProgressText = document.getElementById("binariesProgressText");
+    const sourcesInput = document.getElementById("sources_input");
+    const sourceHint = document.getElementById("sourceHint");
+    const sourceSelect = document.getElementById("playlist_url");
     const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
     const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
     const subtabButtons = Array.from(document.querySelectorAll(".subtab-btn"));
@@ -35,7 +38,60 @@
     let pendingAutoSave = false;
     let lastSavedPayload = "";
     let appVersionsBoundToChannel = "";
-    const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "rtmp_live", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel", "update_download_cap_mbps"];
+    const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel", "update_download_cap_mbps"];
+
+    function normalizeSources(value) {
+      const out = [];
+      const seen = new Set();
+      const push = (raw) => {
+        const src = String(raw || "").trim();
+        if (!src || seen.has(src)) return;
+        seen.add(src);
+        out.push(src);
+      };
+      if (Array.isArray(value)) {
+        value.forEach(push);
+      } else if (typeof value === "string") {
+        value.split(/\r?\n/g).forEach(push);
+      }
+      return out;
+    }
+
+    function syncSourceSelect(sources, preferred) {
+      const safeSources = normalizeSources(sources);
+      sourceSelect.innerHTML = "";
+      if (!safeSources.length) {
+        const emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "No sources configured";
+        sourceSelect.appendChild(emptyOption);
+        sourceSelect.value = "";
+        sourceSelect.disabled = true;
+        sourceHint.textContent = "Add source URLs in the Sources tab.";
+        return "";
+      }
+      safeSources.forEach((src, idx) => {
+        const opt = document.createElement("option");
+        opt.value = src;
+        opt.textContent = "Source " + (idx + 1) + " - " + src;
+        sourceSelect.appendChild(opt);
+      });
+      const wanted = safeSources.includes(preferred) ? preferred : safeSources[0];
+      sourceSelect.value = wanted;
+      sourceSelect.disabled = (safeSources.length <= 1);
+      sourceHint.textContent = (safeSources.length <= 1)
+        ? "Only one source is configured. It will be used automatically."
+        : "Choose which source to stream.";
+      return wanted;
+    }
+
+    function syncSourcesUIFromSettings(settings) {
+      const sources = normalizeSources(settings.sources);
+      const fallbackPlaylist = String(settings.playlist_url || "").trim();
+      if (!sources.length && fallbackPlaylist) sources.push(fallbackPlaylist);
+      sourcesInput.value = sources.join("\n");
+      return syncSourceSelect(sources, fallbackPlaylist);
+    }
 
     for (let kbps = 1500; kbps <= 25000; kbps += 500) {
       const o = document.createElement("option");
@@ -150,6 +206,7 @@
     }
 
     function applySettingsToForm(s) {
+      const selectedSource = syncSourcesUIFromSettings(s || {});
       for (const id of fieldIds) {
         const el = document.getElementById(id);
         if (!el || !(id in s)) continue;
@@ -157,6 +214,8 @@
           el.checked = !!s[id];
         } else if (id === "yt_auth_enabled") {
           el.value = s[id] ? "true" : "false";
+        } else if (id === "playlist_url") {
+          el.value = selectedSource || String(s[id] ?? "");
         } else {
           el.value = String(s[id] ?? "");
         }
@@ -165,10 +224,21 @@
 
     function formToPayload() {
       const out = {};
+      const currentSources = normalizeSources(sourcesInput.value);
+      const selected = String(sourceSelect.value || "").trim();
+      const normalizedSelected = syncSourceSelect(currentSources, selected);
       for (const id of fieldIds) {
         const el = document.getElementById(id);
         if (!el) continue;
         out[id] = (el.type === "checkbox") ? !!el.checked : el.value;
+      }
+      out.sources = currentSources;
+      if (currentSources.length === 1) {
+        out.playlist_url = currentSources[0];
+      } else if (!currentSources.length) {
+        out.playlist_url = "";
+      } else if (!currentSources.includes(String(out.playlist_url || ""))) {
+        out.playlist_url = normalizedSelected || currentSources[0];
       }
       out.framerate = Number(out.framerate || 30);
       out.update_download_cap_mbps = Number(out.update_download_cap_mbps || 25);
@@ -205,6 +275,16 @@
           el.addEventListener("input", () => queueAutoSave(650));
           el.addEventListener("change", () => queueAutoSave(180));
         }
+      }
+      if (sourcesInput) {
+        sourcesInput.addEventListener("input", () => {
+          syncSourceSelect(normalizeSources(sourcesInput.value), sourceSelect.value);
+          queueAutoSave(650);
+        });
+        sourcesInput.addEventListener("change", () => {
+          syncSourceSelect(normalizeSources(sourcesInput.value), sourceSelect.value);
+          queueAutoSave(180);
+        });
       }
     }
 

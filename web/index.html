@@ -17,6 +17,7 @@
       </div>
       <div class="tabs">
         <button class="tab-btn active" data-tab="tab-stream">Stream</button>
+        <button class="tab-btn" data-tab="tab-sources">Sources</button>
         <button class="tab-btn" data-tab="tab-console">Console</button>
         <button class="tab-btn" data-tab="tab-about">About</button>
       </div>
@@ -33,7 +34,11 @@
       <div class="card">
         <h2>Stream Settings</h2>
         <div class="grid">
-          <div class="field wide"><label for="playlist_url">Source URL</label><input id="playlist_url" type="text"></div>
+          <div class="field wide">
+            <label for="playlist_url">Source</label>
+            <select id="playlist_url"></select>
+            <div id="sourceHint" class="statusline"></div>
+          </div>
           <div class="field"><label for="rtmp_base">Stream URL</label><input id="rtmp_base" type="text"></div>
           <div class="field"><label for="stream_key">Stream Key</label><input id="stream_key" type="password"></div>
           <div class="field"><label for="resolution">Resolution</label><select id="resolution"><option>480p</option><option>720p</option><option>1080p</option><option>1440p</option><option>2160p</option></select></div>
@@ -50,7 +55,6 @@
           <label class="check"><input id="overlay_titles" type="checkbox">Overlay current title</label>
           <label class="check"><input id="shuffle" type="checkbox">Shuffle playlist</label>
           <label class="check"><input id="log_to_file" type="checkbox">Log to file</label>
-          <label class="check"><input id="rtmp_live" type="checkbox">RTMP live mode</label>
           <label class="check"><input id="remember" type="checkbox">Remember playlist and key</label>
           <label class="check"><input id="check_updates_startup" type="checkbox">Check updates on startup</label>
         </div>
@@ -58,6 +62,16 @@
           <button id="reloadSettingsBtn">Reload Settings</button>
           <div id="settingsStatus" class="statusline"></div>
         </div>
+      </div>
+    </div>
+    <div class="tab-panel" id="tab-sources">
+      <div class="card">
+        <h2>Sources</h2>
+        <div class="field">
+          <label for="sources_input">Source URLs (one per line)</label>
+          <textarea id="sources_input" rows="12" placeholder="https://www.youtube.com/playlist?list=...\nhttps://www.twitch.tv/channelname"></textarea>
+        </div>
+        <div class="muted">Add one source URL per line. The Stream tab dropdown uses this list.</div>
       </div>
     </div>
     <div class="tab-panel" id="tab-console">
