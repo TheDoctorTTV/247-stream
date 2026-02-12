@@ -149,18 +149,24 @@
       return setSourcesState(sources, fallbackPlaylist);
     }
 
-    for (let kbps = 1500; kbps <= 25000; kbps += 500) {
-      const o = document.createElement("option");
-      o.value = String(kbps) + "k";
-      o.textContent = String(kbps) + " kbps";
-      document.getElementById("video_bitrate").appendChild(o);
+    const videoBitrateSelect = document.getElementById("video_bitrate");
+    if (videoBitrateSelect) {
+      for (let kbps = 1500; kbps <= 25000; kbps += 500) {
+        const o = document.createElement("option");
+        o.value = String(kbps) + "k";
+        o.textContent = String(kbps) + " kbps";
+        videoBitrateSelect.appendChild(o);
+      }
     }
 
-    for (let i = 1; i <= 25; i++) {
-      const o = document.createElement("option");
-      o.value = String(i);
-      o.textContent = String(i);
-      document.getElementById("update_download_cap_mbps").appendChild(o);
+    const updateCapSelect = document.getElementById("update_download_cap_mbps");
+    if (updateCapSelect) {
+      for (let i = 1; i <= 25; i++) {
+        const o = document.createElement("option");
+        o.value = String(i);
+        o.textContent = String(i);
+        updateCapSelect.appendChild(o);
+      }
     }
 
     function setSettingsStatus(text, level) {
@@ -614,21 +620,37 @@
     skipBtn.addEventListener("click", () => api("/api/skip"));
     refreshBtn.addEventListener("click", () => refreshState(true));
     reloadSettingsBtn.addEventListener("click", () => loadSettings());
-    sourceAddBtn.addEventListener("click", () => addSourceFromInput());
-    sourceAddInput.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter") {
-        ev.preventDefault();
-        addSourceFromInput();
-      }
+    if (sourceAddBtn) {
+      sourceAddBtn.addEventListener("click", () => addSourceFromInput());
+    }
+    if (sourceAddInput) {
+      sourceAddInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          addSourceFromInput();
+        }
+      });
+    }
+    // Fallback for stale partial DOM states: keep Add functional via delegation.
+    document.addEventListener("click", (ev) => {
+      const target = ev.target;
+      if (!(target instanceof Element)) return;
+      const addBtn = target.closest("#source_add_btn");
+      if (!addBtn) return;
+      ev.preventDefault();
+      addSourceFromInput();
     });
     checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
     appUpdateVersion.addEventListener("change", () => triggerAppUpdateCheck());
-    document.getElementById("app_update_channel").addEventListener("change", () => {
-      appVersionsBoundToChannel = "";
-      appUpdateVersion.innerHTML = '<option value="">Latest in selected channel</option>';
-      triggerAppUpdateCheck("");
-    });
+    const appUpdateChannel = document.getElementById("app_update_channel");
+    if (appUpdateChannel) {
+      appUpdateChannel.addEventListener("change", () => {
+        appVersionsBoundToChannel = "";
+        appUpdateVersion.innerHTML = '<option value="">Latest in selected channel</option>';
+        triggerAppUpdateCheck("");
+      });
+    }
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
     bindAutoSaveListeners();
     loadSettings();
