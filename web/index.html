@@ -68,10 +68,17 @@
       <div class="card">
         <h2>Sources</h2>
         <div class="field">
-          <label for="sources_input">Source URLs (one per line)</label>
-          <textarea id="sources_input" rows="12" placeholder="https://www.youtube.com/playlist?list=...\nhttps://www.twitch.tv/channelname"></textarea>
+          <label for="source_add_input">Add Source URL</label>
+          <div class="row">
+            <input id="source_add_input" type="text" placeholder="https://www.youtube.com/playlist?list=...">
+            <button id="source_add_btn" class="primary" type="button">Add</button>
+          </div>
         </div>
-        <div class="muted">Add one source URL per line. The Stream tab dropdown uses this list.</div>
+        <div class="field" style="margin-top: 10px;">
+          <label>Configured Sources (newest to oldest)</label>
+          <div id="sources_empty" class="statusline">No sources added yet.</div>
+          <div id="sources_list" class="source-list"></div>
+        </div>
       </div>
     </div>
     <div class="tab-panel" id="tab-console">

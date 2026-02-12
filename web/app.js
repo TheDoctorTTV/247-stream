@@ -16,7 +16,10 @@
     const binariesStatus = document.getElementById("binariesStatus");
     const binariesProgressBar = document.getElementById("binariesProgressBar");
     const binariesProgressText = document.getElementById("binariesProgressText");
-    const sourcesInput = document.getElementById("sources_input");
+    const sourceAddInput = document.getElementById("source_add_input");
+    const sourceAddBtn = document.getElementById("source_add_btn");
+    const sourcesList = document.getElementById("sources_list");
+    const sourcesEmpty = document.getElementById("sources_empty");
     const sourceHint = document.getElementById("sourceHint");
     const sourceSelect = document.getElementById("playlist_url");
     const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
@@ -40,6 +43,8 @@
     let appVersionsBoundToChannel = "";
     const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel", "update_download_cap_mbps"];
 
+    let sourcesState = [];
+
     function normalizeSources(value) {
       const out = [];
       const seen = new Set();
@@ -57,6 +62,40 @@
       return out;
     }
 
+    function renderSourcesList() {
+      sourcesList.innerHTML = "";
+      if (!sourcesState.length) {
+        sourcesEmpty.style.display = "";
+        return;
+      }
+      sourcesEmpty.style.display = "none";
+      sourcesState.forEach((src, idx) => {
+        const row = document.createElement("div");
+        row.className = "source-item";
+
+        const text = document.createElement("div");
+        text.className = "source-text";
+        text.textContent = src;
+        text.title = src;
+
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "source-remove";
+        removeBtn.type = "button";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", () => {
+          const nextSources = sourcesState.filter((_, i) => i !== idx);
+          const selected = String(sourceSelect.value || "").trim();
+          const preferred = (selected && selected !== src) ? selected : "";
+          setSourcesState(nextSources, preferred);
+          queueAutoSave(180);
+        });
+
+        row.appendChild(text);
+        row.appendChild(removeBtn);
+        sourcesList.appendChild(row);
+      });
+    }
+
     function syncSourceSelect(sources, preferred) {
       const safeSources = normalizeSources(sources);
       sourceSelect.innerHTML = "";
@@ -70,10 +109,10 @@
         sourceHint.textContent = "Add source URLs in the Sources tab.";
         return "";
       }
-      safeSources.forEach((src, idx) => {
+      safeSources.forEach((src) => {
         const opt = document.createElement("option");
         opt.value = src;
-        opt.textContent = "Source " + (idx + 1) + " - " + src;
+        opt.textContent = src;
         sourceSelect.appendChild(opt);
       });
       const wanted = safeSources.includes(preferred) ? preferred : safeSources[0];
@@ -85,12 +124,29 @@
       return wanted;
     }
 
+    function setSourcesState(nextSources, preferred) {
+      sourcesState = normalizeSources(nextSources);
+      const selected = syncSourceSelect(sourcesState, preferred);
+      renderSourcesList();
+      return selected;
+    }
+
+    function addSourceFromInput() {
+      const raw = String(sourceAddInput.value || "").trim();
+      if (!raw) return;
+      const selected = String(sourceSelect.value || "").trim();
+      const nextSources = [raw, ...sourcesState.filter((src) => src !== raw)];
+      const preferred = selected && selected !== raw ? selected : raw;
+      setSourcesState(nextSources, preferred);
+      sourceAddInput.value = "";
+      queueAutoSave(180);
+    }
+
     function syncSourcesUIFromSettings(settings) {
       const sources = normalizeSources(settings.sources);
       const fallbackPlaylist = String(settings.playlist_url || "").trim();
       if (!sources.length && fallbackPlaylist) sources.push(fallbackPlaylist);
-      sourcesInput.value = sources.join("\n");
-      return syncSourceSelect(sources, fallbackPlaylist);
+      return setSourcesState(sources, fallbackPlaylist);
     }
 
     for (let kbps = 1500; kbps <= 25000; kbps += 500) {
@@ -224,7 +280,7 @@
 
     function formToPayload() {
       const out = {};
-      const currentSources = normalizeSources(sourcesInput.value);
+      const currentSources = normalizeSources(sourcesState);
       const selected = String(sourceSelect.value || "").trim();
       const normalizedSelected = syncSourceSelect(currentSources, selected);
       for (const id of fieldIds) {
@@ -275,16 +331,6 @@
           el.addEventListener("input", () => queueAutoSave(650));
           el.addEventListener("change", () => queueAutoSave(180));
         }
-      }
-      if (sourcesInput) {
-        sourcesInput.addEventListener("input", () => {
-          syncSourceSelect(normalizeSources(sourcesInput.value), sourceSelect.value);
-          queueAutoSave(650);
-        });
-        sourcesInput.addEventListener("change", () => {
-          syncSourceSelect(normalizeSources(sourcesInput.value), sourceSelect.value);
-          queueAutoSave(180);
-        });
       }
     }
 
@@ -568,6 +614,13 @@
     skipBtn.addEventListener("click", () => api("/api/skip"));
     refreshBtn.addEventListener("click", () => refreshState(true));
     reloadSettingsBtn.addEventListener("click", () => loadSettings());
+    sourceAddBtn.addEventListener("click", () => addSourceFromInput());
+    sourceAddInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        addSourceFromInput();
+      }
+    });
     checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
     appUpdateVersion.addEventListener("change", () => triggerAppUpdateCheck());
