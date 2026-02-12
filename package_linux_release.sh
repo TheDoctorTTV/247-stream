@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_BINARY="${ROOT_DIR}/dist/stream247-server"
 RELEASE_DIR="${ROOT_DIR}/stream247-linux"
 RELEASE_BINARY="${RELEASE_DIR}/stream247-server"
