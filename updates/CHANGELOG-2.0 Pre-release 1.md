@@ -10,7 +10,6 @@ v2.0 is a major architecture update focused on web-first/headless operation, str
 - Web settings validation/normalization helpers for API-safe config updates.
 - Binary build helper scripts:
   - `build_linux.sh`
-  - `build_windows.ps1`
 - Optional Qt fallback shims for environments without PySide6, improving non-GUI/headless robustness.
 
 ## Changed
@@ -41,4 +40,3 @@ v2.0 is a major architecture update focused on web-first/headless operation, str
 - Modified: `Stream247_GUI.py`
 - Modified: `README.md`
 - Added: `build_linux.sh`
-- Added: `build_windows.ps1`

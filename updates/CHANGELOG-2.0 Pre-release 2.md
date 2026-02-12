@@ -12,7 +12,7 @@ This release includes app/runtime updates plus repo/build cleanup.
 
 ## Changed
 - Standardized the main app entrypoint filename from `Stream247_GUI.py` to `Stream247.py`.
-- Updated build scripts to target the new entrypoint by default (`build_linux.sh`, `build_windows.ps1`).
+- Updated build script to target the new entrypoint by default (`build_linux.sh`).
 - Build scripts now include `icon.ico` in PyInstaller builds when present.
 - Build scripts no longer copy `config.json` to `dist/config.json.example`.
 - Web settings now normalize bitrate using bounded steps (1500 to 25000 kbps, 500-step increments).

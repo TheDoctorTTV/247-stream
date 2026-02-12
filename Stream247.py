@@ -1,5 +1,5 @@
 import os, sys, time, json, random, shlex, shutil, subprocess, threading, datetime
-import zipfile, tempfile, platform, tarfile
+import tempfile, platform, tarfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -72,17 +72,6 @@ import re
 APP_NAME = "Stream247"  # Name shown in logs and dashboard
 APP_VERSION = "2.0-pre-release-2"  # Current version
 GITHUB_REPO = "TheDoctorTTV/247-stream"  # GitHub repository for updates
-IS_WIN = (os.name == "nt")  # True when running on Windows
-CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0  # Hide console windows
-CREATE_NEW_PROCESS_GROUP = 0x00000200 if IS_WIN else 0  # Allow child process killing
-DETACHED_PROCESS = 0x00000008 if IS_WIN else 0  # Keep updater detached on Windows
-
-# Startup information for subprocesses (only meaningful on Windows)
-STARTUPINFO = None
-if IS_WIN:
-    STARTUPINFO = subprocess.STARTUPINFO()
-    # Prevent ffmpeg/yt-dlp windows from flashing on screen
-    STARTUPINFO.dwFlags |= subprocess.STARTF_USESHOWWINDOW  # hide windows
 
 # ---------- config.json helpers ----------
 def _app_dir() -> Path:
@@ -99,8 +88,6 @@ def _app_dir() -> Path:
 
 def _running_under_systemd() -> bool:
     """Best-effort detection for Linux systemd-managed runtime."""
-    if IS_WIN:
-        return False
     if platform.system().lower() != "linux":
         return False
     forced = str(os.environ.get("STREAM247_SYSTEMD", "")).strip().lower()
@@ -149,10 +136,10 @@ WEB_ALLOWED_RESOLUTIONS = ("480p", "720p", "1080p", "1440p", "2160p")
 WEB_ALLOWED_FRAMERATES = (30, 60)
 WEB_ALLOWED_BUFFER_MODES = ("Low", "Medium", "High", "Ultra")
 WEB_ALLOWED_ENCODERS = (
-    "auto", "libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_vaapi", "h264_videotoolbox"
+    "auto", "libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_vaapi"
 )
 WEB_ALLOWED_BROWSERS = (
-    "auto", "firefox", "chrome", "edge", "chromium", "brave", "vivaldi", "opera", "safari"
+    "auto", "firefox", "chrome", "edge", "chromium", "brave", "vivaldi", "opera"
 )
 WEB_ALLOWED_UPDATE_CHANNELS = ("release", "prerelease")
 WEB_UPDATE_RELEASES_LIMIT = 100
@@ -281,31 +268,14 @@ def resource_path(name: str) -> str:
     return str(Path.cwd() / name)
 
 def find_drawtext_fontfile() -> Optional[str]:
-    """Return a font file path suitable for ffmpeg drawtext across platforms.
-
-    Tries common system fonts on Windows, macOS, and Linux. Returns None if not found.
-    """
+    """Return a font file path suitable for ffmpeg drawtext on Linux."""
     candidates: List[Path] = []
-    if IS_WIN:
-        windir = os.environ.get("WINDIR", r"C:\\Windows")
-        candidates += [
-            Path(windir) / "Fonts" / name
-            for name in ("segoeui.ttf", "arial.ttf", "calibri.ttf", "tahoma.ttf")
-        ]
-    else:
-        # macOS common font locations
-        candidates += [
-            Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
-            Path("/Library/Fonts/Arial.ttf"),
-            Path("/System/Library/Fonts/Supplemental/Helvetica.ttc"),
-            Path("/System/Library/Fonts/Helvetica.ttc"),
-        ]
-        # Linux common fonts
-        candidates += [
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-            Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
-            Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
-        ]
+    # Linux common fonts
+    candidates += [
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+    ]
     for p in candidates:
         try:
             if p.exists():
@@ -328,12 +298,12 @@ def find_binary(candidates: List[str]) -> Optional[str]:
 
 def find_ffmpeg() -> Optional[str]:
     """Locate an ffmpeg binary in PATH or alongside the executable."""
-    return find_binary(["ffmpeg", "ffmpeg.exe"])
+    return find_binary(["ffmpeg"])
 
 def find_ytdlp() -> Optional[str]:
     """Locate a yt-dlp binary in PATH or alongside the executable."""
     # First try the Python-installed version (usually more up-to-date)
-    candidates = ["yt-dlp", "yt-dlp.exe"]
+    candidates = ["yt-dlp"]
     
     # Check PATH first
     for c in candidates:
@@ -342,7 +312,7 @@ def find_ytdlp() -> Optional[str]:
             return p
     
     # Then check local resources
-    for c in ["yt-dlp.exe", "yt-dlp"]:
+    for c in ["yt-dlp"]:
         rp = resource_path(c)
         if Path(rp).exists():
             return rp
@@ -810,10 +780,10 @@ class LocalWebDashboard:
           <div class="field"><label for="framerate">Frame Rate</label><select id="framerate"><option value="30">30</option><option value="60">60</option></select></div>
           <div class="field"><label for="video_bitrate">Video Bitrate</label><select id="video_bitrate"></select></div>
           <div class="field"><label for="buffer_mode">Stream Buffer</label><select id="buffer_mode"><option>Low</option><option>Medium</option><option>High</option><option>Ultra</option></select></div>
-          <div class="field"><label for="encoder_preference">Encoder</label><select id="encoder_preference"><option value="auto">Auto</option><option value="libx264">CPU x264</option><option value="h264_nvenc">NVIDIA NVENC</option><option value="h264_qsv">Intel QSV</option><option value="h264_amf">AMD AMF</option><option value="h264_vaapi">VAAPI</option><option value="h264_videotoolbox">VideoToolbox</option></select></div>
+          <div class="field"><label for="encoder_preference">Encoder</label><select id="encoder_preference"><option value="auto">Auto</option><option value="libx264">CPU x264</option><option value="h264_nvenc">NVIDIA NVENC</option><option value="h264_qsv">Intel QSV</option><option value="h264_amf">AMD AMF</option><option value="h264_vaapi">VAAPI</option></select></div>
           <div class="field"><label for="update_download_cap_mbps">Update Download Cap (Mbps)</label><select id="update_download_cap_mbps"></select></div>
           <div class="field"><label for="yt_auth_enabled">YouTube Auth</label><select id="yt_auth_enabled"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
-          <div class="field"><label for="yt_auth_browser">YouTube Browser</label><select id="yt_auth_browser"><option value="auto">Auto</option><option value="firefox">Firefox</option><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="chromium">Chromium</option><option value="brave">Brave</option><option value="vivaldi">Vivaldi</option><option value="opera">Opera</option><option value="safari">Safari</option></select></div>
+          <div class="field"><label for="yt_auth_browser">YouTube Browser</label><select id="yt_auth_browser"><option value="auto">Auto</option><option value="firefox">Firefox</option><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="chromium">Chromium</option><option value="brave">Brave</option><option value="vivaldi">Vivaldi</option><option value="opera">Opera</option></select></div>
           <div class="field wide"><label for="yt_auth_profile">YouTube Profile Path</label><input id="yt_auth_profile" type="text"></div>
         </div>
         <div class="checks" style="margin-top:12px;">
@@ -1592,9 +1562,6 @@ def github_latest_asset_url(repo: str, prefer_substrings: List[str], must_match_
 def run_hidden(cmd: List[str], check=False, capture=True, text=True, timeout=None) -> subprocess.CompletedProcess:
     """Run a subprocess without showing a console window."""
     kwargs = {}
-    if IS_WIN:
-        kwargs["startupinfo"] = STARTUPINFO
-        kwargs["creationflags"] = CREATE_NO_WINDOW
     if capture:
         kwargs.update(dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=text))
     return subprocess.run(cmd, check=check, timeout=timeout, **kwargs)
@@ -1632,8 +1599,6 @@ def open_rotating_latest_log() -> Tuple[Optional[TextIO], Optional[Path]]:
 
 def restore_terminal_state() -> None:
     """Best-effort reset of terminal mode after abrupt subprocess/shutdown paths."""
-    if IS_WIN:
-        return
     try:
         if not sys.stdin.isatty():
             return
@@ -1692,7 +1657,7 @@ def ffprobe_encoder(ffmpeg_path: Optional[str], codec: str) -> bool:
     if not ffmpeg_path or not ffmpeg_lists_encoder(ffmpeg_path, codec):
         return False
     try:
-        null = "NUL" if IS_WIN else "/dev/null"
+        null = "/dev/null"
         base = [
             ffmpeg_path, "-hide_banner", "-loglevel", "error",
             "-f", "lavfi", "-i", "color=black:s=320x180:rate=30",
@@ -1707,7 +1672,7 @@ def ffprobe_encoder(ffmpeg_path: Optional[str], codec: str) -> bool:
             probes.append(base + ["-vaapi_device", device, "-vf", "format=nv12,hwupload", "-c:v", codec, "-f", "null", null])
         elif codec == "h264_qsv":
             probes.append(base + ["-vf", "format=nv12", "-c:v", codec, "-f", "null", null])
-            if not IS_WIN and Path("/dev/dri/renderD128").exists():
+            if Path("/dev/dri/renderD128").exists():
                 probes.append(base + ["-init_hw_device", "qsv=hw:/dev/dri/renderD128", "-vf", "format=nv12", "-c:v", codec, "-f", "null", null])
         else:
             probes.append(base + ["-vf", "format=yuv420p", "-c:v", codec, "-f", "null", null])
@@ -1721,6 +1686,9 @@ def ffprobe_encoder(ffmpeg_path: Optional[str], codec: str) -> bool:
 
 def fmt_yt_date(upload_date: Optional[str], timestamp: Optional[int], release_ts: Optional[int]) -> Optional[str]:
     """Return a human‑friendly YouTube upload date in UTC (matching YouTube's display)."""
+    def _fmt_day(d: datetime.datetime) -> str:
+        return d.strftime("%b %d, %Y").replace(" 0", " ")
+
     dt = None
     if upload_date and len(upload_date) == 8 and upload_date.isdigit():
         try:
@@ -1733,7 +1701,7 @@ def fmt_yt_date(upload_date: Optional[str], timestamp: Optional[int], release_ts
             date_obj = date_obj - datetime.timedelta(days=1)
             # Format the corrected date
             dt_for_format = datetime.datetime.combine(date_obj, datetime.time.min)
-            return dt_for_format.strftime("%b %#d, %Y") if IS_WIN else dt_for_format.strftime("%b %-d, %Y")
+            return _fmt_day(dt_for_format)
         except Exception:
             pass
     # Fallback to timestamp if upload_date not available
@@ -1746,16 +1714,14 @@ def fmt_yt_date(upload_date: Optional[str], timestamp: Optional[int], release_ts
             dt = dt - datetime.timedelta(days=1)
             # Strip timezone info for formatting
             dt = dt.replace(tzinfo=None)
-            return dt.strftime("%b %#d, %Y") if IS_WIN else dt.strftime("%b %-d, %Y")
+            return _fmt_day(dt)
         except Exception:
             pass
     return None
 
 
 def _binary_names_for_platform() -> Tuple[str, str]:
-    """Return (yt-dlp-name, ffmpeg-name) for the current platform."""
-    if platform.system().lower() == "windows":
-        return ("yt-dlp.exe", "ffmpeg.exe")
+    """Return (yt-dlp-name, ffmpeg-name) for supported server platforms."""
     return ("yt-dlp", "ffmpeg")
 
 
@@ -1974,12 +1940,13 @@ def _pick_release_asset(assets: List[Dict[str, object]]) -> Optional[Dict[str, o
 
     def score(asset: Dict[str, object]) -> Tuple[int, int, int, int, int]:
         name = str(asset.get("name", "")).lower()
-        exe_ext = (".exe", ".msi") if sys_name == "windows" else ("", ".appimage", ".bin")
-        pri_binary_ext = 0 if any(name.endswith(ext) for ext in exe_ext if ext) else 1
-        if sys_name != "windows" and "." not in name.split("/")[-1]:
+        pri_binary_ext = 1
+        if name.endswith((".appimage", ".bin")):
+            pri_binary_ext = 0
+        if "." not in name.split("/")[-1]:
             pri_binary_ext = 0
         pri_archive = 0 if name.endswith((".zip", ".tar.gz", ".tgz")) else 1
-        pri_platform = 0 if ((sys_name == "windows" and "win" in name) or (sys_name == "linux" and "linux" in name)) else 1
+        pri_platform = 0 if (sys_name == "linux" and "linux" in name) else 1
         pri_server = 0 if "server" in name else 1
         pri_app = 0 if "stream247" in name else 1
         return (pri_binary_ext, pri_archive, pri_platform, pri_server, pri_app)
@@ -1995,8 +1962,6 @@ def _is_release_asset_self_installable(asset_name: str) -> bool:
     name = str(asset_name or "").strip().lower()
     if not name:
         return False
-    if IS_WIN:
-        return name.endswith(".exe")
     if name.endswith((".sh", ".ps1", ".bat", ".cmd", ".msi", ".zip", ".tar.gz", ".tgz")):
         return False
     return True
@@ -2281,9 +2246,7 @@ class StreamWorker(QtCore.QObject):
         self.log.emit(text)
 
     def _maybe_switch_to_system_ffmpeg(self, reason: str) -> bool:
-        """Switch to PATH ffmpeg on non-Windows when the bundled binary misbehaves."""
-        if IS_WIN:
-            return False
+        """Switch to PATH ffmpeg when the bundled binary misbehaves."""
         system_ffmpeg = shutil.which("ffmpeg")
         if not system_ffmpeg:
             return False
@@ -2304,18 +2267,13 @@ class StreamWorker(QtCore.QObject):
 
     def _default_auth_browsers(self) -> List[str]:
         """Return a browser probe order based on OS for --cookies-from-browser."""
-        sys_name = platform.system().lower()
-        if sys_name == "windows":
-            return ["edge", "chrome", "brave", "chromium", "firefox", "vivaldi", "opera"]
-        if sys_name == "darwin":
-            return ["safari", "chrome", "edge", "brave", "firefox", "chromium", "vivaldi", "opera"]
         # Linux and others
         return ["firefox", "chrome", "chromium", "brave", "edge", "vivaldi", "opera"]
 
     def _normalize_auth_browser(self) -> str:
         """Return the configured browser in normalized yt-dlp naming."""
         b = (self.cfg.yt_auth_browser or "auto").strip().lower()
-        allowed = {"auto", "chrome", "chromium", "edge", "firefox", "brave", "vivaldi", "opera", "safari"}
+        allowed = {"auto", "chrome", "chromium", "edge", "firefox", "brave", "vivaldi", "opera"}
         return b if b in allowed else "auto"
 
     def _candidate_browsers(self) -> List[str]:
@@ -2528,19 +2486,9 @@ class StreamWorker(QtCore.QObject):
                     _emit_progress(f"Downloading {label}... {pct}%", overall)
             return _cb
 
-        if sys_name == "windows":
-            ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-            ytdlp_regex = r"yt-dlp.*\.exe$"
-            ytdlp_local_name = "yt-dlp.exe"
-            ffmpeg_local_name = "ffmpeg.exe"
-        elif sys_name == "linux":
+        if sys_name == "linux":
             ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
             ytdlp_regex = r"yt-dlp_linux$"
-            ytdlp_local_name = "yt-dlp"
-            ffmpeg_local_name = "ffmpeg"
-        elif sys_name == "darwin":
-            ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-            ytdlp_regex = r"yt-dlp_macos$"
             ytdlp_local_name = "yt-dlp"
             ffmpeg_local_name = "ffmpeg"
         else:
@@ -2619,123 +2567,38 @@ class StreamWorker(QtCore.QObject):
         _emit_progress("Checking FFmpeg...", 55)
         if need_ffmpeg_download:
             try:
-                if sys_name == "windows":
-                    if force_ffmpeg:
-                        self.log.emit("[INFO] Updating ffmpeg.exe to latest Windows build…")
-                    else:
-                        self.log.emit("[INFO] ffmpeg.exe not found next to the app — downloading latest Windows build…")
-                    _emit_progress("Starting FFmpeg download...", 60)
-                    ff_zip_api_url = github_latest_asset_url(
-                        "BtbN/FFmpeg-Builds",
-                        prefer_substrings=["win64", "lgpl", "shared", "zip"],
-                        must_match_regex=r"ffmpeg-.*win64.*zip$",
-                        user_agent=f"{APP_NAME}/{APP_VERSION}"
-                    )
-                    if not ff_zip_api_url:
-                        raise RuntimeError("Could not determine latest FFmpeg Windows zip from GitHub API")
-                    dest_zip = app_dir / "ffmpeg-latest.zip"
-                    _download_url(
-                        ff_zip_api_url,
-                        dest_zip,
-                        user_agent=f"{APP_NAME}/{APP_VERSION}",
-                        progress_cb=_mk_dl_progress(60, 30, "ffmpeg bundle"),
-                        max_mbps=self.cfg.update_download_cap_mbps,
-                    )
-
-                    ffmpeg_bin_path: Optional[Path] = None
-                    try:
-                        with zipfile.ZipFile(dest_zip, 'r') as zf:
-                            cand = [n for n in zf.namelist() if n.lower().endswith('/bin/ffmpeg.exe') or n.lower().endswith('ffmpeg.exe')]
-                            if cand:
-                                target = local_ffmpeg
-                                member_name = cand[0]
-                                with zf.open(member_name) as src, open(target, 'wb') as out:
-                                    shutil.copyfileobj(src, out)
-                                ffmpeg_bin_path = target
-                            else:
-                                with tempfile.TemporaryDirectory() as tmpd:
-                                    zf.extractall(tmpd)
-                                    for root, _dirs, files in os.walk(tmpd):
-                                        for f in files:
-                                            if f.lower() == 'ffmpeg.exe':
-                                                ffmpeg_bin_path = Path(root) / f
-                                                break
-                                        if ffmpeg_bin_path:
-                                            break
-                                    if not ffmpeg_bin_path:
-                                        raise RuntimeError("ffmpeg.exe not found inside archive")
-                                    target = local_ffmpeg
-                                    shutil.copy2(ffmpeg_bin_path, target)
-                                    ffmpeg_bin_path = target
-                    finally:
-                        try:
-                            dest_zip.unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                elif sys_name == "linux":
-                    if machine not in ("x86_64", "amd64"):
-                        raise RuntimeError(f"Unsupported Linux architecture for auto-download: {machine}")
-                    if force_ffmpeg:
-                        self.log.emit("[INFO] Updating ffmpeg to latest Linux build…")
-                    else:
-                        self.log.emit("[INFO] ffmpeg not found next to the app — downloading latest Linux build…")
-                    _emit_progress("Starting FFmpeg download...", 60)
-                    ffmpeg_url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
-                    dest_tar = app_dir / "ffmpeg-latest.tar.xz"
-                    _download_url(
-                        ffmpeg_url,
-                        dest_tar,
-                        user_agent=f"{APP_NAME}/{APP_VERSION}",
-                        progress_cb=_mk_dl_progress(60, 30, "ffmpeg"),
-                        max_mbps=self.cfg.update_download_cap_mbps,
-                    )
-                    ffmpeg_bin_path = None
-                    try:
-                        with tarfile.open(dest_tar, "r:xz") as tf:
-                            member = next((m for m in tf.getmembers() if m.name.endswith("/ffmpeg")), None)
-                            if not member:
-                                raise RuntimeError("ffmpeg not found inside archive")
-                            with tf.extractfile(member) as src, open(local_ffmpeg, "wb") as out:
-                                if src is None:
-                                    raise RuntimeError("Failed to extract ffmpeg from archive")
-                                shutil.copyfileobj(src, out)
-                            ffmpeg_bin_path = local_ffmpeg
-                    finally:
-                        try:
-                            dest_tar.unlink(missing_ok=True)
-                        except Exception:
-                            pass
+                if machine not in ("x86_64", "amd64"):
+                    raise RuntimeError(f"Unsupported Linux architecture for auto-download: {machine}")
+                if force_ffmpeg:
+                    self.log.emit("[INFO] Updating ffmpeg to latest Linux build…")
                 else:
-                    if force_ffmpeg:
-                        self.log.emit("[INFO] Updating ffmpeg to latest macOS build…")
-                    else:
-                        self.log.emit("[INFO] ffmpeg not found next to the app — downloading latest macOS build…")
-                    _emit_progress("Starting FFmpeg download...", 60)
-                    ffmpeg_url = "https://evermeet.cx/ffmpeg/getrelease/zip"
-                    dest_zip = app_dir / "ffmpeg-latest.zip"
-                    _download_url(
-                        ffmpeg_url,
-                        dest_zip,
-                        user_agent=f"{APP_NAME}/{APP_VERSION}",
-                        progress_cb=_mk_dl_progress(60, 30, "ffmpeg"),
-                        max_mbps=self.cfg.update_download_cap_mbps,
-                    )
-                    ffmpeg_bin_path = None
+                    self.log.emit("[INFO] ffmpeg not found next to the app — downloading latest Linux build…")
+                _emit_progress("Starting FFmpeg download...", 60)
+                ffmpeg_url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+                dest_tar = app_dir / "ffmpeg-latest.tar.xz"
+                _download_url(
+                    ffmpeg_url,
+                    dest_tar,
+                    user_agent=f"{APP_NAME}/{APP_VERSION}",
+                    progress_cb=_mk_dl_progress(60, 30, "ffmpeg"),
+                    max_mbps=self.cfg.update_download_cap_mbps,
+                )
+                ffmpeg_bin_path = None
+                try:
+                    with tarfile.open(dest_tar, "r:xz") as tf:
+                        member = next((m for m in tf.getmembers() if m.name.endswith("/ffmpeg")), None)
+                        if not member:
+                            raise RuntimeError("ffmpeg not found inside archive")
+                        with tf.extractfile(member) as src, open(local_ffmpeg, "wb") as out:
+                            if src is None:
+                                raise RuntimeError("Failed to extract ffmpeg from archive")
+                            shutil.copyfileobj(src, out)
+                        ffmpeg_bin_path = local_ffmpeg
+                finally:
                     try:
-                        with zipfile.ZipFile(dest_zip, 'r') as zf:
-                            cand = [n for n in zf.namelist() if n.lower().endswith('/ffmpeg') or n.lower() == 'ffmpeg']
-                            if not cand:
-                                raise RuntimeError("ffmpeg not found inside archive")
-                            target = local_ffmpeg
-                            member_name = cand[0]
-                            with zf.open(member_name) as src, open(target, 'wb') as out:
-                                shutil.copyfileobj(src, out)
-                            ffmpeg_bin_path = target
-                    finally:
-                        try:
-                            dest_zip.unlink(missing_ok=True)
-                        except Exception:
-                            pass
+                        dest_tar.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
                 if ffmpeg_bin_path and ffmpeg_bin_path.exists():
                     try:
@@ -2831,14 +2694,14 @@ class StreamWorker(QtCore.QObject):
                         self.cfg.rtmp_base = rtmps_url.rsplit("/", 1)[0]
                         self.cfg.stream_key = rtmps_url.rsplit("/", 1)[-1]
                         return True
-                    if rc2 < 0 and not IS_WIN:
+                    if rc2 < 0:
                         self.log.emit(f"[WARN] RTMPS preflight crashed ({rc2}); skipping preflight.")
                         return True
                     self.log.emit(f"[ERROR] RTMPS preflight failed: {err2}")
             except Exception as e2:
                 self.log.emit(f"[WARN] RTMPS fallback error: {e2}")
 
-            if rc < 0 and not IS_WIN:
+            if rc < 0:
                 self.log.emit(f"[WARN] RTMP preflight crashed ({rc}); skipping preflight.")
                 return True
             self.log.emit(f"[ERROR] RTMP preflight failed: {err}")
@@ -2863,18 +2726,6 @@ class StreamWorker(QtCore.QObject):
                 proc.wait(timeout=1.0)
             except Exception:
                 pass
-        if IS_WIN and proc.poll() is None:
-            for cmd in (
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                ["taskkill", "/IM", "ffmpeg.exe", "/T", "/F"],
-            ):
-                try:
-                    run_hidden(cmd, capture=False)
-                except Exception:
-                    pass
-                if proc.poll() is not None:
-                    break
-
     # ---------- control ----------
     def stop(self):
         """Request the current ffmpeg process to terminate."""
@@ -2917,7 +2768,7 @@ class StreamWorker(QtCore.QObject):
             cp = self._run_ytdlp(["--ignore-errors", "--flat-playlist", "--get-id", url])
             if cp.returncode != 0:
                 err = (cp.stderr or "").strip()
-                # Common Windows chromium-family locking issue
+                # Common chromium-family profile locking issue
                 if "Could not copy Chrome cookie database" in err:
                     fix = (
                         "Browser cookie database is locked by a running Edge/Chrome instance.\n"
@@ -3110,12 +2961,6 @@ class StreamWorker(QtCore.QObject):
             # AMF option names vary across FFmpeg builds; avoid forcing optional knobs.
             self.cfg.extra_venc_flags = []
             return True
-        if encoder == "h264_videotoolbox":
-            self.cfg.encoder = "h264_videotoolbox"
-            self.cfg.encoder_name = "Apple VideoToolbox"
-            self.cfg.pix_fmt = "yuv420p"
-            self.cfg.extra_venc_flags = []
-            return True
         return False
 
     def _encoder_available(self, encoder: str) -> bool:
@@ -3143,11 +2988,6 @@ class StreamWorker(QtCore.QObject):
         sys_name = platform.system().lower()
         if self._encoder_available("h264_nvenc"):
             self._apply_encoder_profile("h264_nvenc")
-            return
-
-        if sys_name == "darwin":
-            if self._encoder_available("h264_videotoolbox"):
-                self._apply_encoder_profile("h264_videotoolbox")
             return
 
         if sys_name == "linux":
@@ -3215,7 +3055,7 @@ class StreamWorker(QtCore.QObject):
 
         if self.cfg.encoder == "h264_vaapi":
             cmd += ["-vaapi_device", "/dev/dri/renderD128"]
-        elif self.cfg.encoder == "h264_qsv" and (not IS_WIN) and Path("/dev/dri/renderD128").exists():
+        elif self.cfg.encoder == "h264_qsv" and Path("/dev/dri/renderD128").exists():
             # Help headless Linux/QSV setups bind to the Intel render node.
             cmd += ["-init_hw_device", "qsv=hw:/dev/dri/renderD128"]
         
@@ -3316,9 +3156,7 @@ class StreamWorker(QtCore.QObject):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1,
-            startupinfo=STARTUPINFO,
-            creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+            bufsize=1
         )
 
         def _reader(stream):
@@ -3425,9 +3263,7 @@ class StreamWorker(QtCore.QObject):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1,
-            startupinfo=STARTUPINFO,
-            creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+            bufsize=1
         )
 
         def _reader(stream):
@@ -3492,7 +3328,7 @@ class StreamWorker(QtCore.QObject):
     @QtCore.Slot()
     def run(self):
         """Main worker loop that continually streams the playlist."""
-        # Try to self-heal dependencies on Windows
+        # Try to self-heal dependencies at runtime
         try:
             self.ensure_binaries()
         except Exception:
@@ -3851,65 +3687,38 @@ class HeadlessRuntime:
         if not self._is_supported_update_asset(staged_abs):
             raise RuntimeError(f"Unsupported update asset for self-install: {staged_abs.name}")
         managed_by_systemd = _running_under_systemd()
-        if IS_WIN:
-            helper_path = updates_dir / f"apply-update-{int(time.time())}.cmd"
+        if managed_by_systemd:
+            # Replace binary in-place, then let systemd perform the restart.
+            os.replace(str(staged_abs), str(current_exe))
+            try:
+                os.chmod(current_exe, 0o755)
+            except Exception:
+                pass
+            self.log("[INFO] Systemd service detected; handing restart back to systemd.")
+        else:
+            helper_path = updates_dir / f"apply-update-{int(time.time())}.sh"
             helper = (
-                "@echo off\r\n"
-                "setlocal\r\n"
-                f"set \"PID={os.getpid()}\"\r\n"
-                ":waitloop\r\n"
-                "tasklist /FI \"PID eq %PID%\" 2>NUL | find /I \"%PID%\" >NUL\r\n"
-                "if %ERRORLEVEL%==0 (\r\n"
-                "  timeout /t 1 /nobreak >NUL\r\n"
-                "  goto waitloop\r\n"
-                ")\r\n"
-                f"move /Y \"{str(staged_abs)}\" \"{str(current_exe)}\" >NUL\r\n"
-                f"start \"\" \"{str(current_exe)}\"\r\n"
-                "del \"%~f0\" >NUL 2>&1\r\n"
+                "#!/usr/bin/env sh\n"
+                "set -eu\n"
+                f"PID='{os.getpid()}'\n"
+                f"SRC={shlex.quote(str(staged_abs))}\n"
+                f"DST={shlex.quote(str(current_exe))}\n"
+                "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.25; done\n"
+                "mv -f \"$SRC\" \"$DST\"\n"
+                "chmod +x \"$DST\" || true\n"
+                "\"$DST\" >/dev/null 2>&1 &\n"
+                "rm -f \"$0\"\n"
             )
             helper_path.write_text(helper, encoding="utf-8")
+            os.chmod(helper_path, 0o755)
             subprocess.Popen(
-                ["cmd", "/c", str(helper_path)],
+                [str(helper_path)],
                 cwd=str(current_exe.parent),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                startupinfo=STARTUPINFO,
-                creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
+                start_new_session=True,
                 close_fds=True,
             )
-        else:
-            if managed_by_systemd:
-                # Replace binary in-place, then let systemd perform the restart.
-                os.replace(str(staged_abs), str(current_exe))
-                try:
-                    os.chmod(current_exe, 0o755)
-                except Exception:
-                    pass
-                self.log("[INFO] Systemd service detected; handing restart back to systemd.")
-            else:
-                helper_path = updates_dir / f"apply-update-{int(time.time())}.sh"
-                helper = (
-                    "#!/usr/bin/env sh\n"
-                    "set -eu\n"
-                    f"PID='{os.getpid()}'\n"
-                    f"SRC={shlex.quote(str(staged_abs))}\n"
-                    f"DST={shlex.quote(str(current_exe))}\n"
-                    "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.25; done\n"
-                    "mv -f \"$SRC\" \"$DST\"\n"
-                    "chmod +x \"$DST\" || true\n"
-                    "\"$DST\" >/dev/null 2>&1 &\n"
-                    "rm -f \"$0\"\n"
-                )
-                helper_path.write_text(helper, encoding="utf-8")
-                os.chmod(helper_path, 0o755)
-                subprocess.Popen(
-                    [str(helper_path)],
-                    cwd=str(current_exe.parent),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                    close_fds=True,
-                )
         try:
             self.stop_stream()
         except Exception:
@@ -3962,7 +3771,7 @@ class HeadlessRuntime:
             self.log(f"[INFO] Downloading app update to {dest} ...")
             self._set_app_update_progress("Downloading app update...")
             _download_url(dl_url, dest, user_agent=f"{APP_NAME}/{APP_VERSION}", max_mbps=cap)
-            if (not IS_WIN) and dest.exists():
+            if dest.exists():
                 try:
                     os.chmod(dest, 0o755)
                 except Exception:

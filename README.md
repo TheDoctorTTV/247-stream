@@ -13,7 +13,7 @@ It can:
 - Web dashboard to start/stop/skip streams and live-edit settings
 - Source support: YouTube playlist/video, Twitch URL, direct HLS URL
 - Output controls: resolution (480p to 2160p), 30/60 FPS, bitrate, stream buffer mode
-- Encoder selection: auto or explicit (`libx264`, NVENC, QSV, AMF, VAAPI, VideoToolbox)
+- Encoder selection: auto or explicit (`libx264`, NVENC, QSV, AMF, VAAPI)
 - Optional title overlay and playlist shuffle
 - YouTube auth options (`yt-dlp` browser cookie import + optional profile path)
 - In-app binary updates for `yt-dlp` and `ffmpeg`
@@ -32,7 +32,6 @@ python3 Stream247.py
 ### From built binary
 
 - Linux: `dist/stream247-server`
-- Windows: `dist/stream247-server.exe`
 
 When running, open:
 
@@ -114,15 +113,8 @@ A current example is available at `dist/config.json` after building/running.
 ./build_linux.sh
 ```
 
-### Windows (PowerShell)
-
-```powershell
-.\build_windows.ps1
-```
-
 Build output:
 - Linux: `dist/stream247-server`
-- Windows: `dist/stream247-server.exe`
 
 ### Linux systemd user service (recommended for 24/7)
 
