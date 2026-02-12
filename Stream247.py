@@ -3132,6 +3132,7 @@ class HeadlessRuntime:
             "mode": "manual",
             "selected_version": "",
             "selected_channel": "",
+            "force_reinstall": False,
         }
         self.web_dashboard = LocalWebDashboard(
             host=self.host,
@@ -3306,6 +3307,12 @@ class HeadlessRuntime:
             channel = "release"
         return channel
 
+    @staticmethod
+    def _sanitize_force_reinstall(payload: Optional[Dict[str, object]]) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        return _to_bool(payload.get("force_reinstall", False), False)
+
     def trigger_app_update_check(self, payload: Optional[Dict[str, object]] = None) -> Dict[str, object]:
         selected_version = self._sanitize_selected_version(payload)
         settings = web_settings_payload_from_config(load_config_json())
@@ -3318,6 +3325,7 @@ class HeadlessRuntime:
             self._app_update_state["progress_message"] = "Checking latest app release..."
             self._app_update_state["selected_version"] = selected_version
             self._app_update_state["selected_channel"] = channel
+            self._app_update_state["force_reinstall"] = False
         status = self.get_app_update_status()
         with self._app_update_lock:
             if not self._app_update_state.get("running", False):
@@ -3393,7 +3401,13 @@ class HeadlessRuntime:
                 self.log_fh = None
         os._exit(0)
 
-    def _run_app_update_download(self, auto_mode: bool = False, selected_version: str = "", selected_channel: str = "") -> None:
+    def _run_app_update_download(
+        self,
+        auto_mode: bool = False,
+        selected_version: str = "",
+        selected_channel: str = "",
+        force_reinstall: bool = False,
+    ) -> None:
         try:
             settings = web_settings_payload_from_config(load_config_json())
             cap = int(settings.get("update_download_cap_mbps", 25) or 25)
@@ -3401,10 +3415,17 @@ class HeadlessRuntime:
             channel = str(selected_channel or settings.get("app_update_channel", "release")).strip().lower()
             if channel not in WEB_ALLOWED_UPDATE_CHANNELS:
                 channel = "release"
-            mode_label = "automatic" if auto_mode else "manual"
+            if auto_mode:
+                mode_label = "automatic"
+            elif force_reinstall:
+                mode_label = "manual (reinstall)"
+            else:
+                mode_label = "manual"
             self._set_app_update_progress("Checking latest app release...")
             info = fetch_latest_app_release_info(channel, selected_version=selected_version or None)
-            if not bool(info.get("should_install", False)):
+            if force_reinstall:
+                info["should_install"] = True
+            if (not bool(info.get("should_install", False))) and (not force_reinstall):
                 with self._app_update_lock:
                     self._app_update_state["last_result"] = info
                     self._app_update_state["last_error"] = ""
@@ -3441,6 +3462,7 @@ class HeadlessRuntime:
                 self._app_update_state["progress_message"] = "Installing update and restarting..."
                 self._app_update_state["selected_version"] = str(info.get("selected_version", "") or "")
                 self._app_update_state["selected_channel"] = str(info.get("channel", channel) or channel)
+                self._app_update_state["force_reinstall"] = bool(force_reinstall)
             self.log(f"[INFO] App update downloaded: {dest}")
             if not getattr(sys, "frozen", False):
                 with self._app_update_lock:
@@ -3465,6 +3487,7 @@ class HeadlessRuntime:
         selected_version = self._sanitize_selected_version(payload)
         settings = web_settings_payload_from_config(load_config_json())
         channel = self._sanitize_selected_channel(payload, str(settings.get("app_update_channel", "release")))
+        force_reinstall = self._sanitize_force_reinstall(payload)
         with self._app_update_lock:
             if self._app_update_state.get("running", False):
                 return dict(self._app_update_state)
@@ -3476,7 +3499,12 @@ class HeadlessRuntime:
             self._app_update_state["mode"] = "automatic" if auto_mode else "manual"
             self._app_update_state["selected_version"] = selected_version
             self._app_update_state["selected_channel"] = channel
-        t = threading.Thread(target=self._run_app_update_download, args=(auto_mode, selected_version, channel), daemon=True)
+            self._app_update_state["force_reinstall"] = bool(force_reinstall)
+        t = threading.Thread(
+            target=self._run_app_update_download,
+            args=(auto_mode, selected_version, channel, force_reinstall),
+            daemon=True,
+        )
         t.start()
         return self.get_app_update_status()
 

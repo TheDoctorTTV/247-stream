@@ -10,6 +10,7 @@
     const settingsStatus = document.getElementById("settingsStatus");
     const checkAppUpdateBtn = document.getElementById("checkAppUpdateBtn");
     const downloadAppUpdateBtn = document.getElementById("downloadAppUpdateBtn");
+    const reinstallAppBtn = document.getElementById("reinstallAppBtn");
     const appUpdateStatus = document.getElementById("appUpdateStatus");
     const appUpdateVersion = document.getElementById("app_update_version");
     const updateBinariesBtn = document.getElementById("updateBinariesBtn");
@@ -461,6 +462,7 @@
         const shouldInstall = (!!result.should_install || !!result.is_newer || rel === -1 || rel === 1);
         const assetSupported = (result.asset_supported !== false);
         const updateAvailable = shouldInstall && assetSupported;
+        const reinstallAvailable = assetSupported && (!!result && Object.keys(result).length > 0);
         const nowMs = Date.now();
         if (prevAppUpdateRunning && !info.running && !info.last_error && !updateAvailable) {
           appJustUpdatedUntil = nowMs + 12000;
@@ -487,26 +489,46 @@
         } else {
           downloadAppUpdateBtn.title = "No app install needed";
         }
+        if (reinstallAppBtn) {
+          reinstallAppBtn.disabled = !!info.running || !reinstallAvailable;
+          if (!reinstallAvailable) {
+            reinstallAppBtn.title = "Check for app updates first";
+          } else if (!assetSupported) {
+            reinstallAppBtn.title = "Selected release does not include a self-installable asset for this platform";
+          } else {
+            reinstallAppBtn.title = "Reinstall selected app version even if unchanged";
+          }
+        }
       } catch (err) {
         setAppUpdateStatus("Failed to load app update status.", "error");
       }
     }
 
-    async function triggerAppUpdateDownload() {
+    async function triggerAppUpdateDownload(forceReinstall = false) {
       const selectedVersion = String(appUpdateVersion.value || "").trim();
       const selectedChannel = String(document.getElementById("app_update_channel").value || "release").trim();
-      setAppUpdateStatus("Starting app update install...", "running");
+      setAppUpdateStatus(
+        forceReinstall ? "Starting app reinstall..." : "Starting app update install...",
+        "running"
+      );
       try {
         const res = await fetch("/api/app-update/download", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ selected_version: selectedVersion, channel: selectedChannel })
+          body: JSON.stringify({
+            selected_version: selectedVersion,
+            channel: selectedChannel,
+            force_reinstall: !!forceReinstall
+          })
         });
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
         await loadAppUpdateStatus();
       } catch (err) {
-        setAppUpdateStatus("Failed to start app update install.", "error");
+        setAppUpdateStatus(
+          forceReinstall ? "Failed to start app reinstall." : "Failed to start app update install.",
+          "error"
+        );
       }
     }
 
@@ -642,6 +664,9 @@
     });
     checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
+    if (reinstallAppBtn) {
+      reinstallAppBtn.addEventListener("click", () => triggerAppUpdateDownload(true));
+    }
     appUpdateVersion.addEventListener("change", () => triggerAppUpdateCheck());
     const appUpdateChannel = document.getElementById("app_update_channel");
     if (appUpdateChannel) {
