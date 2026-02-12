@@ -116,6 +116,8 @@ A current example is available at `dist/config.json` after building/running.
 Build output:
 - Linux: `dist/stream247-server`
 
+The build bundles web dashboard assets from `web/` (`index.html`, `style.css`, `app.js`) into the binary.
+
 ### Linux systemd user service (recommended for 24/7)
 
 After building:

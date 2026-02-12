@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{APP_NAME} Dashboard</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>{APP_NAME} Web Dashboard</h1>
+      <div class="row">
+        <div>State: <span id="stateText" class="status">Unknown</span></div>
+        <div class="muted" id="metaText"></div>
+      </div>
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="tab-stream">Stream</button>
+        <button class="tab-btn" data-tab="tab-console">Console</button>
+        <button class="tab-btn" data-tab="tab-about">About</button>
+      </div>
+    </div>
+    <div class="tab-panel active" id="tab-stream">
+      <div class="card">
+        <div class="row">
+          <button class="primary" id="startBtn">Start Stream</button>
+          <button id="stopBtn">Stop Stream</button>
+          <button id="skipBtn">Skip Video</button>
+          <button id="refreshBtn">Refresh</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Stream Settings</h2>
+        <div class="grid">
+          <div class="field wide"><label for="playlist_url">Source URL</label><input id="playlist_url" type="text"></div>
+          <div class="field"><label for="rtmp_base">Stream URL</label><input id="rtmp_base" type="text"></div>
+          <div class="field"><label for="stream_key">Stream Key</label><input id="stream_key" type="password"></div>
+          <div class="field"><label for="resolution">Resolution</label><select id="resolution"><option>480p</option><option>720p</option><option>1080p</option><option>1440p</option><option>2160p</option></select></div>
+          <div class="field"><label for="framerate">Frame Rate</label><select id="framerate"><option value="30">30</option><option value="60">60</option></select></div>
+          <div class="field"><label for="video_bitrate">Video Bitrate</label><select id="video_bitrate"></select></div>
+          <div class="field"><label for="buffer_mode">Stream Buffer</label><select id="buffer_mode"><option>Low</option><option>Medium</option><option>High</option><option>Ultra</option></select></div>
+          <div class="field"><label for="encoder_preference">Encoder</label><select id="encoder_preference"><option value="auto">Auto</option><option value="libx264">CPU x264</option><option value="h264_nvenc">NVIDIA NVENC</option><option value="h264_qsv">Intel QSV</option><option value="h264_amf">AMD AMF</option><option value="h264_vaapi">VAAPI</option></select></div>
+          <div class="field"><label for="update_download_cap_mbps">Update Download Cap (Mbps)</label><select id="update_download_cap_mbps"></select></div>
+          <div class="field"><label for="yt_auth_enabled">YouTube Auth</label><select id="yt_auth_enabled"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+          <div class="field"><label for="yt_auth_browser">YouTube Browser</label><select id="yt_auth_browser"><option value="auto">Auto</option><option value="firefox">Firefox</option><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="chromium">Chromium</option><option value="brave">Brave</option><option value="vivaldi">Vivaldi</option><option value="opera">Opera</option></select></div>
+          <div class="field wide"><label for="yt_auth_profile">YouTube Profile Path</label><input id="yt_auth_profile" type="text"></div>
+        </div>
+        <div class="checks" style="margin-top:12px;">
+          <label class="check"><input id="overlay_titles" type="checkbox">Overlay current title</label>
+          <label class="check"><input id="shuffle" type="checkbox">Shuffle playlist</label>
+          <label class="check"><input id="log_to_file" type="checkbox">Log to file</label>
+          <label class="check"><input id="rtmp_live" type="checkbox">RTMP live mode</label>
+          <label class="check"><input id="remember" type="checkbox">Remember playlist and key</label>
+          <label class="check"><input id="check_updates_startup" type="checkbox">Check updates on startup</label>
+        </div>
+        <div class="row" style="margin-top:12px;">
+          <button id="reloadSettingsBtn">Reload Settings</button>
+          <div id="settingsStatus" class="statusline"></div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-panel" id="tab-console">
+      <div class="card">
+        <div class="subtabs">
+          <button class="subtab-btn active" data-subtab="subtab-other">App / Other Output</button>
+          <button class="subtab-btn" data-subtab="subtab-ffmpeg">FFmpeg Output</button>
+        </div>
+        <div class="subtab-panel active" id="subtab-other"><pre id="otherLogBox">Loading...</pre></div>
+        <div class="subtab-panel" id="subtab-ffmpeg"><pre id="ffmpegLogBox">Loading...</pre></div>
+      </div>
+    </div>
+    <div class="tab-panel" id="tab-about">
+      <div class="card">
+        <h2>About</h2>
+        <p><strong>{APP_NAME}</strong> - YouTube 24/7 VOD Streamer<br>Version {APP_VERSION}</p>
+        <div class="creator">
+          <img src="https://thetimevortex.net/media/creators/624961413500108830/c0483390-40d3-4d8c-b922-6997639b3d71.png" alt="TheDoctorTTV profile picture">
+          <div>Created by <strong>TheDoctorTTV</strong></div>
+        </div>
+        <p><a href="https://github.com/{GITHUB_REPO}" target="_blank" rel="noreferrer">GitHub Repository</a></p>
+        <div class="about-stack">
+          <div class="about-section">
+            <div class="about-header">
+              <div class="about-label">App Updates</div>
+              <div class="about-controls">
+                <button id="checkAppUpdateBtn">Check</button>
+                <button class="primary" id="downloadAppUpdateBtn">Install</button>
+              </div>
+            </div>
+            <div id="appUpdateStatus" class="statusline">App update status not loaded.</div>
+            <div class="about-controls" style="margin-top: 8px;">
+              <div class="field" style="min-width: 220px; margin: 0;">
+                <label for="app_update_channel">Channel</label>
+                <select id="app_update_channel"><option value="release">Releases</option><option value="prerelease">Pre-releases</option></select>
+              </div>
+              <div class="field" style="min-width: 220px; margin: 0;">
+                <label for="app_update_version">Version</label>
+                <select id="app_update_version"><option value="">Latest in selected channel</option></select>
+              </div>
+              <label class="check" style="margin: 0;"><input id="auto_app_updates" type="checkbox">Auto install</label>
+            </div>
+          </div>
+          <div class="about-section">
+            <div class="about-header">
+              <div class="about-label">Binary Updates</div>
+              <div class="about-controls">
+                <button class="primary" id="updateBinariesBtn">Update yt-dlp & FFmpeg</button>
+              </div>
+            </div>
+            <div id="binariesStatus" class="statusline">Binary status not loaded.</div>
+            <div class="progress-wrap"><div id="binariesProgressBar" class="progress-bar"></div></div>
+            <div id="binariesProgressText" class="statusline"></div>
+          </div>
+        </div>
+        <ul class="about-list">
+          <li>Server bind is configured in <code>config.json</code>.</li>
+          <li>Install app updates for one-click update + restart.</li>
+          <li>Update binaries to refresh local yt-dlp and FFmpeg.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+    <script src="/assets/app.js"></script>
+</body>
+</html>

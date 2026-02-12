@@ -70,7 +70,7 @@ import re
 
 # General application metadata and platform helpers
 APP_NAME = "Stream247"  # Name shown in logs and dashboard
-APP_VERSION = "2.0-pre-release-2"  # Current version
+APP_VERSION = "2.0-pre-release-3"  # Current version
 GITHUB_REPO = "TheDoctorTTV/247-stream"  # GitHub repository for updates
 
 # ---------- config.json helpers ----------
@@ -506,6 +506,26 @@ class LocalWebDashboard:
                     except Exception:
                         self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Failed to read icon.ico")
                     return
+                if path == "/assets/style.css":
+                    css_path = Path(resource_path("web/style.css"))
+                    if not css_path.exists():
+                        self.send_error(HTTPStatus.NOT_FOUND, "style.css not found")
+                        return
+                    try:
+                        self._send_bytes(css_path.read_bytes(), "text/css; charset=utf-8")
+                    except Exception:
+                        self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Failed to read style.css")
+                    return
+                if path == "/assets/app.js":
+                    js_path = Path(resource_path("web/app.js"))
+                    if not js_path.exists():
+                        self.send_error(HTTPStatus.NOT_FOUND, "app.js not found")
+                        return
+                    try:
+                        self._send_bytes(js_path.read_bytes(), "application/javascript; charset=utf-8")
+                    except Exception:
+                        self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Failed to read app.js")
+                    return
                 if path == "/api/state":
                     self._send_json(dashboard._state_provider())
                     return
@@ -571,776 +591,22 @@ class LocalWebDashboard:
         return Handler
 
     def _build_index_html(self) -> str:
-        return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{APP_NAME} Dashboard</title>
-  <link rel="icon" href="/favicon.ico" sizes="any">
-  <style>
-    :root {{
-      --bg: #0b1220;
-      --card: #121b2c;
-      --text: #e7eefc;
-      --muted: #98a9c6;
-      --ok: #3db37a;
-      --warn: #e7a23c;
-      --err: #de5a5a;
-      --btn: #2379f5;
-      --btn2: #2a3348;
-      --border: #22324a;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      background: radial-gradient(circle at top, #15243f 0%, var(--bg) 45%);
-      color: var(--text);
-      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
-      padding: 20px;
-    }}
-    .wrap {{ max-width: 1120px; margin: 0 auto; }}
-    .card {{
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 14px;
-      margin-bottom: 14px;
-    }}
-    h1 {{ margin: 0 0 8px; font-size: 1.35rem; }}
-    h2 {{ margin: 0 0 10px; font-size: 1.05rem; color: #cbd8f4; }}
-    .muted {{ color: var(--muted); }}
-    .row {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
-    .tabs {{ display: flex; gap: 8px; margin-top: 10px; }}
-    .tab-btn {{
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 8px 12px;
-      color: var(--text);
-      background: #16233a;
-      cursor: pointer;
-      font-weight: 600;
-    }}
-    .tab-btn.active {{ background: var(--btn); }}
-    .tab-panel {{ display: none; }}
-    .tab-panel.active {{ display: block; }}
-    .subtabs {{ display: flex; gap: 8px; margin-bottom: 10px; }}
-    .subtab-btn {{
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 7px 10px;
-      background: #101a2b;
-      color: #c6d6f3;
-      cursor: pointer;
-      font-size: 12px;
-      font-weight: 600;
-    }}
-    .subtab-btn.active {{ background: #21436f; color: #fff; }}
-    .subtab-panel {{ display: none; }}
-    .subtab-panel.active {{ display: block; }}
-    .grid {{
-      display: grid;
-      gap: 10px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }}
-    .field {{
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }}
-    .field.wide {{ grid-column: 1 / -1; }}
-    label {{ font-size: 12px; color: #adc0e1; }}
-    input[type="text"], input[type="password"], select {{
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: #0f1729;
-      color: var(--text);
-      padding: 9px 10px;
-      width: 100%;
-    }}
-    .checks {{
-      display: grid;
-      gap: 8px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }}
-    .check {{
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      color: #c4d3ee;
-      font-size: 13px;
-    }}
-    button {{
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 9px 12px;
-      color: var(--text);
-      background: var(--btn2);
-      cursor: pointer;
-      font-weight: 600;
-    }}
-    button.primary {{ background: var(--btn); }}
-    button:disabled {{ opacity: 0.45; cursor: default; }}
-    .status {{
-      font-weight: 700;
-      color: var(--warn);
-    }}
-    .status.on {{ color: var(--ok); }}
-    .statusline {{ color: var(--muted); min-height: 1.2em; }}
-    .statusline.ok {{ color: var(--ok); }}
-    .statusline.err {{ color: var(--err); }}
-    .statusline.warn {{ color: var(--warn); }}
-    .about-list {{ margin: 0; padding-left: 18px; color: #c8d8f0; line-height: 1.5; }}
-    .progress-wrap {{
-      position: relative;
-      width: 100%;
-      height: 10px;
-      border-radius: 999px;
-      overflow: hidden;
-      border: 1px solid var(--border);
-      background: #0a101b;
-      margin: 8px 0 6px;
-    }}
-    .progress-bar {{
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, #2aa0f0, #5ed8ff);
-      transition: width 0.2s ease;
-    }}
-    .creator {{
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin: 8px 0 10px;
-      color: #c8d8f0;
-    }}
-    .creator img {{
-      width: 48px;
-      height: 48px;
-      border-radius: 50%;
-      border: 1px solid var(--border);
-      object-fit: cover;
-    }}
-    a {{ color: #7fd6ff; }}
-    a:hover {{ color: #a8e8ff; }}
-    pre {{
-      background: #0a101b;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 12px;
-      margin: 0;
-      min-height: 250px;
-      max-height: 62vh;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-family: Consolas, "Courier New", monospace;
-      font-size: 12px;
-      line-height: 1.35;
-    }}
-    @media (max-width: 900px) {{
-      .grid {{ grid-template-columns: 1fr; }}
-      .checks {{ grid-template-columns: 1fr; }}
-      .tabs {{ flex-wrap: wrap; }}
-      .subtabs {{ flex-wrap: wrap; }}
-    }}
-    code {{ color: #b9c9e8; }}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card">
-      <h1>{APP_NAME} Web Dashboard</h1>
-      <div class="row">
-        <div>State: <span id="stateText" class="status">Unknown</span></div>
-        <div class="muted" id="metaText"></div>
-      </div>
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="tab-stream">Stream</button>
-        <button class="tab-btn" data-tab="tab-console">Console</button>
-        <button class="tab-btn" data-tab="tab-about">About</button>
-      </div>
-    </div>
-    <div class="tab-panel active" id="tab-stream">
-      <div class="card">
-        <div class="row">
-          <button class="primary" id="startBtn">Start Stream</button>
-          <button id="stopBtn">Stop Stream</button>
-          <button id="skipBtn">Skip Video</button>
-          <button id="refreshBtn">Refresh</button>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Stream Settings</h2>
-        <div class="grid">
-          <div class="field wide"><label for="playlist_url">Source URL</label><input id="playlist_url" type="text"></div>
-          <div class="field"><label for="rtmp_base">Stream URL</label><input id="rtmp_base" type="text"></div>
-          <div class="field"><label for="stream_key">Stream Key</label><input id="stream_key" type="password"></div>
-          <div class="field"><label for="resolution">Resolution</label><select id="resolution"><option>480p</option><option>720p</option><option>1080p</option><option>1440p</option><option>2160p</option></select></div>
-          <div class="field"><label for="framerate">Frame Rate</label><select id="framerate"><option value="30">30</option><option value="60">60</option></select></div>
-          <div class="field"><label for="video_bitrate">Video Bitrate</label><select id="video_bitrate"></select></div>
-          <div class="field"><label for="buffer_mode">Stream Buffer</label><select id="buffer_mode"><option>Low</option><option>Medium</option><option>High</option><option>Ultra</option></select></div>
-          <div class="field"><label for="encoder_preference">Encoder</label><select id="encoder_preference"><option value="auto">Auto</option><option value="libx264">CPU x264</option><option value="h264_nvenc">NVIDIA NVENC</option><option value="h264_qsv">Intel QSV</option><option value="h264_amf">AMD AMF</option><option value="h264_vaapi">VAAPI</option></select></div>
-          <div class="field"><label for="update_download_cap_mbps">Update Download Cap (Mbps)</label><select id="update_download_cap_mbps"></select></div>
-          <div class="field"><label for="yt_auth_enabled">YouTube Auth</label><select id="yt_auth_enabled"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
-          <div class="field"><label for="yt_auth_browser">YouTube Browser</label><select id="yt_auth_browser"><option value="auto">Auto</option><option value="firefox">Firefox</option><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="chromium">Chromium</option><option value="brave">Brave</option><option value="vivaldi">Vivaldi</option><option value="opera">Opera</option></select></div>
-          <div class="field wide"><label for="yt_auth_profile">YouTube Profile Path</label><input id="yt_auth_profile" type="text"></div>
-        </div>
-        <div class="checks" style="margin-top:12px;">
-          <label class="check"><input id="overlay_titles" type="checkbox">Overlay current title</label>
-          <label class="check"><input id="shuffle" type="checkbox">Shuffle playlist</label>
-          <label class="check"><input id="log_to_file" type="checkbox">Log to file</label>
-          <label class="check"><input id="rtmp_live" type="checkbox">RTMP live mode</label>
-          <label class="check"><input id="remember" type="checkbox">Remember playlist and key</label>
-          <label class="check"><input id="check_updates_startup" type="checkbox">Check updates on startup</label>
-        </div>
-        <div class="row" style="margin-top:12px;">
-          <button id="reloadSettingsBtn">Reload Settings</button>
-          <div id="settingsStatus" class="statusline"></div>
-        </div>
-      </div>
-    </div>
-    <div class="tab-panel" id="tab-console">
-      <div class="card">
-        <div class="subtabs">
-          <button class="subtab-btn active" data-subtab="subtab-other">App / Other Output</button>
-          <button class="subtab-btn" data-subtab="subtab-ffmpeg">FFmpeg Output</button>
-        </div>
-        <div class="subtab-panel active" id="subtab-other"><pre id="otherLogBox">Loading...</pre></div>
-        <div class="subtab-panel" id="subtab-ffmpeg"><pre id="ffmpegLogBox">Loading...</pre></div>
-      </div>
-    </div>
-    <div class="tab-panel" id="tab-about">
-      <div class="card">
-        <h2>About</h2>
-        <p><strong>{APP_NAME}</strong> - YouTube 24/7 VOD Streamer<br>Version {APP_VERSION}</p>
-        <div class="creator">
-          <img src="https://thetimevortex.net/media/creators/624961413500108830/c0483390-40d3-4d8c-b922-6997639b3d71.png" alt="TheDoctorTTV profile picture">
-          <div>Created by <strong>TheDoctorTTV</strong></div>
-        </div>
-        <p><a href="https://github.com/{GITHUB_REPO}" target="_blank" rel="noreferrer">GitHub Repository</a></p>
-        <div class="row" style="margin:10px 0 8px;">
-          <button id="checkAppUpdateBtn">Check App Update</button>
-          <button class="primary" id="downloadAppUpdateBtn">Install App Update</button>
-        </div>
-        <div id="appUpdateStatus" class="statusline">App update status not loaded.</div>
-        <div class="row" style="margin:10px 0 8px; align-items: end;">
-          <div class="field" style="min-width: 220px; margin: 0;">
-            <label for="app_update_channel">App Update Channel</label>
-            <select id="app_update_channel"><option value="release">Releases</option><option value="prerelease">Pre-releases</option></select>
-          </div>
-          <div class="field" style="min-width: 220px; margin: 0;">
-            <label for="app_update_version">Version</label>
-            <select id="app_update_version"><option value="">Latest in selected channel</option></select>
-          </div>
-          <label class="check" style="margin: 0;"><input id="auto_app_updates" type="checkbox">Automatically install app updates</label>
-        </div>
-        <div class="row" style="margin:10px 0 8px;">
-          <button class="primary" id="updateBinariesBtn">Update Binaries (yt-dlp & FFmpeg)</button>
-        </div>
-        <div id="binariesStatus" class="statusline">Binary status not loaded.</div>
-        <div class="progress-wrap"><div id="binariesProgressBar" class="progress-bar"></div></div>
-        <div id="binariesProgressText" class="statusline"></div>
-        <ul class="about-list">
-          <li>Interface is fully web-based.</li>
-          <li>Server bind is configured in <code>config.json</code>.</li>
-          <li>Use Install App Update for one-click update and restart.</li>
-          <li>Use Update Binaries to refresh yt-dlp and FFmpeg next to the app.</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-  <script>
-    const stateText = document.getElementById("stateText");
-    const metaText = document.getElementById("metaText");
-    const otherLogBox = document.getElementById("otherLogBox");
-    const ffmpegLogBox = document.getElementById("ffmpegLogBox");
-    const startBtn = document.getElementById("startBtn");
-    const stopBtn = document.getElementById("stopBtn");
-    const skipBtn = document.getElementById("skipBtn");
-    const refreshBtn = document.getElementById("refreshBtn");
-    const reloadSettingsBtn = document.getElementById("reloadSettingsBtn");
-    const settingsStatus = document.getElementById("settingsStatus");
-    const checkAppUpdateBtn = document.getElementById("checkAppUpdateBtn");
-    const downloadAppUpdateBtn = document.getElementById("downloadAppUpdateBtn");
-    const appUpdateStatus = document.getElementById("appUpdateStatus");
-    const appUpdateVersion = document.getElementById("app_update_version");
-    const updateBinariesBtn = document.getElementById("updateBinariesBtn");
-    const binariesStatus = document.getElementById("binariesStatus");
-    const binariesProgressBar = document.getElementById("binariesProgressBar");
-    const binariesProgressText = document.getElementById("binariesProgressText");
-    const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
-    const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
-    const subtabButtons = Array.from(document.querySelectorAll(".subtab-btn"));
-    const subtabPanels = Array.from(document.querySelectorAll(".subtab-panel"));
-    let busy = false;
-    let appUpdateRunning = false;
-    let binariesUpdateRunning = false;
-    let lastAppCheckAt = "";
-    let lastBinariesCheckAt = "";
-    let suppressAutoSave = false;
-    let autoSaveTimer = null;
-    let saveInFlight = false;
-    let pendingAutoSave = false;
-    let lastSavedPayload = "";
-    let appVersionsBoundToChannel = "";
-    const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "rtmp_live", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel", "update_download_cap_mbps"];
+        template_path = Path(resource_path("web/index.html"))
+        try:
+            html = template_path.read_text(encoding="utf-8")
+        except Exception:
+            return (
+                "<!doctype html><html><head><meta charset='utf-8'><title>"
+                + APP_NAME
+                + "</title></head><body><h1>"
+                + APP_NAME
+                + "</h1><p>Dashboard template missing: web/index.html</p></body></html>"
+            )
 
-    for (let kbps = 1500; kbps <= 25000; kbps += 500) {{
-      const o = document.createElement("option");
-      o.value = String(kbps) + "k";
-      o.textContent = String(kbps) + " kbps";
-      document.getElementById("video_bitrate").appendChild(o);
-    }}
-
-    for (let i = 1; i <= 25; i++) {{
-      const o = document.createElement("option");
-      o.value = String(i);
-      o.textContent = String(i);
-      document.getElementById("update_download_cap_mbps").appendChild(o);
-    }}
-
-    function setSettingsStatus(text, level) {{
-      settingsStatus.textContent = text || "";
-      settingsStatus.className = "statusline" + (level ? (" " + level) : "");
-    }}
-
-    function setBinariesStatus(text, level) {{
-      binariesStatus.textContent = text || "";
-      binariesStatus.className = "statusline" + (level ? (" " + level) : "");
-    }}
-
-    function setAppUpdateStatus(text, level) {{
-      appUpdateStatus.textContent = text || "";
-      appUpdateStatus.className = "statusline" + (level ? (" " + level) : "");
-    }}
-
-    function setBinariesProgress(percent, text) {{
-      const p = Math.max(0, Math.min(100, Number(percent) || 0));
-      binariesProgressBar.style.width = p + "%";
-      binariesProgressText.textContent = text || (p > 0 ? ("Progress: " + p + "%") : "");
-    }}
-
-    function versionTuple(v) {{
-      const m = String(v || "").match(/(\d+(?:\.\d+)+)/);
-      if (!m) return null;
-      return m[1].split(".").map((x) => Number(x));
-    }}
-
-    function compareVersions(current, latest) {{
-      const a = versionTuple(current);
-      const b = versionTuple(latest);
-      if (!a || !b) return null;
-      const n = Math.max(a.length, b.length);
-      for (let i = 0; i < n; i++) {{
-        const av = a[i] || 0;
-        const bv = b[i] || 0;
-        if (av > bv) return 1;
-        if (av < bv) return -1;
-      }}
-      return 0;
-    }}
-
-    async function api(path) {{
-      await fetch(path, {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: "{{}}" }});
-      await refreshState(true);
-    }}
-
-    function updateLogBox(el, arr, forceScroll) {{
-      const logs = Array.isArray(arr) ? arr : [];
-      const text = logs.join("\\n");
-      const wasAtBottom = (el.scrollTop + el.clientHeight + 20 >= el.scrollHeight);
-      el.textContent = text || "No logs yet.";
-      if (forceScroll || wasAtBottom) {{
-        el.scrollTop = el.scrollHeight;
-      }}
-    }}
-
-    async function refreshState(forceScroll) {{
-      if (busy) return;
-      busy = true;
-      try {{
-        const res = await fetch("/api/state?ts=" + Date.now(), {{ cache: "no-store" }});
-        if (!res.ok) throw new Error("state fetch failed");
-        const s = await res.json();
-        const streaming = !!s.streaming;
-        stateText.textContent = s.status || "Unknown";
-        stateText.className = "status" + (streaming ? " on" : "");
-        const meta = s.meta || {{}};
-        const parts = [];
-        if (meta.source) parts.push("source: " + meta.source);
-        metaText.textContent = parts.join(" | ");
-        updateLogBox(otherLogBox, s.logs_other, forceScroll);
-        updateLogBox(ffmpegLogBox, s.logs_ffmpeg, forceScroll);
-        startBtn.disabled = streaming;
-        stopBtn.disabled = !streaming;
-        skipBtn.disabled = !streaming;
-      }} catch (err) {{
-        stateText.textContent = "Dashboard disconnected";
-        stateText.className = "status";
-      }} finally {{
-        busy = false;
-      }}
-    }}
-
-    function applySettingsToForm(s) {{
-      for (const id of fieldIds) {{
-        const el = document.getElementById(id);
-        if (!el || !(id in s)) continue;
-        if (el.type === "checkbox") {{
-          el.checked = !!s[id];
-        }} else if (id === "yt_auth_enabled") {{
-          el.value = s[id] ? "true" : "false";
-        }} else {{
-          el.value = String(s[id] ?? "");
-        }}
-      }}
-    }}
-
-    function formToPayload() {{
-      const out = {{}};
-      for (const id of fieldIds) {{
-        const el = document.getElementById(id);
-        if (!el) continue;
-        out[id] = (el.type === "checkbox") ? !!el.checked : el.value;
-      }}
-      out.framerate = Number(out.framerate || 30);
-      out.update_download_cap_mbps = Number(out.update_download_cap_mbps || 25);
-      out.yt_auth_enabled = (String(out.yt_auth_enabled).toLowerCase() === "true");
-      return out;
-    }}
-
-    function payloadSignature(payload) {{
-      try {{
-        return JSON.stringify(payload || {{}});
-      }} catch (err) {{
-        return "";
-      }}
-    }}
-
-    function queueAutoSave(delayMs) {{
-      if (suppressAutoSave) return;
-      const delay = Number(delayMs || 550);
-      if (autoSaveTimer) clearTimeout(autoSaveTimer);
-      setSettingsStatus("Saving changes soon...", "warn");
-      autoSaveTimer = setTimeout(() => {{
-        autoSaveTimer = null;
-        saveSettings("auto");
-      }}, delay);
-    }}
-
-    function bindAutoSaveListeners() {{
-      for (const id of fieldIds) {{
-        const el = document.getElementById(id);
-        if (!el) continue;
-        if (el.type === "checkbox" || el.tagName === "SELECT") {{
-          el.addEventListener("change", () => queueAutoSave(180));
-        }} else {{
-          el.addEventListener("input", () => queueAutoSave(650));
-          el.addEventListener("change", () => queueAutoSave(180));
-        }}
-      }}
-    }}
-
-    async function loadSettings() {{
-      setSettingsStatus("Loading settings...", "");
-      try {{
-        const res = await fetch("/api/settings?ts=" + Date.now(), {{ cache: "no-store" }});
-        if (!res.ok) throw new Error("load settings failed");
-        const payload = await res.json();
-        if (!payload.ok || !payload.settings) throw new Error(payload.error || "invalid response");
-        suppressAutoSave = true;
-        applySettingsToForm(payload.settings);
-        lastSavedPayload = payloadSignature(formToPayload());
-        setSettingsStatus("Settings loaded.", "ok");
-      }} catch (err) {{
-        setSettingsStatus("Failed to load settings.", "err");
-      }} finally {{
-        suppressAutoSave = false;
-      }}
-    }}
-
-    async function saveSettings(mode) {{
-      if (saveInFlight) {{
-        pendingAutoSave = true;
-        return;
-      }}
-      const reason = String(mode || "manual");
-      const currentPayload = formToPayload();
-      const currentSig = payloadSignature(currentPayload);
-      if (reason === "auto" && currentSig && currentSig === lastSavedPayload) {{
-        setSettingsStatus("Settings saved.", "ok");
-        return;
-      }}
-      saveInFlight = true;
-      setSettingsStatus(reason === "auto" ? "Saving changes..." : "Saving settings...", "");
-      try {{
-        const res = await fetch("/api/settings", {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: JSON.stringify(currentPayload) }});
-        const payload = await res.json();
-        if (!res.ok || !payload.ok) throw new Error(payload.error || "save failed");
-        suppressAutoSave = true;
-        applySettingsToForm(payload.settings || {{}});
-        lastSavedPayload = payloadSignature(formToPayload());
-        setSettingsStatus(reason === "auto" ? "Changes saved automatically." : "Settings saved.", "ok");
-      }} catch (err) {{
-        setSettingsStatus("Failed to save settings.", "err");
-      }} finally {{
-        suppressAutoSave = false;
-        saveInFlight = false;
-        if (pendingAutoSave) {{
-          pendingAutoSave = false;
-          queueAutoSave(220);
-        }}
-      }}
-    }}
-
-    function formatAppUpdateSummary(a) {{
-      if (!a) return "No app update status available.";
-      if (a.running) return a.progress_message || "App update install is running...";
-      if (a.last_error) return "App update error: " + a.last_error;
-      const r = a.last_result || null;
-      if (!r) return "App update status not available yet.";
-      const current = String(r.current_version || "unknown");
-      const latest = String(r.latest_version || "unknown");
-      const selected = String(r.selected_version || latest || "unknown");
-      const latestChannel = String(r.latest_channel_version || latest || "unknown");
-      const channel = String(r.channel || "release");
-      const rel = compareVersions(current, latest);
-      const shouldInstall = (!!r.should_install || !!r.is_newer || rel === -1 || rel === 1);
-      const assetSupported = (r.asset_supported !== false);
-      let state = "Up to date";
-      if (shouldInstall) state = "Install available";
-      if (shouldInstall && !assetSupported) state = "Install available (no self-installable asset)";
-      let text = "Channel: " + channel + " | Current: " + current + " | Selected: " + selected + " | Latest in Channel: " + latestChannel + " | " + state;
-      if (a.mode) text += " | Mode: " + String(a.mode);
-      if (a.downloaded_path) text += " | Staged: " + a.downloaded_path;
-      if (lastAppCheckAt) text += " | Checked: " + lastAppCheckAt;
-      return text;
-    }}
-
-    function updateAppVersionDropdown(info) {{
-      if (!info || !info.last_result) return;
-      const result = info.last_result;
-      const channel = String(result.channel || document.getElementById("app_update_channel").value || "release");
-      const versions = Array.isArray(result.available_versions) ? result.available_versions : [];
-      const selected = String(result.selected_version || appUpdateVersion.value || "");
-      const previous = String(appUpdateVersion.value || "");
-      appUpdateVersion.innerHTML = "";
-      const fallback = document.createElement("option");
-      fallback.value = "";
-      fallback.textContent = "Latest in selected channel";
-      appUpdateVersion.appendChild(fallback);
-      for (const version of versions) {{
-        const v = String(version || "").trim();
-        if (!v) continue;
-        const opt = document.createElement("option");
-        opt.value = v;
-        opt.textContent = v;
-        appUpdateVersion.appendChild(opt);
-      }}
-      let want = selected || "";
-      if (want && !versions.includes(want)) want = "";
-      if (!want && previous && appVersionsBoundToChannel === channel && versions.includes(previous)) {{
-        want = previous;
-      }}
-      appUpdateVersion.value = want;
-      appVersionsBoundToChannel = channel;
-    }}
-
-    async function loadAppUpdateStatus(selectedVersion = "") {{
-      try {{
-        const res = await fetch("/api/app-update?ts=" + Date.now(), {{ cache: "no-store" }});
-        const payload = await res.json();
-        if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
-        const info = payload.app_update || {{}};
-        if (selectedVersion && !info.running) {{
-          await triggerAppUpdateCheck(selectedVersion);
-          return;
-        }}
-        appUpdateRunning = !!info.running;
-        const result = info.last_result || {{}};
-        updateAppVersionDropdown(info);
-        const rel = compareVersions(result.current_version, result.latest_version);
-        const shouldInstall = (!!result.should_install || !!result.is_newer || rel === -1 || rel === 1);
-        const assetSupported = (result.asset_supported !== false);
-        const updateAvailable = shouldInstall && assetSupported;
-        let level = "ok";
-        if (info.running) level = "warn";
-        if (info.last_error) level = "err";
-        if (!info.running && !info.last_error && shouldInstall) level = "warn";
-        lastAppCheckAt = new Date().toLocaleTimeString();
-        setAppUpdateStatus(formatAppUpdateSummary(info), level);
-        checkAppUpdateBtn.disabled = !!info.running;
-        checkAppUpdateBtn.title = !!info.running ? "Cannot check while install is running" : "Check for app updates now";
-        downloadAppUpdateBtn.disabled = !!info.running || !updateAvailable;
-        if (updateAvailable) {{
-          downloadAppUpdateBtn.title = "Install selected app version and restart";
-        }} else if (shouldInstall && !assetSupported) {{
-          downloadAppUpdateBtn.title = "Selected release does not include a self-installable asset for this platform";
-        }} else {{
-          downloadAppUpdateBtn.title = "No app install needed";
-        }}
-      }} catch (err) {{
-        setAppUpdateStatus("Failed to load app update status.", "err");
-      }}
-    }}
-
-    async function triggerAppUpdateDownload() {{
-      const selectedVersion = String(appUpdateVersion.value || "").trim();
-      const selectedChannel = String(document.getElementById("app_update_channel").value || "release").trim();
-      setAppUpdateStatus("Starting app update install...", "warn");
-      try {{
-        const res = await fetch("/api/app-update/download", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify({{ selected_version: selectedVersion, channel: selectedChannel }})
-        }});
-        const payload = await res.json();
-        if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
-        await loadAppUpdateStatus();
-      }} catch (err) {{
-        setAppUpdateStatus("Failed to start app update install.", "err");
-      }}
-    }}
-
-    async function triggerAppUpdateCheck(selectedVersion = null) {{
-      const selected = (selectedVersion === null || selectedVersion === undefined)
-        ? String(appUpdateVersion.value || "").trim()
-        : String(selectedVersion || "").trim();
-      const selectedChannel = String(document.getElementById("app_update_channel").value || "release").trim();
-      setAppUpdateStatus("Checking app update...", "warn");
-      try {{
-        const res = await fetch("/api/app-update/check", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify({{ selected_version: selected, channel: selectedChannel }})
-        }});
-        const payload = await res.json();
-        if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
-        await loadAppUpdateStatus();
-      }} catch (err) {{
-        setAppUpdateStatus("Failed to check app update.", "err");
-      }}
-    }}
-
-    function formatBinariesSummary(b) {{
-      if (!b) return "No binary status available.";
-      if (b.running) return b.progress_message || "Binary update is running...";
-      if (b.last_error) return "Binary update error: " + b.last_error;
-      const r = b.last_result || null;
-      if (!r) return "Binary status not available yet.";
-      const y = r["yt-dlp"] || {{}};
-      const f = r["ffmpeg"] || {{}};
-      const label = (s) => {{
-        if (s === "up_to_date") return "Up to date";
-        if (s === "update_available") return "Update available";
-        return "Could not verify";
-      }};
-      const needs = [];
-      if (String(y.status || "") === "update_available") needs.push("yt-dlp");
-      if (String(f.status || "") === "update_available") needs.push("ffmpeg");
-      const prefix = needs.length ? ("Updates available: " + needs.join(", ") + " | ") : "Binary check complete | ";
-      let text = prefix +
-             "yt-dlp: " + label(String(y.status || "unknown")) + " (" + (y.current_version || "unknown") + " -> " + (y.latest_version || "unknown") + ") | " +
-             "ffmpeg: " + label(String(f.status || "unknown")) + " (" + (f.current_version || "unknown") + " -> " + (f.latest_version || "unknown") + ")";
-      if (lastBinariesCheckAt) text += " | Checked: " + lastBinariesCheckAt;
-      return text;
-    }}
-
-    async function loadBinariesStatus() {{
-      try {{
-        const res = await fetch("/api/binaries?ts=" + Date.now(), {{ cache: "no-store" }});
-        const payload = await res.json();
-        if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
-        const info = payload.binaries || {{}};
-        binariesUpdateRunning = !!info.running;
-        const result = info.last_result || {{}};
-        const y = result["yt-dlp"] || {{}};
-        const f = result["ffmpeg"] || {{}};
-        const hasUnknown = (String(y.status || "unknown") === "unknown") || (String(f.status || "unknown") === "unknown");
-        const updateAvailable = !!result.any_update_available;
-        let level = "ok";
-        if (info.running) level = "warn";
-        if (info.last_error) level = "err";
-        if (!info.running && !info.last_error && (updateAvailable || hasUnknown)) level = "warn";
-        lastBinariesCheckAt = new Date().toLocaleTimeString();
-        setBinariesStatus(formatBinariesSummary(info), level);
-        const pct = Number(info.progress_percent || 0);
-        const msg = String(info.progress_message || "");
-        setBinariesProgress(pct, msg ? (msg + " (" + pct + "%)") : (pct > 0 ? ("Progress: " + pct + "%") : ""));
-        updateBinariesBtn.disabled = !!info.running || (!updateAvailable && !hasUnknown);
-        updateBinariesBtn.title = (updateAvailable || hasUnknown) ? "Update yt-dlp and FFmpeg" : "Binaries are already up to date";
-      }} catch (err) {{
-        setBinariesStatus("Failed to load binary status.", "err");
-        setBinariesProgress(0, "");
-      }}
-    }}
-
-    async function triggerBinariesUpdate() {{
-      setBinariesStatus("Starting binary update...", "warn");
-      try {{
-        const res = await fetch("/api/binaries/update", {{
-          method: "POST",
-          headers: {{ "Content-Type": "application/json" }},
-          body: "{{}}"
-        }});
-        const payload = await res.json();
-        if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
-        setBinariesProgress(1, "Preparing binary update... (1%)");
-        await loadBinariesStatus();
-      }} catch (err) {{
-        setBinariesStatus("Failed to start binary update.", "err");
-        setBinariesProgress(0, "");
-      }}
-    }}
-
-    tabButtons.forEach((btn) => {{
-      btn.addEventListener("click", () => {{
-        const tabId = btn.dataset.tab;
-        tabButtons.forEach((b) => b.classList.toggle("active", b === btn));
-        tabPanels.forEach((p) => p.classList.toggle("active", p.id === tabId));
-      }});
-    }});
-    subtabButtons.forEach((btn) => {{
-      btn.addEventListener("click", () => {{
-        const tabId = btn.dataset.subtab;
-        subtabButtons.forEach((b) => b.classList.toggle("active", b === btn));
-        subtabPanels.forEach((p) => p.classList.toggle("active", p.id === tabId));
-      }});
-    }});
-
-    startBtn.addEventListener("click", () => api("/api/start"));
-    stopBtn.addEventListener("click", () => api("/api/stop"));
-    skipBtn.addEventListener("click", () => api("/api/skip"));
-    refreshBtn.addEventListener("click", () => refreshState(true));
-    reloadSettingsBtn.addEventListener("click", () => loadSettings());
-    checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
-    downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
-    appUpdateVersion.addEventListener("change", () => triggerAppUpdateCheck());
-    document.getElementById("app_update_channel").addEventListener("change", () => {{
-      appVersionsBoundToChannel = "";
-      appUpdateVersion.innerHTML = '<option value="">Latest in selected channel</option>';
-      triggerAppUpdateCheck("");
-    }});
-    updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
-    bindAutoSaveListeners();
-    loadSettings();
-    loadAppUpdateStatus();
-    loadBinariesStatus();
-    refreshState(true);
-    setInterval(() => {{
-      refreshState(false);
-      if (binariesUpdateRunning) loadBinariesStatus();
-      if (appUpdateRunning) loadAppUpdateStatus();
-    }}, 1200);
-    setInterval(() => {{
-      loadAppUpdateStatus();
-      loadBinariesStatus();
-    }}, 300000);
-  </script>
-</body>
-</html>
-"""
+        html = html.replace("{APP_NAME}", APP_NAME)
+        html = html.replace("{APP_VERSION}", APP_VERSION)
+        html = html.replace("{GITHUB_REPO}", GITHUB_REPO)
+        return html
 
     def start(self) -> bool:
         """Bind and start HTTP server in a daemon thread."""
@@ -2205,6 +1471,12 @@ class StreamWorker(QtCore.QObject):
     status = QtCore.Signal(str)
     finished = QtCore.Signal()
     FFMPEG_STATS_EMIT_INTERVAL = 0.25
+    RTMP_HANDOFF_DELAY_SEC = 1.0
+    RTMP_SKIP_HANDOFF_DELAY_SEC = 0.35
+    RTMP_FAST_HANDOFF_DELAY_SEC = 0.0
+    RTMP_FAST_SKIP_HANDOFF_DELAY_SEC = 0.0
+    PREFETCH_WAIT_TIMEOUT_SEC = 1.2
+    PREFETCH_WAIT_TIMEOUT_FAST_SEC = 0.25
 
     ff_proc: Optional[subprocess.Popen]
 
@@ -2217,6 +1489,8 @@ class StreamWorker(QtCore.QObject):
         self.ffmpeg_path = find_ffmpeg()
         self.ytdlp_path = find_ytdlp()
         self.ff_proc = None
+        self._rtmp_bridge_proc: Optional[subprocess.Popen] = None
+        self._rtmp_bridge_write_fd: Optional[int] = None
         # Prefetch cache for next video
         self._prefetch_video_id: Optional[str] = None
         self._prefetch_title: Optional[str] = None
@@ -2224,6 +1498,9 @@ class StreamWorker(QtCore.QObject):
         self._prefetch_vurl: Optional[str] = None
         self._prefetch_aurl: Optional[str] = None
         self._prefetch_thread: Optional[threading.Thread] = None
+        self._prefetch_target_video_id: Optional[str] = None
+        self._prefetch_lock = threading.Lock()
+        self._prefetch_ready = threading.Event()
         self._cookie_args_cache: Optional[List[List[str]]] = None
         self._last_working_cookie_args: Optional[List[str]] = None
         self._cookie_fail_logged: set = set()
@@ -2264,6 +1541,36 @@ class StreamWorker(QtCore.QObject):
         except Exception as e:
             self.log.emit(f"[WARN] Could not re-select encoder after ffmpeg switch: {e}")
         return True
+
+    def _rtmp_host(self) -> str:
+        """Return lowercased RTMP host for destination-aware tuning."""
+        try:
+            return (urlsplit(self.cfg.rtmp_base).hostname or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _is_youtube_rtmp(self) -> bool:
+        """Return True for YouTube ingest destinations."""
+        host = self._rtmp_host()
+        return host.endswith("youtube.com") or ("youtube" in host)
+
+    def _prefetch_wait_timeout(self) -> float:
+        """Use shorter prefetch waits for low-latency ingest servers (e.g. Owncast)."""
+        if self._is_youtube_rtmp():
+            return self.PREFETCH_WAIT_TIMEOUT_SEC
+        return self.PREFETCH_WAIT_TIMEOUT_FAST_SEC
+
+    def _io_join_timeout(self) -> float:
+        """Use shorter reader-thread joins on low-latency RTMP targets."""
+        if self._is_youtube_rtmp():
+            return 0.2
+        return 0.05
+
+    def _transition_retry_delay(self) -> float:
+        """Delay before retrying next item after an error."""
+        if self._is_youtube_rtmp():
+            return 2.0
+        return 0.25
 
     def _default_auth_browsers(self) -> List[str]:
         """Return a browser probe order based on OS for --cookies-from-browser."""
@@ -2631,6 +1938,10 @@ class StreamWorker(QtCore.QObject):
         Returns True on success; logs errors and returns False on failure.
         """
         try:
+            if not self._is_youtube_rtmp():
+                self.log.emit("[INFO] Preflight: non-YouTube RTMP target detected; skipping probe.")
+                return True
+
             # Build minimal test command using color source (video) and anullsrc (audio)
             gop = max(2, self.cfg.fps * 2)
             vf_chain = [
@@ -2730,6 +2041,8 @@ class StreamWorker(QtCore.QObject):
     def stop(self):
         """Request the current ffmpeg process to terminate."""
         self._stop.set()
+        self._terminate_ff_proc()
+        self._stop_rtmp_bridge()
         self.log.emit("[INFO] Stop requested — stopping current stream…")
 
     def skip(self):
@@ -2900,30 +2213,243 @@ class StreamWorker(QtCore.QObject):
                 self.log.emit(f"[PREFETCH] Loading next video: {video_id}")
                 title, date = self.get_metadata(video_id)
                 vurl, aurl = self.get_stream_urls(video_id)
-                
+
                 # Store in cache
-                self._prefetch_video_id = video_id
-                self._prefetch_title = title
-                self._prefetch_date = date
-                self._prefetch_vurl = vurl
-                self._prefetch_aurl = aurl
+                with self._prefetch_lock:
+                    self._prefetch_video_id = video_id
+                    self._prefetch_title = title
+                    self._prefetch_date = date
+                    self._prefetch_vurl = vurl
+                    self._prefetch_aurl = aurl
                 self.log.emit(f"[PREFETCH] Ready: {title}")
             except Exception as e:
                 self.log.emit(f"[PREFETCH] Failed for {video_id}: {e}")
                 # Clear cache on error
+                with self._prefetch_lock:
+                    self._prefetch_video_id = None
+                    self._prefetch_title = None
+                    self._prefetch_date = None
+                    self._prefetch_vurl = None
+                    self._prefetch_aurl = None
+            finally:
+                with self._prefetch_lock:
+                    self._prefetch_target_video_id = None
+                self._prefetch_ready.set()
+
+        # Start prefetch in background thread
+        with self._prefetch_lock:
+            if self._prefetch_thread and self._prefetch_thread.is_alive():
+                if self._prefetch_target_video_id == video_id:
+                    self.log.emit(f"[PREFETCH] Already loading next video: {video_id}")
+                else:
+                    self.log.emit("[PREFETCH] Previous prefetch still running, skipping...")
+                return
+            self._prefetch_target_video_id = video_id
+            self._prefetch_ready.clear()
+
+        self._prefetch_thread = threading.Thread(target=_fetch, daemon=True)
+        self._prefetch_thread.start()
+
+    def _consume_prefetch(self, video_id: str) -> Optional[Tuple[str, Optional[str], str, Optional[str]]]:
+        """Return cached prefetch payload for ``video_id`` if available."""
+        with self._prefetch_lock:
+            if self._prefetch_video_id == video_id and self._prefetch_vurl:
+                title = self._prefetch_title or ""
+                pretty_date = self._prefetch_date
+                vurl = self._prefetch_vurl
+                aurl = self._prefetch_aurl
                 self._prefetch_video_id = None
                 self._prefetch_title = None
                 self._prefetch_date = None
                 self._prefetch_vurl = None
                 self._prefetch_aurl = None
-        
-        # Start prefetch in background thread
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self.log.emit("[PREFETCH] Previous prefetch still running, skipping...")
+                return (title, pretty_date, vurl, aurl)
+            wait_for_prefetch = (
+                self._prefetch_target_video_id == video_id
+                and self._prefetch_thread is not None
+                and self._prefetch_thread.is_alive()
+            )
+
+        if wait_for_prefetch:
+            self.log.emit(f"[PREFETCH] Waiting for in-flight prefetch: {video_id}")
+            self._prefetch_ready.wait(timeout=self._prefetch_wait_timeout())
+            with self._prefetch_lock:
+                if self._prefetch_video_id == video_id and self._prefetch_vurl:
+                    title = self._prefetch_title or ""
+                    pretty_date = self._prefetch_date
+                    vurl = self._prefetch_vurl
+                    aurl = self._prefetch_aurl
+                    self._prefetch_video_id = None
+                    self._prefetch_title = None
+                    self._prefetch_date = None
+                    self._prefetch_vurl = None
+                    self._prefetch_aurl = None
+                    return (title, pretty_date, vurl, aurl)
+        return None
+
+    def _post_video_handoff_delay(self) -> None:
+        """Brief pause so RTMP servers fully release the prior session."""
+        if self._is_youtube_rtmp():
+            delay = self.RTMP_SKIP_HANDOFF_DELAY_SEC if self._skip.is_set() else self.RTMP_HANDOFF_DELAY_SEC
+        else:
+            delay = self.RTMP_FAST_SKIP_HANDOFF_DELAY_SEC if self._skip.is_set() else self.RTMP_FAST_HANDOFF_DELAY_SEC
+        if delay <= 0:
             return
-        
-        self._prefetch_thread = threading.Thread(target=_fetch, daemon=True)
-        self._prefetch_thread.start()
+        end = time.monotonic() + delay
+        while not self._stop.is_set():
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.05, remaining))
+
+    def _use_persistent_rtmp_bridge(self) -> bool:
+        """Keep one RTMP session open for non-YouTube ingest targets."""
+        out_url = self.cfg.rtmp_url().lower()
+        return out_url.startswith(("rtmp://", "rtmps://")) and (not self._is_youtube_rtmp())
+
+    def _start_rtmp_bridge(self) -> bool:
+        """Start persistent FFmpeg bridge that remuxes mpegts stdin to RTMP."""
+        if not self._use_persistent_rtmp_bridge():
+            return False
+        if self._rtmp_bridge_proc and self._rtmp_bridge_proc.poll() is None and self._rtmp_bridge_write_fd is not None:
+            return True
+        self._stop_rtmp_bridge()
+        if not self.ffmpeg_path:
+            self.log.emit("[ERROR] Cannot start RTMP bridge: ffmpeg not found.")
+            return False
+
+        out_url = self.cfg.rtmp_url()
+        cmd = [
+            self.ffmpeg_path or "ffmpeg",
+            "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin",
+            "-fflags", "+genpts",
+            "-f", "mpegts", "-i", "pipe:0",
+            "-c", "copy",
+        ]
+        if out_url.lower().startswith(("rtmp://", "rtmps://")) and self.cfg.rtmp_live:
+            cmd += ["-rtmp_live", "live", "-rtmp_tcurl", self.cfg.rtmp_base]
+        cmd += ["-f", "flv", out_url]
+
+        read_fd, write_fd = os.pipe()
+        self.log.emit(f"[CMD] ffmpeg (bridge): {' '.join(cmd)}")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=read_fd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                close_fds=True,
+            )
+        except Exception as e:
+            try:
+                os.close(read_fd)
+            except Exception:
+                pass
+            try:
+                os.close(write_fd)
+            except Exception:
+                pass
+            self.log.emit(f"[ERROR] Failed to start RTMP bridge: {e}")
+            return False
+        finally:
+            try:
+                os.close(read_fd)
+            except Exception:
+                pass
+
+        self._rtmp_bridge_proc = proc
+        self._rtmp_bridge_write_fd = write_fd
+
+        def _reader(stream):
+            for line in iter(stream.readline, ""):
+                self._emit_ffmpeg_line(line)
+
+        for stream in (proc.stdout, proc.stderr):
+            if stream:
+                t = threading.Thread(target=_reader, args=(stream,), daemon=True)
+                t.start()
+
+        time.sleep(0.15)
+        if proc.poll() is not None:
+            rc = proc.poll()
+            self.log.emit(f"[ERROR] RTMP bridge exited early with code {rc}")
+            self._stop_rtmp_bridge()
+            return False
+        self.log.emit("[INFO] RTMP bridge started (persistent ingest session active).")
+        return True
+
+    def _stop_rtmp_bridge(self) -> None:
+        """Stop persistent RTMP bridge and release pipe fds."""
+        wfd = self._rtmp_bridge_write_fd
+        self._rtmp_bridge_write_fd = None
+        if wfd is not None:
+            try:
+                os.close(wfd)
+            except Exception:
+                pass
+        proc = self._rtmp_bridge_proc
+        self._rtmp_bridge_proc = None
+        if not proc:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=1.5)
+        except Exception:
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+
+    def _send_bridge_keepalive(self, duration_sec: float = 1.0) -> None:
+        """Feed a short silent slate into the RTMP bridge to avoid ingest idle disconnects."""
+        if not self._use_persistent_rtmp_bridge():
+            return
+        if duration_sec <= 0:
+            return
+        if not self._start_rtmp_bridge():
+            return
+        if not self.ffmpeg_path or self._rtmp_bridge_write_fd is None:
+            return
+
+        out_fd: Optional[int] = None
+        try:
+            out_fd = os.dup(self._rtmp_bridge_write_fd)
+            duration = max(0.25, float(duration_sec))
+            keepalive_cmd = [
+                self.ffmpeg_path or "ffmpeg",
+                "-hide_banner", "-loglevel", "warning", "-nostdin",
+                "-re", "-f", "lavfi", "-i", f"color=black:s=640x360:rate={self.cfg.fps}",
+                "-f", "lavfi", "-i", "anullsrc=cl=stereo:r=44100",
+                "-t", f"{duration:.2f}",
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "2",
+                "-muxdelay", "0", "-muxpreload", "0",
+                "-f", "mpegts", "pipe:1",
+            ]
+            cp = subprocess.run(
+                keepalive_cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=out_fd,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=max(3.0, duration + 2.0),
+            )
+            if cp.returncode != 0:
+                self.log.emit(f"[WARN] Keepalive slate failed (rc={cp.returncode})")
+        except Exception as e:
+            self.log.emit(f"[WARN] Keepalive slate error: {e}")
+        finally:
+            if out_fd is not None:
+                try:
+                    os.close(out_fd)
+                except Exception:
+                    pass
 
     # ---------- encoder selection ----------
     def _apply_encoder_profile(self, encoder: str) -> bool:
@@ -3011,7 +2537,7 @@ class StreamWorker(QtCore.QObject):
             return
 
     # ---------- ffmpeg ----------
-    def build_ffmpeg_cmd(self, vurl: str, aurl: Optional[str]) -> List[str]:
+    def build_ffmpeg_cmd(self, vurl: str, aurl: Optional[str], to_pipe: bool = False) -> List[str]:
         """Build the ffmpeg command for a single video stream."""
         gop = self.cfg.fps * 2
         vf = [f"scale=-2:{self.cfg.height}:flags=bicubic"]
@@ -3090,14 +2616,21 @@ class StreamWorker(QtCore.QObject):
             "-c:a", "aac", "-b:a", self.cfg.audio_bitrate, "-ar", "44100", "-ac", "2",
             # Add buffering for smoother streaming and handling network hiccups
             "-max_delay", buffer_settings["max_delay"],
-            "-rtmp_buffer", buffer_settings["buffer_size"],
         ]
 
+        if to_pipe:
+            cmd += [
+                "-muxdelay", "0",
+                "-muxpreload", "0",
+                "-f", "mpegts", "pipe:1",
+            ]
+            return cmd
+
+        cmd += ["-rtmp_buffer", buffer_settings["buffer_size"]]
         # Add RTMP-specific protocol options if enabled
         out_url = self.cfg.rtmp_url()
         if out_url.lower().startswith(("rtmp://", "rtmps://")) and self.cfg.rtmp_live:
             cmd += ["-rtmp_live", "live", "-rtmp_tcurl", self.cfg.rtmp_base]
-
         cmd += [
             "-f", "flv", out_url
         ]
@@ -3187,8 +2720,9 @@ class StreamWorker(QtCore.QObject):
             except Exception:
                 self._terminate_ff_proc()
 
+        join_timeout = self._io_join_timeout()
         for t in readers:
-            t.join(timeout=0.2)
+            t.join(timeout=join_timeout)
 
         # Ensure any buffered ffmpeg output is flushed after the process exits
         rc = None
@@ -3211,19 +2745,11 @@ class StreamWorker(QtCore.QObject):
 
     def run_one_video(self, video_id: str):
         """Stream a single video using ffmpeg."""
-        # Check if this video was prefetched
-        if self._prefetch_video_id == video_id and self._prefetch_vurl:
+        # Check if this video was prefetched (or wait briefly for in-flight prefetch to finish).
+        prefetched = self._consume_prefetch(video_id)
+        if prefetched:
             self.log.emit(f"[PREFETCH] Using cached data for {video_id}")
-            title = self._prefetch_title
-            pretty_date = self._prefetch_date
-            vurl = self._prefetch_vurl
-            aurl = self._prefetch_aurl
-            # Clear prefetch cache after use
-            self._prefetch_video_id = None
-            self._prefetch_title = None
-            self._prefetch_date = None
-            self._prefetch_vurl = None
-            self._prefetch_aurl = None
+            title, pretty_date, vurl, aurl = prefetched
         else:
             # Not prefetched, fetch normally
             try:
@@ -3235,6 +2761,9 @@ class StreamWorker(QtCore.QObject):
                 # Try to check if video is available at all
                 url = f"https://www.youtube.com/watch?v={video_id}"
                 self.log.emit(f"[INFO] Video might be private, deleted, or region-restricted: {url}")
+                if self._use_persistent_rtmp_bridge():
+                    self.log.emit("[INFO] Injecting short keepalive slate while skipping unavailable video.")
+                    self._send_bridge_keepalive(1.2)
                 return  # Skip this video and continue
         
         # Title + date overlay (truncate title; keep date intact)
@@ -3254,24 +2783,43 @@ class StreamWorker(QtCore.QObject):
             # Reset fontsize to default when overlay is disabled
             self.cfg._overlay_fontsize = 24
 
-        ff_cmd = self.build_ffmpeg_cmd(vurl, aurl)
+        use_bridge = self._use_persistent_rtmp_bridge()
+        bridge_out_fd: Optional[int] = None
+        if use_bridge and not self._start_rtmp_bridge():
+            raise RuntimeError("Could not start persistent RTMP bridge")
+
+        ff_cmd = self.build_ffmpeg_cmd(vurl, aurl, to_pipe=use_bridge)
         self.log.emit(f"[CMD] ffmpeg: {' '.join(ff_cmd)}")
         self._skip.clear()
-        self.ff_proc = subprocess.Popen(
-            ff_cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
-        )
+        popen_kwargs: Dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "bufsize": 1,
+        }
+        if use_bridge:
+            if self._rtmp_bridge_write_fd is None:
+                raise RuntimeError("RTMP bridge write pipe is not available")
+            bridge_out_fd = os.dup(self._rtmp_bridge_write_fd)
+            popen_kwargs["stdout"] = bridge_out_fd
+            popen_kwargs["close_fds"] = True
+        else:
+            popen_kwargs["stdout"] = subprocess.PIPE
+        try:
+            self.ff_proc = subprocess.Popen(ff_cmd, **popen_kwargs)
+        finally:
+            if bridge_out_fd is not None:
+                try:
+                    os.close(bridge_out_fd)
+                except Exception:
+                    pass
 
         def _reader(stream):
             for line in iter(stream.readline, ""):
                 self._emit_ffmpeg_line(line)
 
         readers = []
-        if self.ff_proc.stdout:
+        if self.ff_proc.stdout and not use_bridge:
             t = threading.Thread(target=_reader, args=(self.ff_proc.stdout,))
             t.daemon = True
             t.start()
@@ -3296,8 +2844,9 @@ class StreamWorker(QtCore.QObject):
             except Exception:
                 pass
 
+        join_timeout = self._io_join_timeout()
         for t in readers:
-            t.join(timeout=0.2)
+            t.join(timeout=join_timeout)
 
         # Ensure any buffered ffmpeg output is flushed after the process exits
         rc = None
@@ -3317,11 +2866,13 @@ class StreamWorker(QtCore.QObject):
                 raise RuntimeError("ffmpeg crashed; switched to system ffmpeg, retrying")
             if rc != 0:
                 raise RuntimeError(f"ffmpeg exited with code {rc}")
-        
-        # CRITICAL: Wait for RTMP connection to fully close before starting next video
-        # Without this delay, the RTMP server rejects the new connection (only 1 connection per key allowed)
-        if not self._stop.is_set():
-            time.sleep(2)
+
+        if use_bridge and self._rtmp_bridge_proc and self._rtmp_bridge_proc.poll() is not None:
+            raise RuntimeError(f"RTMP bridge exited with code {self._rtmp_bridge_proc.poll()}")
+
+        # Wait briefly for RTMP servers to release the previous session before reconnect.
+        if (not self._stop.is_set()) and (not use_bridge):
+            self._post_video_handoff_delay()
 
 
     # ---------- main loop ----------
@@ -3367,82 +2918,88 @@ class StreamWorker(QtCore.QObject):
 
         # Detect input type
         input_type = detect_input_type(self.cfg.playlist_url)
-        
-        if input_type in ('twitch_stream', 'direct_hls'):
-            # Twitch stream or direct HLS - continuous streaming
-            stream_type_name = "Twitch stream" if input_type == 'twitch_stream' else "HLS stream"
-            self.log.emit(f"[INFO] Detected {stream_type_name} - streaming continuously...")
-            while not self._stop.is_set():
-                try:
-                    self.run_twitch_stream(self.cfg.playlist_url)
-                    if not self._stop.is_set():
-                        self.log.emit(f"[WARN] {stream_type_name} ended unexpectedly. Reconnecting in 5s...")
-                        for _ in range(5):
+        try:
+            if input_type in ('twitch_stream', 'direct_hls'):
+                # Twitch stream or direct HLS - continuous streaming
+                stream_type_name = "Twitch stream" if input_type == 'twitch_stream' else "HLS stream"
+                self.log.emit(f"[INFO] Detected {stream_type_name} - streaming continuously...")
+                while not self._stop.is_set():
+                    try:
+                        self.run_twitch_stream(self.cfg.playlist_url)
+                        if not self._stop.is_set():
+                            self.log.emit(f"[WARN] {stream_type_name} ended unexpectedly. Reconnecting in 5s...")
+                            for _ in range(5):
+                                if self._stop.is_set():
+                                    break
+                                time.sleep(1)
+                    except Exception as e:
+                        self.log.emit(f"[ERROR] {stream_type_name} error: {e}")
+                        if not self._stop.is_set():
+                            self.log.emit("[INFO] Retrying in 10s...")
+                            for _ in range(10):
+                                if self._stop.is_set():
+                                    break
+                                time.sleep(1)
+            else:
+                if self._use_persistent_rtmp_bridge():
+                    if not self._start_rtmp_bridge():
+                        raise RuntimeError("Failed to initialize persistent RTMP bridge")
+                # YouTube playlist or video - loop through videos
+                while not self._stop.is_set():
+                    try:
+                        ids = self.get_video_ids(self.cfg.playlist_url)
+                        if not ids:
+                            self.log.emit("[WARN] No IDs found; retrying in 30s…")
+                            for _ in range(30):
+                                if self._stop.is_set():
+                                    break
+                                time.sleep(1)
+                            continue
+
+                        if self.cfg.shuffle:
+                            random.shuffle(ids)
+
+                        for idx, vid in enumerate(ids, 1):
                             if self._stop.is_set():
                                 break
-                            time.sleep(1)
-                except Exception as e:
-                    self.log.emit(f"[ERROR] {stream_type_name} error: {e}")
-                    if not self._stop.is_set():
-                        self.log.emit("[INFO] Retrying in 10s...")
-                        for _ in range(10):
+
+                            self.log.emit("-" * 46)
+                            self.log.emit(f"[INFO] Item #{idx} - https://www.youtube.com/watch?v={vid}")
+                            self.log.emit("-" * 46)
+
+                            # Prefetch the next video in the background (if available)
+                            if idx < len(ids):
+                                next_vid = ids[idx]  # idx is 1-based, so ids[idx] is the next video
+                                self.prefetch_next_video(next_vid)
+
+                            try:
+                                self.run_one_video(vid)
+                            except Exception as e:
+                                self.log.emit(f"[WARN] Stream error for video {vid}: {e}")
+                                if self._use_persistent_rtmp_bridge():
+                                    self._send_bridge_keepalive(0.8)
+                                self.log.emit("[INFO] Continuing to next video...")
+                                # Add a small destination-aware delay before trying the next video.
+                                if not self._stop.is_set():
+                                    time.sleep(self._transition_retry_delay())
+
                             if self._stop.is_set():
                                 break
-                            time.sleep(1)
-        else:
-            # YouTube playlist or video - loop through videos
-            while not self._stop.is_set():
-                try:
-                    ids = self.get_video_ids(self.cfg.playlist_url)
-                    if not ids:
-                        self.log.emit("[WARN] No IDs found; retrying in 30s…")
+
+                        if self._stop.is_set():
+                            break
+                        self.log.emit("\n[INFO] End of playlist. Refreshing IDs and looping…\n")
+
+                    except Exception as e:
+                        self.log.emit(f"[WARN] Loop error: {e}. Retrying in 30s…")
                         for _ in range(30):
                             if self._stop.is_set():
                                 break
                             time.sleep(1)
-                        continue
-
-                    if self.cfg.shuffle:
-                        random.shuffle(ids)
-
-                    for idx, vid in enumerate(ids, 1):
-                        if self._stop.is_set():
-                            break
-
-                        self.log.emit("-" * 46)
-                        self.log.emit(f"[INFO] Item #{idx} - https://www.youtube.com/watch?v={vid}")
-                        self.log.emit("-" * 46)
-
-                        # Prefetch the next video in the background (if available)
-                        if idx < len(ids):
-                            next_vid = ids[idx]  # idx is 1-based, so ids[idx] is the next video
-                            self.prefetch_next_video(next_vid)
-
-                        try:
-                            self.run_one_video(vid)
-                        except Exception as e:
-                            self.log.emit(f"[WARN] Stream error for video {vid}: {e}")
-                            self.log.emit("[INFO] Continuing to next video...")
-                            # Add a small delay before trying the next video
-                            if not self._stop.is_set():
-                                time.sleep(2)
-
-                        if self._stop.is_set():
-                            break
-
-                    if self._stop.is_set():
-                        break
-                    self.log.emit("\n[INFO] End of playlist. Refreshing IDs and looping…\n")
-
-                except Exception as e:
-                    self.log.emit(f"[WARN] Loop error: {e}. Retrying in 30s…")
-                    for _ in range(30):
-                        if self._stop.is_set():
-                            break
-                        time.sleep(1)
-
-        self.status.emit("Stopped")
-        self.finished.emit()
+        finally:
+            self._stop_rtmp_bridge()
+            self.status.emit("Stopped")
+            self.finished.emit()
 
 class HeadlessRuntime:
     """Run stream worker and web dashboard."""

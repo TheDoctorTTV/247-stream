@@ -34,6 +34,9 @@ ADD_DATA_ARGS=()
 if [[ -f "icon.ico" ]]; then
   ADD_DATA_ARGS+=(--add-data "icon.ico:.")
 fi
+if [[ -d "web" ]]; then
+  ADD_DATA_ARGS+=(--add-data "web:web")
+fi
 "$PYTHON_BIN" -m PyInstaller \
   --noconfirm \
   --clean \
