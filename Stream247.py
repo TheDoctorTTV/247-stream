@@ -72,6 +72,7 @@ import re
 APP_NAME = "Stream247"  # Name shown in logs and dashboard
 APP_VERSION = "2.0-pre-release-3"  # Current version
 GITHUB_REPO = "TheDoctorTTV/247-stream"  # GitHub repository for updates
+APP_UPDATE_MIN_VERSION = "2.0-pre-release-2"  # Oldest version eligible for in-app updater
 
 # ---------- config.json helpers ----------
 def _app_dir() -> Path:
@@ -1198,6 +1199,14 @@ def _should_install_selected_release(latest: str, current: str) -> bool:
     return str(latest).strip() != str(current).strip()
 
 
+def _is_supported_update_version(version: str) -> bool:
+    """Return True when version is allowed as an in-app updater target."""
+    cmp = _compare_app_versions(version, APP_UPDATE_MIN_VERSION)
+    if cmp is not None:
+        return cmp >= 0
+    return str(version or "").strip().lstrip("vV") >= APP_UPDATE_MIN_VERSION
+
+
 def _pick_release_asset(assets: List[Dict[str, object]]) -> Optional[Dict[str, object]]:
     """Pick the best app update asset for current OS (prefers runnable binaries)."""
     if not assets:
@@ -1303,10 +1312,23 @@ def fetch_latest_app_release_info(update_channel: str = "release", selected_vers
         raise RuntimeError("Invalid releases response from GitHub.")
 
     channel_releases = _filter_releases_for_channel(all_releases, channel)
+    channel_releases = [
+        rel for rel in channel_releases
+        if _is_supported_update_version(_release_version_string(rel))
+    ]
+    wanted = str(selected_version or "").strip().lstrip("vV")
+    if wanted and not _is_supported_update_version(wanted):
+        raise RuntimeError(
+            f"Selected version {wanted} is below the minimum supported in-app update target ({APP_UPDATE_MIN_VERSION})."
+        )
     if not channel_releases:
         if channel == "prerelease":
-            raise RuntimeError("No pre-release found for this repository.")
-        raise RuntimeError("No release found for this repository.")
+            raise RuntimeError(
+                f"No supported pre-release found (minimum in-app target is {APP_UPDATE_MIN_VERSION})."
+            )
+        raise RuntimeError(
+            f"No supported release found (minimum in-app target is {APP_UPDATE_MIN_VERSION})."
+        )
     latest_rel = channel_releases[0]
     selected_rel = _pick_release_by_version(channel_releases, selected_version)
     if not isinstance(selected_rel, dict):
@@ -3196,7 +3218,10 @@ class HeadlessRuntime:
     def _sanitize_selected_version(payload: Optional[Dict[str, object]]) -> str:
         if not isinstance(payload, dict):
             return ""
-        return str(payload.get("selected_version", "") or "").strip().lstrip("vV")
+        selected = str(payload.get("selected_version", "") or "").strip().lstrip("vV")
+        if selected and (not _is_supported_update_version(selected)):
+            return ""
+        return selected
 
     @staticmethod
     def _sanitize_selected_channel(payload: Optional[Dict[str, object]], fallback: str = "release") -> str:
