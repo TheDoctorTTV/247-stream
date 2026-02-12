@@ -92,6 +92,12 @@
       width: 100%;
       transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
     }
+    #playlist_url {
+      max-width: 100%;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      white-space: nowrap;
+    }
     input[type="text"]:hover, input[type="password"]:hover, select:hover {
       border-color: #2d4362;
     }
@@ -126,15 +132,29 @@
       background: var(--card-2);
       box-shadow: var(--shadow-soft);
     }
-    .source-item .source-text {
+    .source-item .source-main {
       flex: 1;
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+    .source-item .source-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 600;
+      color: #dce8ff;
+    }
+    .source-item .source-url {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       font-family: Consolas, "Courier New", monospace;
       font-size: 12px;
-      color: #d6e3fb;
+      color: #9eb2d7;
     }
     .source-item .source-remove {
       border-radius: 8px;
@@ -145,6 +165,20 @@
       font-size: 12px;
       flex: 0 0 auto;
       transition: background-color 120ms ease, border-color 120ms ease;
+    }
+    .source-item .source-copy {
+      border-radius: 8px;
+      padding: 6px 10px;
+      background: #1f3248;
+      border-color: #2e4c70;
+      color: #d7ecff;
+      font-size: 12px;
+      flex: 0 0 auto;
+      transition: background-color 120ms ease, border-color 120ms ease;
+    }
+    .source-item .source-copy:hover {
+      background: #27405c;
+      border-color: #395f8d;
     }
     .source-item .source-remove:hover {
       background: #4a2434;

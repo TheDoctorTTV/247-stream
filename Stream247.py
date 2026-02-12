@@ -70,7 +70,7 @@ import re
 
 # General application metadata and platform helpers
 APP_NAME = "Stream247"  # Name shown in logs and dashboard
-APP_VERSION = "2.0-pre-release-4"  # Current version
+APP_VERSION = "2.0-pre-release-5"  # Current version
 GITHUB_REPO = "TheDoctorTTV/247-stream"  # GitHub repository for updates
 APP_UPDATE_MIN_VERSION = "2.0-pre-release-2"  # Oldest version eligible for in-app updater
 
@@ -202,12 +202,63 @@ def _normalize_sources(value: object) -> List[str]:
     out: List[str] = []
     seen = set()
     for item in raw_items:
-        src = str(item or "").strip()
+        src = ""
+        if isinstance(item, dict):
+            for key in ("url", "source", "playlist_url"):
+                raw = str(item.get(key, "")).strip()
+                if raw:
+                    src = raw
+                    break
+        else:
+            src = str(item or "").strip()
         if not src or src in seen:
             continue
         seen.add(src)
         out.append(src)
     return out
+
+
+def _normalize_source_names(value: object, valid_sources: List[str]) -> Dict[str, str]:
+    """Normalize source display-name mapping keyed by URL."""
+    raw_map: Dict[str, str] = {}
+    if isinstance(value, dict):
+        for raw_url, raw_name in value.items():
+            url = str(raw_url or "").strip()
+            name = str(raw_name or "").strip()
+            if url and name:
+                raw_map[url] = name
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url", "") or item.get("source", "") or item.get("playlist_url", "")).strip()
+            name = str(item.get("name", "")).strip()
+            if url and name:
+                raw_map[url] = name
+
+    out: Dict[str, str] = {}
+    for src in valid_sources:
+        name = raw_map.get(src, "").strip()
+        if name:
+            out[src] = name
+    return out
+
+
+def _resolved_source_names(cfg: Dict[str, object], sources: List[str]) -> Dict[str, str]:
+    """Resolve normalized source display names for known sources."""
+    names = _normalize_source_names(cfg.get("source_names", {}), sources)
+    raw_sources = cfg.get("sources", [])
+    if isinstance(raw_sources, (list, tuple)):
+        for item in raw_sources:
+            if not isinstance(item, dict):
+                continue
+            src = str(item.get("url", "") or item.get("source", "") or item.get("playlist_url", "")).strip()
+            if (not src) or (src not in sources) or (src in names):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name:
+                names[src] = name
+    return names
 
 
 def _resolved_sources_and_playlist(cfg: Dict[str, object]) -> Tuple[List[str], str]:
@@ -230,6 +281,7 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
     """Return normalized stream settings for the web UI/API."""
     cfg = data or {}
     sources, playlist_url = _resolved_sources_and_playlist(cfg)
+    source_names = _resolved_source_names(cfg, sources)
     resolution = str(cfg.get("resolution", "720p"))
     if resolution not in WEB_ALLOWED_RESOLUTIONS:
         resolution = "720p"
@@ -260,6 +312,7 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
     return {
         "playlist_url": playlist_url,
         "sources": sources,
+        "source_names": source_names,
         "rtmp_base": str(cfg.get("rtmp_base", "rtmp://a.rtmp.youtube.com/live2")).strip(),
         "stream_key": str(cfg.get("stream_key", "")).strip(),
         "resolution": resolution,

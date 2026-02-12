@@ -56,7 +56,6 @@
           <label class="check"><input id="shuffle" type="checkbox">Shuffle playlist</label>
           <label class="check"><input id="log_to_file" type="checkbox">Log to file</label>
           <label class="check"><input id="remember" type="checkbox">Remember playlist and key</label>
-          <label class="check"><input id="check_updates_startup" type="checkbox">Check updates on startup</label>
         </div>
         <div class="row" style="margin-top:12px;">
           <button id="reloadSettingsBtn">Reload Settings</button>
@@ -67,6 +66,10 @@
     <div class="tab-panel" id="tab-sources">
       <div class="card">
         <h2>Sources</h2>
+        <div class="field">
+          <label for="source_add_name">Source Name (optional)</label>
+          <input id="source_add_name" type="text" placeholder="Main Playlist">
+        </div>
         <div class="field">
           <label for="source_add_input">Add Source URL</label>
           <div class="row">
@@ -121,6 +124,7 @@
                 <select id="app_update_version"><option value="">Latest in selected channel</option></select>
               </div>
               <label class="check" style="margin: 0;"><input id="auto_app_updates" type="checkbox">Auto install</label>
+              <label class="check" style="margin: 0;"><input id="check_updates_startup" type="checkbox">Check for updates automatically</label>
             </div>
           </div>
           <div class="about-section">

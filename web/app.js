@@ -17,6 +17,7 @@
     const binariesStatus = document.getElementById("binariesStatus");
     const binariesProgressBar = document.getElementById("binariesProgressBar");
     const binariesProgressText = document.getElementById("binariesProgressText");
+    const sourceAddName = document.getElementById("source_add_name");
     const sourceAddInput = document.getElementById("source_add_input");
     const sourceAddBtn = document.getElementById("source_add_btn");
     const sourcesList = document.getElementById("sources_list");
@@ -42,6 +43,8 @@
     let pendingAutoSave = false;
     let lastSavedPayload = "";
     let appVersionsBoundToChannel = "";
+    const APP_UPDATE_AUTO_CHECK_MS = 10 * 60 * 1000;
+    let appAutoCheckTimer = null;
     const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel", "update_download_cap_mbps"];
 
     let sourcesState = [];
@@ -63,6 +66,97 @@
       return out;
     }
 
+    function normalizeSourceNames(value) {
+      const out = {};
+      if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+      for (const [rawUrl, rawName] of Object.entries(value)) {
+        const url = String(rawUrl || "").trim();
+        const name = String(rawName || "").trim();
+        if (!url || !name) continue;
+        out[url] = name;
+      }
+      return out;
+    }
+
+    function normalizeSourceEntries(value, sourceNames) {
+      const urls = normalizeSources(value);
+      const namesMap = normalizeSourceNames(sourceNames);
+      if (Array.isArray(value)) {
+        value.forEach((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) return;
+          const url = String(item.url || item.source || item.playlist_url || "").trim();
+          const name = String(item.name || "").trim();
+          if (url && name && !namesMap[url]) namesMap[url] = name;
+        });
+      }
+      return urls.map((url) => ({ url, name: namesMap[url] || "" }));
+    }
+
+    function truncateUrl(url) {
+      const src = String(url || "").trim();
+      const limit = (window.innerWidth <= 700) ? 36 : 70;
+      if (src.length <= limit) return src;
+      return src.slice(0, Math.max(8, limit - 3)) + "...";
+    }
+
+    function sourceLabel(entry) {
+      const url = String(entry && entry.url || "").trim();
+      const name = String(entry && entry.name || "").trim();
+      if (!url) return "";
+      if (name) return name;
+      return truncateUrl(url);
+    }
+
+    function sourceNameForUrl(url) {
+      const wanted = String(url || "").trim();
+      if (!wanted) return "";
+      const match = sourcesState.find((entry) => String(entry && entry.url || "").trim() === wanted);
+      return String(match && match.name || "").trim();
+    }
+
+    function normalizeStateEntries(value) {
+      const raw = Array.isArray(value) ? value : [];
+      const byUrl = new Map();
+      raw.forEach((entry) => {
+        const url = String(entry && entry.url || "").trim();
+        if (!url) return;
+        const name = String(entry && entry.name || "").trim();
+        if (!byUrl.has(url)) {
+          byUrl.set(url, { url, name });
+        } else if (name && !String(byUrl.get(url).name || "").trim()) {
+          byUrl.get(url).name = name;
+        }
+      });
+      return Array.from(byUrl.values());
+    }
+
+    async function copyTextToClipboard(text) {
+      const value = String(text || "");
+      if (!value) return false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(value);
+          return true;
+        }
+      } catch (err) {
+      }
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = value;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        ta.style.top = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return !!ok;
+      } catch (err) {
+        return false;
+      }
+    }
+
     function renderSourcesList() {
       sourcesList.innerHTML = "";
       if (!sourcesState.length) {
@@ -70,14 +164,34 @@
         return;
       }
       sourcesEmpty.style.display = "none";
-      sourcesState.forEach((src, idx) => {
+      sourcesState.forEach((entry, idx) => {
         const row = document.createElement("div");
         row.className = "source-item";
 
-        const text = document.createElement("div");
-        text.className = "source-text";
-        text.textContent = src;
-        text.title = src;
+        const main = document.createElement("div");
+        main.className = "source-main";
+
+        const name = document.createElement("div");
+        name.className = "source-name";
+        name.textContent = String(entry.name || "").trim() || "Unnamed Source";
+
+        const url = document.createElement("div");
+        url.className = "source-url";
+        url.textContent = truncateUrl(entry.url);
+        url.title = entry.url;
+
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "source-copy";
+        copyBtn.type = "button";
+        copyBtn.textContent = "Copy URL";
+        copyBtn.addEventListener("click", async () => {
+          const ok = await copyTextToClipboard(entry.url);
+          if (ok) {
+            setSettingsStatus("Copied source URL to clipboard.", "ok");
+          } else {
+            setSettingsStatus("Failed to copy source URL.", "err");
+          }
+        });
 
         const removeBtn = document.createElement("button");
         removeBtn.className = "source-remove";
@@ -86,21 +200,24 @@
         removeBtn.addEventListener("click", () => {
           const nextSources = sourcesState.filter((_, i) => i !== idx);
           const selected = String(sourceSelect.value || "").trim();
-          const preferred = (selected && selected !== src) ? selected : "";
+          const preferred = (selected && selected !== entry.url) ? selected : "";
           setSourcesState(nextSources, preferred);
           queueAutoSave(180);
         });
 
-        row.appendChild(text);
+        main.appendChild(name);
+        main.appendChild(url);
+        row.appendChild(main);
+        row.appendChild(copyBtn);
         row.appendChild(removeBtn);
         sourcesList.appendChild(row);
       });
     }
 
-    function syncSourceSelect(sources, preferred) {
-      const safeSources = normalizeSources(sources);
+    function syncSourceSelect(entries, preferred) {
+      const safeEntries = normalizeStateEntries(entries);
       sourceSelect.innerHTML = "";
-      if (!safeSources.length) {
+      if (!safeEntries.length) {
         const emptyOption = document.createElement("option");
         emptyOption.value = "";
         emptyOption.textContent = "No sources configured";
@@ -110,43 +227,53 @@
         sourceHint.textContent = "Add source URLs in the Sources tab.";
         return "";
       }
-      safeSources.forEach((src) => {
+      safeEntries.forEach((entry) => {
         const opt = document.createElement("option");
-        opt.value = src;
-        opt.textContent = src;
+        opt.value = entry.url;
+        opt.textContent = sourceLabel(entry);
+        opt.title = entry.url;
         sourceSelect.appendChild(opt);
       });
-      const wanted = safeSources.includes(preferred) ? preferred : safeSources[0];
+      const urls = safeEntries.map((entry) => entry.url);
+      const wanted = urls.includes(preferred) ? preferred : urls[0];
       sourceSelect.value = wanted;
-      sourceSelect.disabled = (safeSources.length <= 1);
-      sourceHint.textContent = (safeSources.length <= 1)
+      sourceSelect.disabled = (safeEntries.length <= 1);
+      sourceHint.textContent = (safeEntries.length <= 1)
         ? "Only one source is configured. It will be used automatically."
         : "Choose which source to stream.";
       return wanted;
     }
 
     function setSourcesState(nextSources, preferred) {
-      sourcesState = normalizeSources(nextSources);
+      sourcesState = normalizeStateEntries(nextSources);
       const selected = syncSourceSelect(sourcesState, preferred);
       renderSourcesList();
       return selected;
     }
 
     function addSourceFromInput() {
-      const raw = String(sourceAddInput.value || "").trim();
-      if (!raw) return;
+      const rawUrl = String(sourceAddInput.value || "").trim();
+      const rawName = String(sourceAddName && sourceAddName.value || "").trim();
+      if (!rawUrl) return;
       const selected = String(sourceSelect.value || "").trim();
-      const nextSources = [raw, ...sourcesState.filter((src) => src !== raw)];
-      const preferred = selected && selected !== raw ? selected : raw;
+      const nextSources = [{ url: rawUrl, name: rawName }];
+      sourcesState.forEach((entry) => {
+        if (entry.url === rawUrl) return;
+        nextSources.push({ url: entry.url, name: entry.name });
+      });
+      const preferred = selected && selected !== rawUrl ? selected : rawUrl;
       setSourcesState(nextSources, preferred);
       sourceAddInput.value = "";
+      if (sourceAddName) sourceAddName.value = "";
       queueAutoSave(180);
     }
 
     function syncSourcesUIFromSettings(settings) {
-      const sources = normalizeSources(settings.sources);
+      const sources = normalizeSourceEntries(settings.sources, settings.source_names);
       const fallbackPlaylist = String(settings.playlist_url || "").trim();
-      if (!sources.length && fallbackPlaylist) sources.push(fallbackPlaylist);
+      if (!sources.length && fallbackPlaylist) {
+        sources.push({ url: fallbackPlaylist, name: "" });
+      }
       return setSourcesState(sources, fallbackPlaylist);
     }
 
@@ -206,6 +333,30 @@
       binariesProgressText.textContent = text || (p > 0 ? ("Progress: " + p + "%") : "");
     }
 
+    function isAutoUpdateCheckEnabled() {
+      const el = document.getElementById("check_updates_startup");
+      return !!(el && el.checked);
+    }
+
+    function resetAppAutoCheckTimer(runNow) {
+      if (appAutoCheckTimer) {
+        clearInterval(appAutoCheckTimer);
+        appAutoCheckTimer = null;
+      }
+      if (!isAutoUpdateCheckEnabled()) {
+        if (!appUpdateRunning) {
+          setAppUpdateStatus("Automatic update checks are disabled. Use Check to run manually.", "unknown");
+        }
+        return;
+      }
+      const runCheck = () => {
+        if (appUpdateRunning) return;
+        triggerAppUpdateCheck("");
+      };
+      if (runNow) runCheck();
+      appAutoCheckTimer = setInterval(runCheck, APP_UPDATE_AUTO_CHECK_MS);
+    }
+
     function versionTuple(v) {
       const m = String(v || "").match(/(\\d+(?:\\.\\d+)+)/);
       if (!m) return null;
@@ -253,7 +404,14 @@
         stateText.className = "status" + (streaming ? " on" : "");
         const meta = s.meta || {};
         const parts = [];
-        if (meta.source) parts.push("source: " + meta.source);
+        const runtimeSourceUrl = String(meta.source || "").trim();
+        const selectedSourceUrl = String(sourceSelect && sourceSelect.value || "").trim();
+        const firstSourceUrl = String((sourcesState[0] && sourcesState[0].url) || "").trim();
+        const sourceUrl = runtimeSourceUrl || selectedSourceUrl || firstSourceUrl;
+        if (sourceUrl) {
+          const sourceName = sourceNameForUrl(sourceUrl);
+          parts.push("source: " + (sourceName || sourceUrl));
+        }
         metaText.textContent = parts.join(" | ");
         updateLogBox(otherLogBox, s.logs_other, forceScroll);
         updateLogBox(ffmpegLogBox, s.logs_ffmpeg, forceScroll);
@@ -287,15 +445,22 @@
 
     function formToPayload() {
       const out = {};
-      const currentSources = normalizeSources(sourcesState);
+      const currentSources = sourcesState.map((entry) => String(entry.url || "").trim()).filter(Boolean);
+      const sourceNames = {};
+      sourcesState.forEach((entry) => {
+        const url = String(entry.url || "").trim();
+        const name = String(entry.name || "").trim();
+        if (url && name) sourceNames[url] = name;
+      });
       const selected = String(sourceSelect.value || "").trim();
-      const normalizedSelected = syncSourceSelect(currentSources, selected);
+      const normalizedSelected = syncSourceSelect(sourcesState, selected);
       for (const id of fieldIds) {
         const el = document.getElementById(id);
         if (!el) continue;
         out[id] = (el.type === "checkbox") ? !!el.checked : el.value;
       }
       out.sources = currentSources;
+      out.source_names = sourceNames;
       if (currentSources.length === 1) {
         out.playlist_url = currentSources[0];
       } else if (!currentSources.length) {
@@ -352,8 +517,10 @@
         applySettingsToForm(payload.settings);
         lastSavedPayload = payloadSignature(formToPayload());
         setSettingsStatus("Settings loaded.", "ok");
+        resetAppAutoCheckTimer(true);
       } catch (err) {
         setSettingsStatus("Failed to load settings.", "err");
+        resetAppAutoCheckTimer(false);
       } finally {
         suppressAutoSave = false;
       }
@@ -653,6 +820,14 @@
         }
       });
     }
+    if (sourceAddName) {
+      sourceAddName.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          addSourceFromInput();
+        }
+      });
+    }
     // Fallback for stale partial DOM states: keep Add functional via delegation.
     document.addEventListener("click", (ev) => {
       const target = ev.target;
@@ -661,6 +836,10 @@
       if (!addBtn) return;
       ev.preventDefault();
       addSourceFromInput();
+    });
+    window.addEventListener("resize", () => {
+      renderSourcesList();
+      syncSourceSelect(sourcesState, String(sourceSelect.value || "").trim());
     });
     checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
@@ -676,10 +855,15 @@
         triggerAppUpdateCheck("");
       });
     }
+    const checkUpdatesToggle = document.getElementById("check_updates_startup");
+    if (checkUpdatesToggle) {
+      checkUpdatesToggle.addEventListener("change", () => {
+        resetAppAutoCheckTimer(true);
+      });
+    }
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
     bindAutoSaveListeners();
     loadSettings();
-    loadAppUpdateStatus();
     loadBinariesStatus();
     refreshState(true);
     setInterval(() => {
@@ -688,6 +872,5 @@
       if (appUpdateRunning) loadAppUpdateStatus();
     }, 1200);
     setInterval(() => {
-      loadAppUpdateStatus();
       loadBinariesStatus();
     }, 300000);
