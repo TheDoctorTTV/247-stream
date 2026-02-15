@@ -70,7 +70,7 @@ import re
 
 # General application metadata and platform helpers
 APP_NAME = "Stream247"  # Name shown in logs and dashboard
-APP_VERSION = "2.0-pre-release-6"  # Current version
+APP_VERSION = "2.0"  # Current version
 GITHUB_REPO = "TheDoctorTTV/247-stream"  # GitHub repository for updates
 APP_UPDATE_MIN_VERSION = "2.0-pre-release-2"  # Oldest version eligible for in-app updater
 
