@@ -54,7 +54,8 @@
         <div class="checks" style="margin-top:12px;">
           <label class="check"><input id="overlay_titles" type="checkbox">Overlay current title</label>
           <label class="check"><input id="shuffle" type="checkbox">Shuffle playlist</label>
-          <label class="check"><input id="log_to_file" type="checkbox">Log to file</label>
+          <label class="check"><input id="log_to_file" type="checkbox">App log</label>
+          <label class="check"><input id="ffmpeg_log_to_file" type="checkbox">Save FFmpeg log</label>
           <label class="check"><input id="remember" type="checkbox">Remember playlist and key</label>
         </div>
         <div class="row" style="margin-top:12px;">
@@ -90,6 +91,7 @@
           <button class="subtab-btn active" data-subtab="subtab-other">App / Other Output</button>
           <button class="subtab-btn" data-subtab="subtab-ffmpeg">FFmpeg Output</button>
         </div>
+        <div class="statusline">Showing the last 30 minutes of console logs.</div>
         <div class="subtab-panel active" id="subtab-other"><pre id="otherLogBox">Loading...</pre></div>
         <div class="subtab-panel" id="subtab-ffmpeg"><pre id="ffmpegLogBox">Loading...</pre></div>
       </div>

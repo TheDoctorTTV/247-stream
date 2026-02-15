@@ -323,6 +323,7 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
         "overlay_titles": _to_bool(cfg.get("overlay_titles", True), True),
         "shuffle": _to_bool(cfg.get("shuffle", False), False),
         "log_to_file": _to_bool(cfg.get("log_to_file", False), False),
+        "ffmpeg_log_to_file": _to_bool(cfg.get("ffmpeg_log_to_file", False), False),
         "remember": _to_bool(cfg.get("remember", True), True),
         "check_updates_startup": _to_bool(cfg.get("check_updates_startup", True), True),
         "auto_app_updates": _to_bool(cfg.get("auto_app_updates", False), False),
@@ -416,15 +417,29 @@ def find_ytdlp() -> Optional[str]:
 class RuntimeStateStore:
     """Thread-safe runtime state used by the runtime and web dashboard."""
 
+    CONSOLE_LOG_WINDOW_SECONDS = 30 * 60
+
     def __init__(self, log_limit: int = 500):
         self._lock = threading.Lock()
-        self._logs: deque[str] = deque(maxlen=max(50, int(log_limit)))
-        self._logs_other: deque[str] = deque(maxlen=max(50, int(log_limit)))
-        self._logs_ffmpeg: deque[str] = deque(maxlen=max(50, int(log_limit)))
+        self._logs: deque[Tuple[float, str]] = deque()
+        self._logs_other: deque[Tuple[float, str]] = deque()
+        self._logs_ffmpeg: deque[Tuple[float, str]] = deque()
         self._status = "Idle"
         self._streaming = False
         self._updated_at = time.time()
         self._meta: Dict[str, object] = {}
+
+    @staticmethod
+    def _purge_before(bucket: deque[Tuple[float, str]], cutoff_ts: float) -> None:
+        while bucket and bucket[0][0] < cutoff_ts:
+            bucket.popleft()
+
+    def _purge_expired_locked(self, now_ts: Optional[float] = None) -> None:
+        now = now_ts if now_ts is not None else time.time()
+        cutoff = now - self.CONSOLE_LOG_WINDOW_SECONDS
+        self._purge_before(self._logs, cutoff)
+        self._purge_before(self._logs_other, cutoff)
+        self._purge_before(self._logs_ffmpeg, cutoff)
 
     @staticmethod
     def _is_ffmpeg_log(line: str) -> bool:
@@ -447,13 +462,15 @@ class RuntimeStateStore:
         text = (line or "").rstrip()
         if not text:
             return
+        now = time.time()
         with self._lock:
-            self._logs.append(text)
+            self._logs.append((now, text))
             if self._is_ffmpeg_log(text):
-                self._logs_ffmpeg.append(text)
+                self._logs_ffmpeg.append((now, text))
             else:
-                self._logs_other.append(text)
-            self._updated_at = time.time()
+                self._logs_other.append((now, text))
+            self._purge_expired_locked(now)
+            self._updated_at = now
 
     def set_status(self, status: str) -> None:
         with self._lock:
@@ -472,6 +489,7 @@ class RuntimeStateStore:
 
     def snapshot(self) -> Dict[str, object]:
         with self._lock:
+            self._purge_expired_locked()
             return {
                 "app_name": APP_NAME,
                 "app_version": APP_VERSION,
@@ -479,9 +497,9 @@ class RuntimeStateStore:
                 "status": self._status,
                 "updated_at": self._updated_at,
                 "meta": dict(self._meta),
-                "logs": list(self._logs),
-                "logs_other": list(self._logs_other),
-                "logs_ffmpeg": list(self._logs_ffmpeg),
+                "logs": [line for _ts, line in self._logs],
+                "logs_other": [line for _ts, line in self._logs_other],
+                "logs_ffmpeg": [line for _ts, line in self._logs_ffmpeg],
             }
 
 
@@ -3160,6 +3178,8 @@ class HeadlessRuntime:
         self.runtime_state.set_meta(mode="headless")
         self.log_fh: Optional[TextIO] = None
         self._log_fh_lock = threading.Lock()
+        self._app_log_to_file = False
+        self._ffmpeg_log_to_file = False
         self.worker: Optional[StreamWorker] = None
         self.worker_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -3208,10 +3228,13 @@ class HeadlessRuntime:
     def log(self, text: str) -> None:
         try:
             self.runtime_state.append_log(text)
-            if RuntimeStateStore._is_ffmpeg_log(text):
-                return
+            is_ffmpeg = RuntimeStateStore._is_ffmpeg_log(text)
             with self._log_fh_lock:
                 if not self.log_fh:
+                    return
+                if is_ffmpeg and not self._ffmpeg_log_to_file:
+                    return
+                if (not is_ffmpeg) and (not self._app_log_to_file):
                     return
                 try:
                     self.log_fh.write(f"{text}\n")
@@ -3223,8 +3246,13 @@ class HeadlessRuntime:
             return
 
     def _sync_file_logging(self, rotate: bool = False) -> None:
-        enabled = _to_bool(load_config_json().get("log_to_file", False), False)
+        cfg = load_config_json()
+        app_enabled = _to_bool(cfg.get("log_to_file", False), False)
+        ffmpeg_enabled = _to_bool(cfg.get("ffmpeg_log_to_file", False), False)
+        enabled = app_enabled or ffmpeg_enabled
         with self._log_fh_lock:
+            self._app_log_to_file = app_enabled
+            self._ffmpeg_log_to_file = ffmpeg_enabled
             if not enabled:
                 if self.log_fh:
                     try:
