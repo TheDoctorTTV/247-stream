@@ -1,6 +1,7 @@
 """Config helpers and settings normalization."""
 
 import json
+import os
 import platform
 import re
 import sys
@@ -221,11 +222,12 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
     browser = str(cfg.get("yt_auth_browser", "auto")).strip().lower()
     if browser not in WEB_ALLOWED_BROWSERS:
         browser = "auto"
-    try:
-        cap = int(cfg.get("update_download_cap_mbps", 25))
-    except Exception:
-        cap = 25
-    cap = max(1, min(25, cap))
+    theme = str(cfg.get("theme", "blue")).strip().lower()
+    if theme == "current":
+        theme = "blue"
+    if theme not in ("blue", "purple", "red", "mono"):
+        theme = "blue"
+    cap = 50
     update_channel = str(cfg.get("app_update_channel", "release")).strip().lower()
     if update_channel not in WEB_ALLOWED_UPDATE_CHANNELS:
         update_channel = "release"
@@ -254,6 +256,7 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
         "yt_auth_profile": str(cfg.get("yt_auth_profile", "")).strip(),
         "youtube_persistent_output": _to_bool(cfg.get("youtube_persistent_output", True), True),
         "update_download_cap_mbps": cap,
+        "theme": theme,
     }
 
 
@@ -270,4 +273,5 @@ def apply_web_settings_payload(base: Dict[str, object], payload: Dict[str, objec
         out["playlist_url"] = normalized.get("playlist_url", "")
     if ("buffer_mode" in payload) or ("video_bitrate" in payload):
         out.pop("bufsize", None)
+    out["update_download_cap_mbps"] = 50
     return out

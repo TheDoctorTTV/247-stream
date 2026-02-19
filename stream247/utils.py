@@ -140,7 +140,7 @@ def _download_url(
     capped_mbps = None
     if max_mbps is not None:
         try:
-            capped_mbps = max(1, min(25, int(max_mbps)))
+            capped_mbps = max(1, min(50, int(max_mbps)))
         except Exception:
             capped_mbps = None
     max_bytes_per_sec = (capped_mbps * 1_000_000 / 8.0) if capped_mbps else None

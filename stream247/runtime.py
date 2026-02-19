@@ -1,11 +1,12 @@
 import os
+import re
 import shlex
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Optional, TextIO
+from typing import Dict, List, Optional, TextIO
 from urllib.parse import urlsplit
 
 from .config import (
@@ -33,6 +34,10 @@ from .worker import StreamWorker
 
 class HeadlessRuntime:
     """Run stream worker and web dashboard."""
+
+    _LOG_LEVEL_RE = re.compile(r"^\[(INFO|WARN|ERROR|STATUS|PREFETCH|CMD|DETAIL|DEBUG)\]\s*(.*)$")
+    _FFMPEG_STAT_RE = re.compile(r"([A-Za-z_]+)=\s*([^\s]+)")
+    _FFMPEG_STAT_FIELDS = ("frame", "fps", "q", "size", "time", "bitrate", "speed", "dup", "drop")
 
     def __init__(self, host: str, port: int):
         self.host = host
@@ -65,6 +70,7 @@ class HeadlessRuntime:
             "finished_at": 0.0,
             "downloaded_path": "",
             "progress_message": "",
+            "progress_percent": 0,
             "mode": "manual",
             "selected_version": "",
             "selected_channel": "",
@@ -90,8 +96,13 @@ class HeadlessRuntime:
 
     def log(self, text: str) -> None:
         try:
-            self.runtime_state.append_log(text)
-            is_ffmpeg = RuntimeStateStore._is_ffmpeg_log(text)
+            raw_text = str(text or "")
+            is_ffmpeg = RuntimeStateStore._is_ffmpeg_log(raw_text)
+            formatted_lines = self._format_log_lines(raw_text, is_ffmpeg)
+            if not formatted_lines:
+                return
+            for line in formatted_lines:
+                self.runtime_state.append_log(line, is_ffmpeg=is_ffmpeg)
             with self._log_fh_lock:
                 if not self.log_fh:
                     return
@@ -100,13 +111,62 @@ class HeadlessRuntime:
                 if (not is_ffmpeg) and (not self._app_log_to_file):
                     return
                 try:
-                    self.log_fh.write(f"{text}\n")
+                    for line in formatted_lines:
+                        self.log_fh.write(f"{line}\n")
                     self.log_fh.flush()
                 except Exception:
                     pass
         except KeyboardInterrupt:
             # Allow Ctrl+C to terminate cleanly without cascading tracebacks.
             return
+
+    @classmethod
+    def _format_ffmpeg_stats(cls, text: str) -> Optional[str]:
+        pairs = cls._FFMPEG_STAT_RE.findall(text)
+        if not pairs:
+            return None
+        values = {k.lower(): v for k, v in pairs}
+        if "frame" not in values:
+            return None
+        ordered: List[str] = []
+        for key in cls._FFMPEG_STAT_FIELDS:
+            val = values.pop(key, "")
+            if val:
+                ordered.append(f"{key}={val}")
+        for key in sorted(values):
+            ordered.append(f"{key}={values[key]}")
+        return " | ".join(ordered)
+
+    @classmethod
+    def _format_log_line(cls, text: str, is_ffmpeg: bool, ts_label: str) -> str:
+        line = str(text or "").replace("\t", "    ").strip()
+        if not line:
+            return ""
+        match = cls._LOG_LEVEL_RE.match(line)
+        if match:
+            level = match.group(1)
+            message = match.group(2).strip()
+            return f"[{ts_label}] {level:<7} {message or '-'}"
+        if is_ffmpeg:
+            stats = cls._format_ffmpeg_stats(line)
+            if stats:
+                return f"[{ts_label}] FFMPEG  {stats}"
+            return f"[{ts_label}] FFMPEG  {line}"
+        return f"[{ts_label}] LOG     {line}"
+
+    @classmethod
+    def _format_log_lines(cls, text: str, is_ffmpeg: bool) -> List[str]:
+        raw = str(text or "").replace("\r", "\n")
+        lines = [line for line in raw.splitlines() if line.strip()]
+        if not lines:
+            return []
+        ts_label = time.strftime("%H:%M:%S")
+        out: List[str] = []
+        for line in lines:
+            formatted = cls._format_log_line(line, is_ffmpeg, ts_label)
+            if formatted:
+                out.append(formatted)
+        return out
 
     def _sync_file_logging(self, rotate: bool = False) -> None:
         cfg = load_config_json()
@@ -172,8 +232,7 @@ class HeadlessRuntime:
     def _run_binaries_update(self) -> None:
         try:
             settings = web_settings_payload_from_config(load_config_json())
-            cap = int(settings.get("update_download_cap_mbps", 25) or 25)
-            cap = max(1, min(25, cap))
+            cap = 50
             worker = StreamWorker(StreamConfig(playlist_url="", stream_key="", update_download_cap_mbps=cap))
             worker.log.connect(self.log, QtCore.Qt.ConnectionType.DirectConnection)
             self.log("[INFO] Starting binaries update (yt-dlp, FFmpeg)...")
@@ -267,6 +326,7 @@ class HeadlessRuntime:
             self._app_update_state["last_result"] = None
             self._app_update_state["last_error"] = ""
             self._app_update_state["progress_message"] = "Checking latest app release..."
+            self._app_update_state["progress_percent"] = 0
             self._app_update_state["selected_version"] = selected_version
             self._app_update_state["selected_channel"] = channel
             self._app_update_state["force_reinstall"] = False
@@ -277,9 +337,11 @@ class HeadlessRuntime:
             status = dict(self._app_update_state)
         return status
 
-    def _set_app_update_progress(self, message: str) -> None:
+    def _set_app_update_progress(self, message: str, percent: Optional[int] = None) -> None:
         with self._app_update_lock:
             self._app_update_state["progress_message"] = str(message or "")
+            if percent is not None:
+                self._app_update_state["progress_percent"] = max(0, min(100, int(percent)))
 
     def _is_supported_update_asset(self, asset_path: Path) -> bool:
         return _is_release_asset_self_installable(asset_path.name)
@@ -354,8 +416,7 @@ class HeadlessRuntime:
     ) -> None:
         try:
             settings = web_settings_payload_from_config(load_config_json())
-            cap = int(settings.get("update_download_cap_mbps", 25) or 25)
-            cap = max(1, min(25, cap))
+            cap = 50
             channel = str(selected_channel or settings.get("app_update_channel", "release")).strip().lower()
             if channel not in WEB_ALLOWED_UPDATE_CHANNELS:
                 channel = "release"
@@ -365,7 +426,7 @@ class HeadlessRuntime:
                 mode_label = "manual (reinstall)"
             else:
                 mode_label = "manual"
-            self._set_app_update_progress("Checking latest app release...")
+            self._set_app_update_progress("Checking latest app release...", 5)
             info = fetch_latest_app_release_info(channel, selected_version=selected_version or None)
             if force_reinstall:
                 info["should_install"] = True
@@ -376,6 +437,7 @@ class HeadlessRuntime:
                     self._app_update_state["running"] = False
                     self._app_update_state["finished_at"] = time.time()
                     self._app_update_state["progress_message"] = "Already on selected channel/version."
+                    self._app_update_state["progress_percent"] = 100
                 self.log("[INFO] No app install needed for selected channel/version.")
                 return
             dl_url = str(info.get("download_url", "")).strip()
@@ -390,8 +452,22 @@ class HeadlessRuntime:
             dest = updates_dir / asset_name
             self.log(f"[INFO] Starting {mode_label} app update install.")
             self.log(f"[INFO] Downloading app update to {dest} ...")
-            self._set_app_update_progress("Downloading app update...")
-            _download_url(dl_url, dest, user_agent=f"{APP_NAME}/{APP_VERSION}", max_mbps=cap)
+            self._set_app_update_progress("Downloading app update...", 12)
+
+            def _progress_cb(done: int, total: int) -> None:
+                if total <= 0:
+                    return
+                pct = int((done * 100) / total)
+                mapped = 12 + int((80 * pct) / 100)
+                self._set_app_update_progress(f"Downloading app update... {pct}%", mapped)
+
+            _download_url(
+                dl_url,
+                dest,
+                user_agent=f"{APP_NAME}/{APP_VERSION}",
+                progress_cb=_progress_cb,
+                max_mbps=cap,
+            )
             if dest.exists():
                 try:
                     os.chmod(dest, 0o755)
@@ -404,6 +480,7 @@ class HeadlessRuntime:
                 self._app_update_state["finished_at"] = time.time()
                 self._app_update_state["downloaded_path"] = dest.as_posix()
                 self._app_update_state["progress_message"] = "Installing update and restarting..."
+                self._app_update_state["progress_percent"] = 95
                 self._app_update_state["selected_version"] = str(info.get("selected_version", "") or "")
                 self._app_update_state["selected_channel"] = str(info.get("channel", channel) or channel)
                 self._app_update_state["force_reinstall"] = bool(force_reinstall)
@@ -411,9 +488,11 @@ class HeadlessRuntime:
             if not getattr(sys, "frozen", False):
                 with self._app_update_lock:
                     self._app_update_state["progress_message"] = "Downloaded update (source mode: install manually)."
+                    self._app_update_state["progress_percent"] = 100
                 self.log("[INFO] Source mode detected. Automatic install/restart is only available in packaged builds.")
                 return
             self.log("[INFO] Installing app update and restarting...")
+            self._set_app_update_progress("Installing update and restarting...", 100)
             self._spawn_update_helper_and_exit(dest)
         except Exception as e:
             with self._app_update_lock:
@@ -440,6 +519,7 @@ class HeadlessRuntime:
             self._app_update_state["last_error"] = ""
             self._app_update_state["last_result"] = None
             self._app_update_state["progress_message"] = "Queued app update..."
+            self._app_update_state["progress_percent"] = 0
             self._app_update_state["mode"] = "automatic" if auto_mode else "manual"
             self._app_update_state["selected_version"] = selected_version
             self._app_update_state["selected_channel"] = channel

@@ -34,7 +34,7 @@ class StreamConfig:
     yt_auth_profile: str = ""
     yt_auth_allow_unauth_fallback: bool = True
     youtube_persistent_output: bool = True
-    update_download_cap_mbps: int = 25
+    update_download_cap_mbps: int = 50
     encoder_preference: str = "auto"
 
     encoder: str = "libx264"
@@ -59,11 +59,7 @@ def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
         fps = 30
     if fps not in (30, 60):
         fps = 30
-    try:
-        cap_mbps = int(data.get("update_download_cap_mbps", 25) or 25)
-    except Exception:
-        cap_mbps = 25
-    cap_mbps = max(1, min(25, cap_mbps))
+    cap_mbps = 50
     buffer_mode = str(data.get("buffer_mode", "Medium")).strip() or "Medium"
     if buffer_mode not in WEB_ALLOWED_BUFFER_MODES:
         buffer_mode = "Medium"

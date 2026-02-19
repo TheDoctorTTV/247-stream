@@ -161,6 +161,49 @@ def gather_binary_update_status() -> Dict[str, object]:
     return result
 
 
+def _canonicalize_suffix(suffix: str) -> str:
+    raw = str(suffix or "").strip().lower()
+    if not raw:
+        return ""
+    tokens = re.findall(r"[a-z]+|\d+", raw)
+    if not tokens:
+        return ""
+    out: List[str] = []
+    i = 0
+    while i < len(tokens):
+        cur = tokens[i]
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if cur == "pre" and nxt == "release":
+            out.append("prerelease")
+            i += 2
+            continue
+        out.append(cur)
+        i += 1
+    return "-".join(out)
+
+
+def _split_canonical_suffix_tokens(suffix: str) -> List[object]:
+    text = _canonicalize_suffix(suffix)
+    if not text:
+        return []
+    out: List[object] = []
+    for tok in text.split("-"):
+        if tok.isdigit():
+            out.append(int(tok))
+        else:
+            out.append(tok)
+    return out
+
+
+def _normalize_app_version_string(version: str) -> str:
+    parsed = _parse_app_version(version)
+    if not parsed:
+        return str(version or "").strip().lstrip("vV").lower()
+    core, suffix = parsed
+    core_text = ".".join(str(x) for x in core)
+    return core_text if not suffix else f"{core_text}-{suffix}"
+
+
 def _parse_app_version(version: str) -> Optional[Tuple[List[int], str]]:
     text = str(version or "").strip().lstrip("vV")
     if not text:
@@ -175,6 +218,7 @@ def _parse_app_version(version: str) -> Optional[Tuple[List[int], str]]:
     suffix = str(m.group(2) or "").strip()
     if suffix.startswith("-"):
         suffix = suffix[1:].strip()
+    suffix = _canonicalize_suffix(suffix)
     return core, suffix
 
 
@@ -199,21 +243,47 @@ def _compare_app_versions(target: str, current: str) -> Optional[int]:
         return -1
     if target_suffix == current_suffix:
         return 0
-    return 1 if target_suffix > current_suffix else -1
+    t_tokens = _split_canonical_suffix_tokens(target_suffix)
+    c_tokens = _split_canonical_suffix_tokens(current_suffix)
+    n2 = max(len(t_tokens), len(c_tokens))
+    for i in range(n2):
+        if i >= len(t_tokens):
+            return -1
+        if i >= len(c_tokens):
+            return 1
+        tv = t_tokens[i]
+        cv = c_tokens[i]
+        if isinstance(tv, int) and isinstance(cv, int):
+            if tv > cv:
+                return 1
+            if tv < cv:
+                return -1
+            continue
+        if isinstance(tv, int) and isinstance(cv, str):
+            return -1
+        if isinstance(tv, str) and isinstance(cv, int):
+            return 1
+        if str(tv) > str(cv):
+            return 1
+        if str(tv) < str(cv):
+            return -1
+    return 0
 
 
 def _is_version_newer(latest: str, current: str) -> bool:
     cmp = _compare_app_versions(latest, current)
     if cmp is not None:
         return cmp > 0
-    return str(latest) != str(current) and str(latest) > str(current)
+    latest_n = _normalize_app_version_string(latest)
+    current_n = _normalize_app_version_string(current)
+    return latest_n != current_n and latest_n > current_n
 
 
 def _should_install_selected_release(latest: str, current: str) -> bool:
     cmp = _compare_app_versions(latest, current)
     if cmp is not None:
         return cmp != 0
-    return str(latest).strip() != str(current).strip()
+    return _normalize_app_version_string(latest) != _normalize_app_version_string(current)
 
 
 def _is_supported_update_version(version: str) -> bool:
@@ -281,10 +351,10 @@ def _filter_releases_for_channel(releases: List[Dict[str, object]], update_chann
 def _pick_release_by_version(releases: List[Dict[str, object]], selected_version: Optional[str] = None) -> Optional[Dict[str, object]]:
     if not releases:
         return None
-    wanted = str(selected_version or "").strip().lstrip("vV")
+    wanted = _normalize_app_version_string(str(selected_version or "").strip().lstrip("vV"))
     if wanted:
         for rel in releases:
-            if _release_version_string(rel) == wanted:
+            if _normalize_app_version_string(_release_version_string(rel)) == wanted:
                 return rel
     return releases[0]
 

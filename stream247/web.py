@@ -14,10 +14,11 @@ from .utils import resource_path
 class RuntimeStateStore:
     """Thread-safe runtime state used by the runtime and web dashboard."""
 
-    CONSOLE_LOG_WINDOW_SECONDS = 30 * 60
+    CONSOLE_LOG_MAX_LINES = 100
 
-    def __init__(self, log_limit: int = 500):
+    def __init__(self, log_limit: int = CONSOLE_LOG_MAX_LINES):
         self._lock = threading.Lock()
+        self._log_limit = max(1, int(log_limit))
         self._logs: deque[Tuple[float, str]] = deque()
         self._logs_other: deque[Tuple[float, str]] = deque()
         self._logs_ffmpeg: deque[Tuple[float, str]] = deque()
@@ -27,16 +28,9 @@ class RuntimeStateStore:
         self._meta: Dict[str, object] = {}
 
     @staticmethod
-    def _purge_before(bucket: deque[Tuple[float, str]], cutoff_ts: float) -> None:
-        while bucket and bucket[0][0] < cutoff_ts:
+    def _trim_to_limit(bucket: deque[Tuple[float, str]], limit: int) -> None:
+        while len(bucket) > limit:
             bucket.popleft()
-
-    def _purge_expired_locked(self, now_ts: Optional[float] = None) -> None:
-        now = now_ts if now_ts is not None else time.time()
-        cutoff = now - self.CONSOLE_LOG_WINDOW_SECONDS
-        self._purge_before(self._logs, cutoff)
-        self._purge_before(self._logs_other, cutoff)
-        self._purge_before(self._logs_ffmpeg, cutoff)
 
     @staticmethod
     def _is_ffmpeg_log(line: str) -> bool:
@@ -55,18 +49,21 @@ class RuntimeStateStore:
             return False
         return True
 
-    def append_log(self, line: str) -> None:
+    def append_log(self, line: str, is_ffmpeg: Optional[bool] = None) -> None:
         text = (line or "").rstrip()
         if not text:
             return
         now = time.time()
+        ffmpeg_line = self._is_ffmpeg_log(text) if is_ffmpeg is None else bool(is_ffmpeg)
         with self._lock:
             self._logs.append((now, text))
-            if self._is_ffmpeg_log(text):
+            self._trim_to_limit(self._logs, self._log_limit)
+            if ffmpeg_line:
                 self._logs_ffmpeg.append((now, text))
+                self._trim_to_limit(self._logs_ffmpeg, self._log_limit)
             else:
                 self._logs_other.append((now, text))
-            self._purge_expired_locked(now)
+                self._trim_to_limit(self._logs_other, self._log_limit)
             self._updated_at = now
 
     def set_status(self, status: str) -> None:
@@ -86,7 +83,6 @@ class RuntimeStateStore:
 
     def snapshot(self) -> Dict[str, object]:
         with self._lock:
-            self._purge_expired_locked()
             return {
                 "app_name": APP_NAME,
                 "app_version": APP_VERSION,
@@ -173,11 +169,17 @@ class LocalWebDashboard:
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     return
 
-            def _send_bytes(self, data: bytes, content_type: str, status: int = 200) -> None:
+            def _send_bytes(
+                self,
+                data: bytes,
+                content_type: str,
+                status: int = 200,
+                cache_control: str = "public, max-age=3600",
+            ) -> None:
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "public, max-age=3600")
+                self.send_header("Cache-Control", cache_control)
                 self.end_headers()
                 try:
                     self.wfile.write(data)
@@ -220,7 +222,11 @@ class LocalWebDashboard:
                         self.send_error(HTTPStatus.NOT_FOUND, "style.css not found")
                         return
                     try:
-                        self._send_bytes(css_path.read_bytes(), "text/css; charset=utf-8")
+                        self._send_bytes(
+                            css_path.read_bytes(),
+                            "text/css; charset=utf-8",
+                            cache_control="no-store, max-age=0",
+                        )
                     except Exception:
                         self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Failed to read style.css")
                     return
@@ -230,7 +236,11 @@ class LocalWebDashboard:
                         self.send_error(HTTPStatus.NOT_FOUND, "app.js not found")
                         return
                     try:
-                        self._send_bytes(js_path.read_bytes(), "application/javascript; charset=utf-8")
+                        self._send_bytes(
+                            js_path.read_bytes(),
+                            "application/javascript; charset=utf-8",
+                            cache_control="no-store, max-age=0",
+                        )
                     except Exception:
                         self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Failed to read app.js")
                     return

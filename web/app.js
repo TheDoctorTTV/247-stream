@@ -12,6 +12,8 @@
     const downloadAppUpdateBtn = document.getElementById("downloadAppUpdateBtn");
     const reinstallAppBtn = document.getElementById("reinstallAppBtn");
     const appUpdateStatus = document.getElementById("appUpdateStatus");
+    const appUpdateProgressBar = document.getElementById("appUpdateProgressBar");
+    const appUpdateProgressText = document.getElementById("appUpdateProgressText");
     const appUpdateVersion = document.getElementById("app_update_version");
     const updateBinariesBtn = document.getElementById("updateBinariesBtn");
     const binariesStatus = document.getElementById("binariesStatus");
@@ -24,6 +26,10 @@
     const sourcesEmpty = document.getElementById("sources_empty");
     const sourceHint = document.getElementById("sourceHint");
     const sourceSelect = document.getElementById("playlist_url");
+    const streamUrlPreset = document.getElementById("stream_url_preset");
+    const rtmpBaseField = document.getElementById("rtmp_base_field");
+    const rtmpBaseInput = document.getElementById("rtmp_base");
+    const themeSelect = document.getElementById("theme_select");
     const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
     const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
     const subtabButtons = Array.from(document.querySelectorAll(".subtab-btn"));
@@ -45,7 +51,20 @@
     let appVersionsBoundToChannel = "";
     const APP_UPDATE_AUTO_CHECK_MS = 10 * 60 * 1000;
     let appAutoCheckTimer = null;
-    const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel", "update_download_cap_mbps"];
+    let appUpdateRefreshScheduled = false;
+    let appUpdateLoadFailures = 0;
+    const STORAGE_TAB_KEY = "stream247.active_tab";
+    const STORAGE_SUBTAB_KEY = "stream247.active_subtab";
+    const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
+    const STREAM_URL_PRESETS = {
+      youtube: "rtmp://a.rtmp.youtube.com/live2",
+      twitch: "rtmp://live.twitch.tv/app",
+      kick: "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app",
+      facebook: "rtmps://live-api-s.facebook.com:443/rtmp/",
+      tiktok: "rtmps://push-rtmp-global.tiktok.com/live/",
+      trovo: "rtmp://livepush.trovo.live/live/"
+    };
+    let lastCustomStreamUrl = "";
 
     let sourcesState = [];
 
@@ -277,24 +296,41 @@
       return setSourcesState(sources, fallbackPlaylist);
     }
 
-    const videoBitrateSelect = document.getElementById("video_bitrate");
-    if (videoBitrateSelect) {
-      for (let kbps = 1500; kbps <= 25000; kbps += 500) {
-        const o = document.createElement("option");
-        o.value = String(kbps) + "k";
-        o.textContent = String(kbps) + " kbps";
-        videoBitrateSelect.appendChild(o);
+    function normalizeStreamUrl(url) {
+      return String(url || "").trim().replace(/\/+$/, "");
+    }
+
+    function streamPresetFromUrl(url) {
+      const wanted = normalizeStreamUrl(url);
+      if (!wanted) return "youtube";
+      for (const [presetKey, presetUrl] of Object.entries(STREAM_URL_PRESETS)) {
+        if (normalizeStreamUrl(presetUrl) === wanted) return presetKey;
+      }
+      return "custom";
+    }
+
+    function setStreamUrlUiFromCurrentValue() {
+      if (!streamUrlPreset || !rtmpBaseInput) return;
+      const selectedPreset = String(streamUrlPreset.value || "youtube");
+      const isCustom = (selectedPreset === "custom");
+      if (rtmpBaseField) {
+        rtmpBaseField.style.display = isCustom ? "" : "none";
+      }
+      if (isCustom) {
+        if (lastCustomStreamUrl) rtmpBaseInput.value = lastCustomStreamUrl;
+      } else {
+        const presetUrl = STREAM_URL_PRESETS[selectedPreset] || STREAM_URL_PRESETS.youtube;
+        rtmpBaseInput.value = presetUrl;
       }
     }
 
-    const updateCapSelect = document.getElementById("update_download_cap_mbps");
-    if (updateCapSelect) {
-      for (let i = 1; i <= 25; i++) {
-        const o = document.createElement("option");
-        o.value = String(i);
-        o.textContent = String(i);
-        updateCapSelect.appendChild(o);
-      }
+    function syncStreamPresetFromInputValue() {
+      if (!streamUrlPreset || !rtmpBaseInput) return;
+      const currentUrl = String(rtmpBaseInput.value || "").trim();
+      const preset = streamPresetFromUrl(currentUrl);
+      if (preset === "custom") lastCustomStreamUrl = currentUrl;
+      streamUrlPreset.value = preset;
+      setStreamUrlUiFromCurrentValue();
     }
 
     function setSettingsStatus(text, level) {
@@ -327,9 +363,17 @@
       setStatusWithDot(appUpdateStatus, text, level);
     }
 
+    function setAppUpdateProgress(percent, text) {
+      const p = Math.max(0, Math.min(100, Number(percent) || 0));
+      const visual = p > 0 ? Math.max(p, 1.2) : 0;
+      appUpdateProgressBar.style.width = visual + "%";
+      appUpdateProgressText.textContent = text || (p > 0 ? ("Progress: " + p + "%") : "");
+    }
+
     function setBinariesProgress(percent, text) {
       const p = Math.max(0, Math.min(100, Number(percent) || 0));
-      binariesProgressBar.style.width = p + "%";
+      const visual = p > 0 ? Math.max(p, 1.2) : 0;
+      binariesProgressBar.style.width = visual + "%";
       binariesProgressText.textContent = text || (p > 0 ? ("Progress: " + p + "%") : "");
     }
 
@@ -357,22 +401,63 @@
       appAutoCheckTimer = setInterval(runCheck, APP_UPDATE_AUTO_CHECK_MS);
     }
 
-    function versionTuple(v) {
-      const m = String(v || "").match(/(\\d+(?:\\.\\d+)+)/);
+    function normalizeSuffix(suffix) {
+      const parts = String(suffix || "").toLowerCase().match(/[a-z]+|\d+/g) || [];
+      if (!parts.length) return [];
+      const out = [];
+      for (let i = 0; i < parts.length; i += 1) {
+        const cur = parts[i];
+        const next = parts[i + 1] || "";
+        if (cur === "pre" && next === "release") {
+          out.push("prerelease");
+          i += 1;
+          continue;
+        }
+        out.push(cur);
+      }
+      return out;
+    }
+
+    function parseVersion(v) {
+      const text = String(v || "").trim().replace(/^v/i, "");
+      const m = text.match(/^(\d+(?:\.\d+)*)(.*)$/);
       if (!m) return null;
-      return m[1].split(".").map((x) => Number(x));
+      const core = m[1].split(".").map((x) => Number(x));
+      let suffix = String(m[2] || "").trim();
+      if (suffix.startsWith("-")) suffix = suffix.slice(1).trim();
+      return { core, suffix: normalizeSuffix(suffix) };
     }
 
     function compareVersions(current, latest) {
-      const a = versionTuple(current);
-      const b = versionTuple(latest);
+      const a = parseVersion(current);
+      const b = parseVersion(latest);
       if (!a || !b) return null;
-      const n = Math.max(a.length, b.length);
+      const n = Math.max(a.core.length, b.core.length);
       for (let i = 0; i < n; i++) {
-        const av = a[i] || 0;
-        const bv = b[i] || 0;
+        const av = a.core[i] || 0;
+        const bv = b.core[i] || 0;
         if (av > bv) return 1;
         if (av < bv) return -1;
+      }
+      if (!a.suffix.length && b.suffix.length) return 1;
+      if (a.suffix.length && !b.suffix.length) return -1;
+      const n2 = Math.max(a.suffix.length, b.suffix.length);
+      for (let i = 0; i < n2; i++) {
+        if (i >= a.suffix.length) return -1;
+        if (i >= b.suffix.length) return 1;
+        const avRaw = a.suffix[i];
+        const bvRaw = b.suffix[i];
+        const avNum = /^\d+$/.test(avRaw) ? Number(avRaw) : null;
+        const bvNum = /^\d+$/.test(bvRaw) ? Number(bvRaw) : null;
+        if (avNum !== null && bvNum !== null) {
+          if (avNum > bvNum) return 1;
+          if (avNum < bvNum) return -1;
+          continue;
+        }
+        if (avNum !== null && bvNum === null) return -1;
+        if (avNum === null && bvNum !== null) return 1;
+        if (avRaw > bvRaw) return 1;
+        if (avRaw < bvRaw) return -1;
       }
       return 0;
     }
@@ -384,7 +469,7 @@
 
     function updateLogBox(el, arr, forceScroll) {
       const logs = Array.isArray(arr) ? arr : [];
-      const text = logs.join("\\n");
+      const text = logs.join("\n");
       const wasAtBottom = (el.scrollTop + el.clientHeight + 20 >= el.scrollHeight);
       el.textContent = text || "No logs yet.";
       if (forceScroll || wasAtBottom) {
@@ -441,6 +526,10 @@
           el.value = String(s[id] ?? "");
         }
       }
+      if (s && Object.prototype.hasOwnProperty.call(s, "theme")) {
+        applyTheme(String(s.theme || "blue"));
+      }
+      syncStreamPresetFromInputValue();
     }
 
     function formToPayload() {
@@ -459,6 +548,15 @@
         if (!el) continue;
         out[id] = (el.type === "checkbox") ? !!el.checked : el.value;
       }
+      if (streamUrlPreset) {
+        const selectedPreset = String(streamUrlPreset.value || "youtube");
+        if (selectedPreset !== "custom") {
+          out.rtmp_base = STREAM_URL_PRESETS[selectedPreset] || STREAM_URL_PRESETS.youtube;
+        } else {
+          out.rtmp_base = String(out.rtmp_base || "").trim();
+        }
+      }
+      out.theme = String(themeSelect && themeSelect.value || "blue").trim().toLowerCase();
       out.sources = currentSources;
       out.source_names = sourceNames;
       if (currentSources.length === 1) {
@@ -469,7 +567,7 @@
         out.playlist_url = normalizedSelected || currentSources[0];
       }
       out.framerate = Number(out.framerate || 30);
-      out.update_download_cap_mbps = Number(out.update_download_cap_mbps || 25);
+      out.update_download_cap_mbps = 50;
       out.yt_auth_enabled = (String(out.yt_auth_enabled).toLowerCase() === "true");
       return out;
     }
@@ -504,6 +602,44 @@
           el.addEventListener("change", () => queueAutoSave(180));
         }
       }
+      if (streamUrlPreset) {
+        streamUrlPreset.addEventListener("change", () => {
+          setStreamUrlUiFromCurrentValue();
+          queueAutoSave(180);
+        });
+      }
+      if (rtmpBaseInput) {
+        rtmpBaseInput.addEventListener("input", () => {
+          if (!streamUrlPreset || String(streamUrlPreset.value || "") !== "custom") return;
+          lastCustomStreamUrl = String(rtmpBaseInput.value || "").trim();
+        });
+      }
+    }
+
+    function applyTheme(themeName) {
+      let theme = String(themeName || "blue").trim().toLowerCase();
+      if (theme === "current") theme = "blue";
+      const allowed = new Set(["blue", "purple", "red", "mono"]);
+      const safeTheme = allowed.has(theme) ? theme : "blue";
+      const root = document.documentElement;
+      if (safeTheme === "blue") {
+        root.removeAttribute("data-theme");
+        document.body.removeAttribute("data-theme");
+      } else {
+        root.setAttribute("data-theme", safeTheme);
+        document.body.setAttribute("data-theme", safeTheme);
+      }
+      if (themeSelect) themeSelect.value = safeTheme;
+    }
+
+    function initThemeSelector() {
+      if (!themeSelect) return;
+      applyTheme(String(themeSelect.value || "blue"));
+      themeSelect.addEventListener("change", () => {
+        const selected = String(themeSelect.value || "blue").trim().toLowerCase();
+        applyTheme(selected);
+        queueAutoSave(180);
+      });
     }
 
     async function loadSettings() {
@@ -603,10 +739,18 @@
         opt.textContent = v;
         appUpdateVersion.appendChild(opt);
       }
-      let want = selected || "";
-      if (want && !versions.includes(want)) want = "";
-      if (!want && previous && appVersionsBoundToChannel === channel && versions.includes(previous)) {
-        want = previous;
+      const canonicalMatch = (value) => {
+        const wanted = String(value || "").trim();
+        if (!wanted) return "";
+        for (const version of versions) {
+          if (compareVersions(version, wanted) === 0) return version;
+        }
+        return "";
+      };
+      let want = canonicalMatch(selected);
+      if (!want && selected) want = "";
+      if (!want && previous && appVersionsBoundToChannel === channel) {
+        want = canonicalMatch(previous);
       }
       appUpdateVersion.value = want;
       appVersionsBoundToChannel = channel;
@@ -617,6 +761,7 @@
         const res = await fetch("/api/app-update?ts=" + Date.now(), { cache: "no-store" });
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
+        appUpdateLoadFailures = 0;
         const info = payload.app_update || {};
         if (selectedVersion && !info.running) {
           await triggerAppUpdateCheck(selectedVersion);
@@ -634,6 +779,14 @@
         if (prevAppUpdateRunning && !info.running && !info.last_error && !updateAvailable) {
           appJustUpdatedUntil = nowMs + 12000;
         }
+        if (prevAppUpdateRunning && !info.running && !info.last_error && !appUpdateRefreshScheduled) {
+          appUpdateRefreshScheduled = true;
+          setAppUpdateStatus("Update completed. Refreshing dashboard...", "just-updated");
+          setAppUpdateProgress(100, "Update completed. Refreshing dashboard...");
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
+        }
         prevAppUpdateRunning = !!info.running;
         const selectedCmp = compareVersions(result.current_version, result.selected_version);
         const downgrading = (selectedCmp === 1);
@@ -646,6 +799,9 @@
         else if (!result || Object.keys(result).length === 0) level = "unknown";
         lastAppCheckAt = new Date().toLocaleTimeString();
         setAppUpdateStatus(formatAppUpdateSummary(info), level);
+        const appPct = Number(info.progress_percent || 0);
+        const appMsg = String(info.progress_message || "");
+        setAppUpdateProgress(appPct, appMsg ? (appMsg + " (" + appPct + "%)") : (appPct > 0 ? ("Progress: " + appPct + "%") : ""));
         checkAppUpdateBtn.disabled = !!info.running;
         checkAppUpdateBtn.title = !!info.running ? "Cannot check while install is running" : "Check for app updates now";
         downloadAppUpdateBtn.disabled = !!info.running || !updateAvailable;
@@ -668,6 +824,13 @@
         }
       } catch (err) {
         setAppUpdateStatus("Failed to load app update status.", "error");
+        appUpdateLoadFailures += 1;
+        if (appUpdateRunning && appUpdateLoadFailures >= 3 && !appUpdateRefreshScheduled) {
+          appUpdateRefreshScheduled = true;
+          setTimeout(() => {
+            window.location.reload();
+          }, 1200);
+        }
       }
     }
 
@@ -696,6 +859,7 @@
           forceReinstall ? "Failed to start app reinstall." : "Failed to start app update install.",
           "error"
         );
+        setAppUpdateProgress(0, "");
       }
     }
 
@@ -716,6 +880,7 @@
         await loadAppUpdateStatus();
       } catch (err) {
         setAppUpdateStatus("Failed to check app update.", "error");
+        setAppUpdateProgress(0, "");
       }
     }
 
@@ -789,18 +954,40 @@
       }
     }
 
+    function activateTab(tabId, persist = true) {
+      const wanted = String(tabId || "");
+      const fallback = tabButtons.find((b) => b.classList.contains("active")) || tabButtons[0];
+      const targetBtn = tabButtons.find((b) => b.dataset.tab === wanted) || fallback;
+      if (!targetBtn) return;
+      const targetId = String(targetBtn.dataset.tab || "");
+      tabButtons.forEach((b) => b.classList.toggle("active", b === targetBtn));
+      tabPanels.forEach((p) => p.classList.toggle("active", p.id === targetId));
+      if (persist) {
+        try { localStorage.setItem(STORAGE_TAB_KEY, targetId); } catch (err) {}
+      }
+    }
+
+    function activateSubtab(tabId, persist = true) {
+      const wanted = String(tabId || "");
+      const fallback = subtabButtons.find((b) => b.classList.contains("active")) || subtabButtons[0];
+      const targetBtn = subtabButtons.find((b) => b.dataset.subtab === wanted) || fallback;
+      if (!targetBtn) return;
+      const targetId = String(targetBtn.dataset.subtab || "");
+      subtabButtons.forEach((b) => b.classList.toggle("active", b === targetBtn));
+      subtabPanels.forEach((p) => p.classList.toggle("active", p.id === targetId));
+      if (persist) {
+        try { localStorage.setItem(STORAGE_SUBTAB_KEY, targetId); } catch (err) {}
+      }
+    }
+
     tabButtons.forEach((btn) => {
       btn.addEventListener("click", () => {
-        const tabId = btn.dataset.tab;
-        tabButtons.forEach((b) => b.classList.toggle("active", b === btn));
-        tabPanels.forEach((p) => p.classList.toggle("active", p.id === tabId));
+        activateTab(btn.dataset.tab, true);
       });
     });
     subtabButtons.forEach((btn) => {
       btn.addEventListener("click", () => {
-        const tabId = btn.dataset.subtab;
-        subtabButtons.forEach((b) => b.classList.toggle("active", b === btn));
-        subtabPanels.forEach((p) => p.classList.toggle("active", p.id === tabId));
+        activateSubtab(btn.dataset.subtab, true);
       });
     });
 
@@ -863,6 +1050,14 @@
     }
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
     bindAutoSaveListeners();
+    initThemeSelector();
+    try {
+      activateTab(localStorage.getItem(STORAGE_TAB_KEY) || "", false);
+      activateSubtab(localStorage.getItem(STORAGE_SUBTAB_KEY) || "", false);
+    } catch (err) {
+      activateTab("", false);
+      activateSubtab("", false);
+    }
     loadSettings();
     loadBinariesStatus();
     refreshState(true);
