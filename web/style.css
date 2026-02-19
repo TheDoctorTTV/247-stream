@@ -273,8 +273,17 @@
       transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
     }
     button.primary { background: var(--btn); }
+    #stopBtn {
+      background: #b43636;
+      border-color: #cf4f4f;
+      color: #fff4f4;
+    }
     button:hover { background: var(--btn2-hover); border-color: #355077; }
     button.primary:hover { background: var(--btn-hover); border-color: #3f73ba; }
+    #stopBtn:hover {
+      background: #cc4545;
+      border-color: #e16666;
+    }
     button:active { transform: translateY(1px); }
     button:disabled { opacity: 0.45; cursor: default; }
     .status {

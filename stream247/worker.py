@@ -1,3 +1,5 @@
+import random
+
 from .shared import *
 from .config import _app_dir
 from .utils import _download_url
