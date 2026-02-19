@@ -70,7 +70,7 @@ import re
 
 # General application metadata and platform helpers
 APP_NAME = "Stream247"  # Name shown in logs and dashboard
-APP_VERSION = "2.0"  # Current version
+APP_VERSION = "2.0.1"  # Current version
 GITHUB_REPO = "TheDoctorTTV/247-stream"  # GitHub repository for updates
 APP_UPDATE_MIN_VERSION = "2.0-pre-release-2"  # Oldest version eligible for in-app updater
 
@@ -331,6 +331,7 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
         "yt_auth_enabled": _to_bool(cfg.get("yt_auth_enabled", False), False),
         "yt_auth_browser": browser,
         "yt_auth_profile": str(cfg.get("yt_auth_profile", "")).strip(),
+        "youtube_persistent_output": _to_bool(cfg.get("youtube_persistent_output", True), True),
         "update_download_cap_mbps": cap,
     }
 
@@ -1530,6 +1531,7 @@ class StreamConfig:
     yt_auth_browser: str = "auto"  # auto, chrome, edge, firefox, ...
     yt_auth_profile: str = ""  # Optional custom profile root path
     yt_auth_allow_unauth_fallback: bool = True
+    youtube_persistent_output: bool = True
     update_download_cap_mbps: int = 25
     encoder_preference: str = "auto"  # auto or explicit encoder id
 
@@ -1590,6 +1592,7 @@ def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
         yt_auth_browser=str(data.get("yt_auth_browser", "auto")).strip() or "auto",
         yt_auth_profile=str(data.get("yt_auth_profile", "")).strip(),
         yt_auth_allow_unauth_fallback=bool(data.get("yt_auth_allow_unauth_fallback", True)),
+        youtube_persistent_output=_to_bool(data.get("youtube_persistent_output", True), True),
         update_download_cap_mbps=cap_mbps,
         encoder_preference=str(data.get("encoder_preference", "auto")).strip() or "auto",
     )
@@ -1643,7 +1646,7 @@ class StreamWorker(QtCore.QObject):
 
     def _emit_ffmpeg_line(self, line: str) -> None:
         """Emit ffmpeg output with light throttling for frequent stats lines."""
-        text = (line or "").rstrip()
+        text = self._redact_sensitive((line or "").rstrip())
         if not text:
             return
         if text.startswith("frame="):
@@ -1653,6 +1656,14 @@ class StreamWorker(QtCore.QObject):
                     return
                 self._last_ffmpeg_stats_emit = now
         self.log.emit(text)
+
+    def _redact_sensitive(self, text: str) -> str:
+        """Redact secrets from logs (primarily stream keys embedded in URLs)."""
+        out = str(text or "")
+        key = (self.cfg.stream_key or "").strip()
+        if key:
+            out = out.replace(key, "[REDACTED_STREAM_KEY]")
+        return out
 
     def _maybe_switch_to_system_ffmpeg(self, reason: str) -> bool:
         """Switch to PATH ffmpeg when the bundled binary misbehaves."""
@@ -1674,6 +1685,32 @@ class StreamWorker(QtCore.QObject):
             self.log.emit(f"[WARN] Could not re-select encoder after ffmpeg switch: {e}")
         return True
 
+    def _ffmpeg_smoke_test(self, ffmpeg_path: Optional[str], timeout_sec: float = 8.0) -> Tuple[bool, str]:
+        """Run a tiny transcode probe to detect broken/segfaulting ffmpeg binaries."""
+        if not ffmpeg_path:
+            return (False, "ffmpeg path missing")
+        cmd = [
+            ffmpeg_path,
+            "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-f", "lavfi", "-i", "color=black:s=160x90:r=1",
+            "-f", "lavfi", "-i", "anullsrc=cl=stereo:r=44100",
+            "-t", "0.40",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "2",
+            "-f", "null", "-",
+        ]
+        try:
+            cp = run_hidden(cmd, capture=True, timeout=timeout_sec)
+            if cp.returncode == 0:
+                return (True, "")
+            err = (cp.stderr or cp.stdout or "").strip()
+            return (False, err or f"exit code {cp.returncode}")
+        except subprocess.TimeoutExpired:
+            return (False, "smoke test timed out")
+        except Exception as e:
+            return (False, f"smoke test exception: {e}")
+
     def _rtmp_host(self) -> str:
         """Return lowercased RTMP host for destination-aware tuning."""
         try:
@@ -1685,6 +1722,10 @@ class StreamWorker(QtCore.QObject):
         """Return True for YouTube ingest destinations."""
         host = self._rtmp_host()
         return host.endswith("youtube.com") or ("youtube" in host)
+
+    def _safe_rtmp_url(self) -> str:
+        """Return RTMP destination string with stream key redacted."""
+        return self._redact_sensitive(self.cfg.rtmp_url())
 
     def _prefetch_wait_timeout(self) -> float:
         """Use shorter prefetch waits for low-latency ingest servers (e.g. Owncast)."""
@@ -2002,7 +2043,13 @@ class StreamWorker(QtCore.QObject):
 
         # Ensure a local ffmpeg next to the app and prefer using it
         local_ffmpeg = app_dir / ffmpeg_local_name
-        need_ffmpeg_download = bool(force_ffmpeg) or (not local_ffmpeg.exists())
+        local_ffmpeg_healthy = False
+        if local_ffmpeg.exists():
+            ok_local, err_local = self._ffmpeg_smoke_test(str(local_ffmpeg))
+            local_ffmpeg_healthy = ok_local
+            if not ok_local:
+                self.log.emit(f"[WARN] Local ffmpeg failed self-check and will be refreshed: {err_local}")
+        need_ffmpeg_download = bool(force_ffmpeg) or (not local_ffmpeg.exists()) or (not local_ffmpeg_healthy)
         _emit_progress("Checking FFmpeg...", 55)
         if need_ffmpeg_download:
             try:
@@ -2044,18 +2091,42 @@ class StreamWorker(QtCore.QObject):
                         os.chmod(ffmpeg_bin_path, 0o755)
                     except Exception:
                         pass
+                    ok_dl, err_dl = self._ffmpeg_smoke_test(str(ffmpeg_bin_path))
+                    if not ok_dl:
+                        raise RuntimeError(f"Downloaded ffmpeg failed self-check: {err_dl}")
+                    local_ffmpeg_healthy = True
                     self.ffmpeg_path = str(ffmpeg_bin_path)
                     self.log.emit("[INFO] FFmpeg downloaded and ready")
                     _emit_progress("Installed FFmpeg.", 95)
             except Exception as e:
-                self.log.emit(
-                    f"[ERROR] Could not auto-download FFmpeg. Please place {ffmpeg_local_name} next to the app or install FFmpeg in PATH."
-                )
-                self.log.emit(f"[DETAIL] {e}")
+                self.log.emit(f"[WARN] Could not auto-refresh local ffmpeg: {e}")
+                # Repair path: if system ffmpeg is healthy, copy it into the local bundle path.
+                if sys_ffmpeg:
+                    ok_sys, err_sys = self._ffmpeg_smoke_test(sys_ffmpeg)
+                    if ok_sys:
+                        try:
+                            if (not local_ffmpeg.exists()) or (Path(sys_ffmpeg).resolve() != local_ffmpeg.resolve()):
+                                shutil.copy2(sys_ffmpeg, local_ffmpeg)
+                            os.chmod(local_ffmpeg, 0o755)
+                            local_ffmpeg_healthy = True
+                            self.ffmpeg_path = str(local_ffmpeg)
+                            self.log.emit(f"[INFO] Repaired local ffmpeg from system binary: {sys_ffmpeg}")
+                            _emit_progress("Installed FFmpeg from system fallback.", 95)
+                        except Exception as copy_err:
+                            self.log.emit(f"[WARN] Failed to copy system ffmpeg into local bundle: {copy_err}")
+                    else:
+                        self.log.emit(f"[WARN] System ffmpeg failed self-check: {err_sys}")
+                if not local_ffmpeg_healthy:
+                    self.log.emit(
+                        f"[ERROR] Could not provision a healthy local FFmpeg. Please place a working {ffmpeg_local_name} next to the app or install FFmpeg in PATH."
+                    )
         else:
             _emit_progress("FFmpeg already present.", 95)
+        if local_ffmpeg.exists() and not local_ffmpeg_healthy:
+            ok_local, _err_local = self._ffmpeg_smoke_test(str(local_ffmpeg))
+            local_ffmpeg_healthy = ok_local
         # Prefer local copy if available
-        if local_ffmpeg.exists():
+        if local_ffmpeg.exists() and local_ffmpeg_healthy:
             self.ffmpeg_path = str(local_ffmpeg)
         elif sys_ffmpeg:
             self.ffmpeg_path = sys_ffmpeg
@@ -2140,14 +2211,14 @@ class StreamWorker(QtCore.QObject):
                     if rc2 < 0:
                         self.log.emit(f"[WARN] RTMPS preflight crashed ({rc2}); skipping preflight.")
                         return True
-                    self.log.emit(f"[ERROR] RTMPS preflight failed: {err2}")
+                    self.log.emit(f"[ERROR] RTMPS preflight failed: {self._redact_sensitive(err2)}")
             except Exception as e2:
                 self.log.emit(f"[WARN] RTMPS fallback error: {e2}")
 
             if rc < 0:
                 self.log.emit(f"[WARN] RTMP preflight crashed ({rc}); skipping preflight.")
                 return True
-            self.log.emit(f"[ERROR] RTMP preflight failed: {err}")
+            self.log.emit(f"[ERROR] RTMP preflight failed: {self._redact_sensitive(err)}")
             return False
         except Exception as e:
             self.log.emit(f"[ERROR] RTMP preflight exception: {e}")
@@ -2437,7 +2508,11 @@ class StreamWorker(QtCore.QObject):
     def _use_persistent_rtmp_bridge(self) -> bool:
         """Keep one RTMP session open for non-YouTube ingest targets."""
         out_url = self.cfg.rtmp_url().lower()
-        return out_url.startswith(("rtmp://", "rtmps://")) and (not self._is_youtube_rtmp())
+        if not out_url.startswith(("rtmp://", "rtmps://")):
+            return False
+        if self._is_youtube_rtmp():
+            return bool(self.cfg.youtube_persistent_output)
+        return True
 
     def _use_rtmp_live_protocol_opts(self, out_url: str) -> bool:
         """Enable RTMP live/tcurl options by default, with runtime fallback disable."""
@@ -2467,7 +2542,11 @@ class StreamWorker(QtCore.QObject):
             "-hide_banner", "-loglevel", "warning", "-stats", "-nostdin",
             "-fflags", "+genpts",
             "-f", "mpegts", "-i", "pipe:0",
-            "-c", "copy",
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "copy",
+            # Re-time audio in the bridge to prevent FLV non-monotonic DTS spam.
+            "-af", "aresample=async=1:first_pts=0",
+            "-c:a", "aac", "-b:a", self.cfg.audio_bitrate, "-ar", "44100", "-ac", "2",
         ]
         used_rtmp_live_opts = self._use_rtmp_live_protocol_opts(out_url)
         if used_rtmp_live_opts:
@@ -2475,7 +2554,7 @@ class StreamWorker(QtCore.QObject):
         cmd += ["-f", "flv", out_url]
 
         read_fd, write_fd = os.pipe()
-        self.log.emit(f"[CMD] ffmpeg (bridge): {' '.join(cmd)}")
+        self.log.emit(f"[CMD] ffmpeg (bridge): {self._redact_sensitive(' '.join(cmd))}")
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -2578,6 +2657,7 @@ class StreamWorker(QtCore.QObject):
                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "2",
                 "-muxdelay", "0", "-muxpreload", "0",
+                "-mpegts_flags", "+initial_discontinuity+resend_headers",
                 "-f", "mpegts", "pipe:1",
             ]
             cp = subprocess.run(
@@ -2766,10 +2846,17 @@ class StreamWorker(QtCore.QObject):
             "-max_delay", buffer_settings["max_delay"],
         ]
 
+        # Tighten output for YouTube ingest with stable, CBR-like rate control.
+        if self._is_youtube_rtmp():
+            cmd += ["-minrate", self.cfg.video_bitrate]
+            if self.cfg.encoder == "libx264":
+                cmd += ["-x264-params", "nal-hrd=cbr:force-cfr=1"]
+
         if to_pipe:
             cmd += [
                 "-muxdelay", "0",
                 "-muxpreload", "0",
+                "-mpegts_flags", "+initial_discontinuity+resend_headers",
                 "-f", "mpegts", "pipe:1",
             ]
             return cmd
@@ -2831,7 +2918,7 @@ class StreamWorker(QtCore.QObject):
         for attempt in range(2):
             ff_cmd = self.build_ffmpeg_cmd(vurl, aurl)
             used_rtmp_live_opts = "-rtmp_live" in ff_cmd
-            self.log.emit(f"[CMD] ffmpeg: {' '.join(ff_cmd)}")
+            self.log.emit(f"[CMD] ffmpeg: {self._redact_sensitive(' '.join(ff_cmd))}")
             self._skip.clear()
             self.ff_proc = subprocess.Popen(
                 ff_cmd,
@@ -2948,7 +3035,7 @@ class StreamWorker(QtCore.QObject):
             bridge_out_fd: Optional[int] = None
             ff_cmd = self.build_ffmpeg_cmd(vurl, aurl, to_pipe=use_bridge)
             used_rtmp_live_opts = "-rtmp_live" in ff_cmd
-            self.log.emit(f"[CMD] ffmpeg: {' '.join(ff_cmd)}")
+            self.log.emit(f"[CMD] ffmpeg: {self._redact_sensitive(' '.join(ff_cmd))}")
             self._skip.clear()
             popen_kwargs: Dict[str, Any] = {
                 "stdin": subprocess.DEVNULL,
@@ -3078,7 +3165,7 @@ class StreamWorker(QtCore.QObject):
         self.status.emit("Starting…")
         self.log.emit(f"[INFO] Encoder: {self.cfg.encoder_name} ({self.cfg.encoder})")
         self.log.emit(f"[INFO] Source:   {self.cfg.playlist_url}")
-        self.log.emit(f"[INFO] RTMP:     {self.cfg.rtmp_url()}")
+        self.log.emit(f"[INFO] RTMP:     {self._safe_rtmp_url()}")
         self.log.emit(
             f"[INFO] Output:   {self.cfg.height}p@{self.cfg.fps}  ~{self.cfg.video_bitrate} video + {self.cfg.audio_bitrate} audio\n"
         )
