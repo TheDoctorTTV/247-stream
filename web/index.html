@@ -17,36 +17,61 @@
       </div>
       <div class="tabs">
         <button class="tab-btn active" data-tab="tab-stream">Stream</button>
+        <button class="tab-btn" data-tab="tab-settings">Settings</button>
         <button class="tab-btn" data-tab="tab-sources">Sources</button>
+        <button class="tab-btn" data-tab="tab-stream-platforms">Stream Platforms</button>
+        <button class="tab-btn" data-tab="tab-stream-keys">Stream Keys</button>
         <button class="tab-btn" data-tab="tab-console">Console</button>
         <button class="tab-btn" data-tab="tab-about">About</button>
       </div>
     </div>
     <div class="tab-panel active" id="tab-stream">
-      <div class="card">
-        <div class="row">
-          <button class="primary" id="startBtn">Start Stream</button>
-          <button id="stopBtn">Stop Stream</button>
-          <button id="skipBtn">Skip Video</button>
-          <button id="refreshBtn">Refresh</button>
+      <div class="stream-layout">
+        <div class="card stream-settings-card">
+          <h2>Stream Settings</h2>
+          <div class="grid">
+            <div class="field wide">
+              <label for="playlist_url">Source</label>
+              <select id="playlist_url"></select>
+              <div id="sourceHint" class="statusline"></div>
+            </div>
+            <div class="field">
+              <label for="stream_url_preset">Stream Platform</label>
+              <select id="stream_url_preset"></select>
+              <div id="streamPlatformHint" class="statusline"></div>
+            </div>
+            <div class="field">
+              <label for="stream_key">Stream Key</label>
+              <select id="stream_key"></select>
+              <div id="streamKeyHint" class="statusline"></div>
+            </div>
+            <div class="field"><label for="resolution">Resolution</label><select id="resolution"><option>480p</option><option>720p</option><option>1080p</option><option>1440p</option><option>2160p</option></select></div>
+            <div class="field"><label for="framerate">Frame Rate</label><select id="framerate"><option value="30">30</option><option value="60">60</option></select></div>
+            <div class="field"><label for="video_bitrate">Video Bitrate (kbps)</label><input id="video_bitrate" type="text" placeholder="7500"></div>
+          </div>
+          <div class="row" style="margin-top:12px;">
+            <button id="reloadSettingsBtn">Reload Settings</button>
+            <div id="settingsStatus" class="statusline"></div>
+          </div>
+        </div>
+        <div class="card stream-actions-card">
+          <h2>Controls</h2>
+          <div class="stream-actions">
+            <button class="primary" id="startBtn">Start Stream</button>
+            <button id="stopBtn">Stop Stream</button>
+            <button id="skipBtn">Skip Video</button>
+            <button id="refreshBtn">Refresh</button>
+          </div>
         </div>
       </div>
+    </div>
+    <div class="tab-panel" id="tab-settings">
       <div class="card">
-        <h2>Stream Settings</h2>
+        <h2>Settings</h2>
         <div class="grid">
-          <div class="field wide">
-            <label for="playlist_url">Source</label>
-            <select id="playlist_url"></select>
-            <div id="sourceHint" class="statusline"></div>
-          </div>
-          <div class="field"><label for="rtmp_base">Stream URL</label><input id="rtmp_base" type="text"></div>
-          <div class="field"><label for="stream_key">Stream Key</label><input id="stream_key" type="password"></div>
-          <div class="field"><label for="resolution">Resolution</label><select id="resolution"><option>480p</option><option>720p</option><option>1080p</option><option>1440p</option><option>2160p</option></select></div>
-          <div class="field"><label for="framerate">Frame Rate</label><select id="framerate"><option value="30">30</option><option value="60">60</option></select></div>
-          <div class="field"><label for="video_bitrate">Video Bitrate</label><select id="video_bitrate"></select></div>
+          <div class="field"><label for="theme_select">Theme</label><select id="theme_select"><option value="blue">Blue</option><option value="purple">Purple</option><option value="red">Red</option><option value="mono">Mono</option></select></div>
           <div class="field"><label for="buffer_mode">Stream Buffer</label><select id="buffer_mode"><option>Low</option><option>Medium</option><option>High</option><option>Ultra</option></select></div>
           <div class="field"><label for="encoder_preference">Encoder</label><select id="encoder_preference"><option value="auto">Auto</option><option value="libx264">CPU x264</option><option value="h264_nvenc">NVIDIA NVENC</option><option value="h264_qsv">Intel QSV</option><option value="h264_amf">AMD AMF</option><option value="h264_vaapi">VAAPI</option></select></div>
-          <div class="field"><label for="update_download_cap_mbps">Update Download Cap (Mbps)</label><select id="update_download_cap_mbps"></select></div>
           <div class="field"><label for="yt_auth_enabled">YouTube Auth</label><select id="yt_auth_enabled"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
           <div class="field"><label for="yt_auth_browser">YouTube Browser</label><select id="yt_auth_browser"><option value="auto">Auto</option><option value="firefox">Firefox</option><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="chromium">Chromium</option><option value="brave">Brave</option><option value="vivaldi">Vivaldi</option><option value="opera">Opera</option></select></div>
           <div class="field wide"><label for="yt_auth_profile">YouTube Profile Path</label><input id="yt_auth_profile" type="text"></div>
@@ -57,10 +82,6 @@
           <label class="check"><input id="log_to_file" type="checkbox">App log</label>
           <label class="check"><input id="ffmpeg_log_to_file" type="checkbox">Save FFmpeg log</label>
           <label class="check"><input id="remember" type="checkbox">Remember playlist and key</label>
-        </div>
-        <div class="row" style="margin-top:12px;">
-          <button id="reloadSettingsBtn">Reload Settings</button>
-          <div id="settingsStatus" class="statusline"></div>
         </div>
       </div>
     </div>
@@ -85,13 +106,55 @@
         </div>
       </div>
     </div>
+    <div class="tab-panel" id="tab-stream-keys">
+      <div class="card">
+        <h2>Stream Keys</h2>
+        <div class="field">
+          <label for="stream_key_add_name">Key Name (optional)</label>
+          <input id="stream_key_add_name" type="text" placeholder="Main Channel">
+        </div>
+        <div class="field">
+          <label for="stream_key_add_input">Add Stream Key</label>
+          <div class="row">
+            <input id="stream_key_add_input" type="password" placeholder="Paste your stream key">
+            <button id="stream_key_add_btn" class="primary" type="button">Add</button>
+          </div>
+        </div>
+        <div class="field" style="margin-top: 10px;">
+          <label>Configured Stream Keys (newest to oldest)</label>
+          <div id="stream_keys_empty" class="statusline">No stream keys added yet.</div>
+          <div id="stream_keys_list" class="source-list"></div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-panel" id="tab-stream-platforms">
+      <div class="card">
+        <h2>Stream Platforms</h2>
+        <div class="field">
+          <label for="stream_platform_add_name">Platform Name</label>
+          <input id="stream_platform_add_name" type="text" placeholder="Owncast">
+        </div>
+        <div class="field">
+          <label for="stream_platform_add_input">Platform RTMP URL</label>
+          <div class="row">
+            <input id="stream_platform_add_input" type="text" placeholder="rtmp://example.com/live">
+            <button id="stream_platform_add_btn" class="primary" type="button">Add</button>
+          </div>
+        </div>
+        <div class="field" style="margin-top: 10px;">
+          <label>Configured Custom Platforms (newest to oldest)</label>
+          <div id="stream_platforms_empty" class="statusline">No custom platforms added yet.</div>
+          <div id="stream_platforms_list" class="source-list"></div>
+        </div>
+      </div>
+    </div>
     <div class="tab-panel" id="tab-console">
       <div class="card">
         <div class="subtabs">
           <button class="subtab-btn active" data-subtab="subtab-other">App / Other Output</button>
           <button class="subtab-btn" data-subtab="subtab-ffmpeg">FFmpeg Output</button>
         </div>
-        <div class="statusline">Showing the last 30 minutes of console logs.</div>
+        <div class="statusline">Showing the last 100 console lines.</div>
         <div class="subtab-panel active" id="subtab-other"><pre id="otherLogBox">Loading...</pre></div>
         <div class="subtab-panel" id="subtab-ffmpeg"><pre id="ffmpegLogBox">Loading...</pre></div>
       </div>
@@ -116,6 +179,8 @@
               </div>
             </div>
             <div id="appUpdateStatus" class="statusline">App update status not loaded.</div>
+            <div class="progress-wrap"><div id="appUpdateProgressBar" class="progress-bar"></div></div>
+            <div id="appUpdateProgressText" class="statusline"></div>
             <div class="about-controls" style="margin-top: 8px;">
               <div class="field" style="min-width: 220px; margin: 0;">
                 <label for="app_update_channel">Channel</label>
