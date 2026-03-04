@@ -1593,24 +1593,20 @@ class StreamWorker(QtCore.QObject):
             if input_type in ('twitch_stream', 'direct_hls'):
                 # Twitch stream or direct HLS - continuous streaming
                 stream_type_name = "Twitch stream" if input_type == 'twitch_stream' else "HLS stream"
-                self.log.emit(f"[INFO] Detected {stream_type_name} - streaming continuously...")
+                self.log.emit(f"[INFO] Detected {stream_type_name} - streaming until source ends...")
                 while not self._stop.is_set():
                     try:
                         self.run_twitch_stream(self.cfg.playlist_url)
                         if not self._stop.is_set():
-                            self.log.emit(f"[WARN] {stream_type_name} ended unexpectedly. Reconnecting in 5s...")
-                            for _ in range(5):
-                                if self._stop.is_set():
-                                    break
-                                time.sleep(1)
+                            self.log.emit(f"[INFO] {stream_type_name} ended. Stopping relay.")
+                            self._stop.set()
+                            break
                     except Exception as e:
                         self.log.emit(f"[ERROR] {stream_type_name} error: {e}")
                         if not self._stop.is_set():
-                            self.log.emit("[INFO] Retrying in 10s...")
-                            for _ in range(10):
-                                if self._stop.is_set():
-                                    break
-                                time.sleep(1)
+                            self.log.emit("[INFO] Stopping relay due to source stream error.")
+                            self._stop.set()
+                            break
             else:
                 if self._use_persistent_rtmp_bridge():
                     if not self._start_rtmp_bridge():
