@@ -26,9 +26,20 @@
     const sourcesEmpty = document.getElementById("sources_empty");
     const sourceHint = document.getElementById("sourceHint");
     const sourceSelect = document.getElementById("playlist_url");
+    const streamKeyAddName = document.getElementById("stream_key_add_name");
+    const streamKeyAddInput = document.getElementById("stream_key_add_input");
+    const streamKeyAddBtn = document.getElementById("stream_key_add_btn");
+    const streamKeysList = document.getElementById("stream_keys_list");
+    const streamKeysEmpty = document.getElementById("stream_keys_empty");
+    const streamKeyHint = document.getElementById("streamKeyHint");
+    const streamKeySelect = document.getElementById("stream_key");
     const streamUrlPreset = document.getElementById("stream_url_preset");
-    const rtmpBaseField = document.getElementById("rtmp_base_field");
-    const rtmpBaseInput = document.getElementById("rtmp_base");
+    const streamPlatformHint = document.getElementById("streamPlatformHint");
+    const streamPlatformAddName = document.getElementById("stream_platform_add_name");
+    const streamPlatformAddInput = document.getElementById("stream_platform_add_input");
+    const streamPlatformAddBtn = document.getElementById("stream_platform_add_btn");
+    const streamPlatformsList = document.getElementById("stream_platforms_list");
+    const streamPlatformsEmpty = document.getElementById("stream_platforms_empty");
     const themeSelect = document.getElementById("theme_select");
     const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
     const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
@@ -55,18 +66,170 @@
     let appUpdateLoadFailures = 0;
     const STORAGE_TAB_KEY = "stream247.active_tab";
     const STORAGE_SUBTAB_KEY = "stream247.active_subtab";
-    const fieldIds = ["playlist_url", "rtmp_base", "stream_key", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
+    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
     const STREAM_URL_PRESETS = {
-      youtube: "rtmp://a.rtmp.youtube.com/live2",
-      twitch: "rtmp://live.twitch.tv/app",
-      kick: "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app",
-      facebook: "rtmps://live-api-s.facebook.com:443/rtmp/",
-      tiktok: "rtmps://push-rtmp-global.tiktok.com/live/",
-      trovo: "rtmp://livepush.trovo.live/live/"
+      youtube: { name: "YouTube", rtmp_base: "rtmp://a.rtmp.youtube.com/live2" },
+      twitch: { name: "Twitch", rtmp_base: "rtmp://live.twitch.tv/app" },
+      kick: { name: "Kick", rtmp_base: "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app" },
+      facebook: { name: "Facebook Live", rtmp_base: "rtmps://live-api-s.facebook.com:443/rtmp/" },
+      tiktok: { name: "TikTok Live", rtmp_base: "rtmps://push-rtmp-global.tiktok.com/live/" },
+      trovo: { name: "Trovo", rtmp_base: "rtmp://livepush.trovo.live/live/" }
     };
-    let lastCustomStreamUrl = "";
+    let streamUrlServicesState = [];
 
     let sourcesState = [];
+    let streamKeysState = [];
+
+    function normalizeStreamUrl(url) {
+      return String(url || "").trim().replace(/\/+$/, "");
+    }
+
+    function streamServiceOptionValue(entry) {
+      const url = String(entry && entry.rtmp_base || "").trim();
+      return url ? ("saved:" + url) : "";
+    }
+
+    function presetUrlForKey(key) {
+      const preset = STREAM_URL_PRESETS[String(key || "").trim()];
+      return String(preset && preset.rtmp_base || "").trim();
+    }
+
+    function normalizeStreamServiceEntries(value) {
+      const out = [];
+      const seen = new Set();
+      const push = (rawName, rawUrl) => {
+        const name = String(rawName || "").trim();
+        const rtmpBase = String(rawUrl || "").trim();
+        const normalizedUrl = normalizeStreamUrl(rtmpBase);
+        if (!name || !rtmpBase || !normalizedUrl || seen.has(normalizedUrl)) return;
+        seen.add(normalizedUrl);
+        out.push({ name, rtmp_base: rtmpBase });
+      };
+      if (Array.isArray(value)) {
+        value.forEach((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) return;
+          push(item.name || item.label || item.title || "", item.rtmp_base || item.url || item.value || "");
+        });
+      } else if (value && typeof value === "object") {
+        for (const [rawName, rawUrl] of Object.entries(value)) {
+          push(rawName, rawUrl);
+        }
+      }
+      return out;
+    }
+
+    function setStreamUrlServicesState(nextServices) {
+      streamUrlServicesState = normalizeStreamServiceEntries(nextServices);
+      renderStreamPlatformsList();
+    }
+
+    function savedServiceForOption(optionValue) {
+      const raw = String(optionValue || "").trim();
+      if (!raw.startsWith("saved:")) return null;
+      const wanted = normalizeStreamUrl(raw.slice(6));
+      if (!wanted) return null;
+      return streamUrlServicesState.find((entry) => normalizeStreamUrl(entry.rtmp_base) === wanted) || null;
+    }
+
+    function rebuildStreamPresetOptions(preferredValue) {
+      if (!streamUrlPreset) return;
+      const wanted = String(preferredValue || streamUrlPreset.value || "").trim();
+      streamUrlPreset.innerHTML = "";
+      for (const [presetKey, presetMeta] of Object.entries(STREAM_URL_PRESETS)) {
+        const opt = document.createElement("option");
+        opt.value = presetKey;
+        opt.textContent = String(presetMeta.name || presetKey);
+        streamUrlPreset.appendChild(opt);
+      }
+      streamUrlServicesState.forEach((entry) => {
+        const opt = document.createElement("option");
+        opt.value = streamServiceOptionValue(entry);
+        opt.textContent = String(entry.name || "Saved Service");
+        opt.title = String(entry.rtmp_base || "");
+        streamUrlPreset.appendChild(opt);
+      });
+      const canUseWanted = Array.from(streamUrlPreset.options).some((opt) => opt.value === wanted);
+      streamUrlPreset.value = canUseWanted ? wanted : "youtube";
+      syncStreamPlatformHint();
+    }
+
+    function streamPlatformLabel(entry) {
+      const name = String(entry && entry.name || "").trim();
+      return name || "Custom Platform";
+    }
+
+    function renderStreamPlatformsList() {
+      if (!streamPlatformsList || !streamPlatformsEmpty) return;
+      streamPlatformsList.innerHTML = "";
+      if (!streamUrlServicesState.length) {
+        streamPlatformsEmpty.style.display = "";
+        return;
+      }
+      streamPlatformsEmpty.style.display = "none";
+      streamUrlServicesState.forEach((entry, idx) => {
+        const row = document.createElement("div");
+        row.className = "source-item";
+
+        const main = document.createElement("div");
+        main.className = "source-main";
+
+        const name = document.createElement("div");
+        name.className = "source-name";
+        name.textContent = streamPlatformLabel(entry);
+
+        const url = document.createElement("div");
+        url.className = "source-url";
+        url.textContent = truncateUrl(entry.rtmp_base);
+        url.title = String(entry.rtmp_base || "");
+
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "source-copy";
+        copyBtn.type = "button";
+        copyBtn.textContent = "Copy URL";
+        copyBtn.addEventListener("click", async () => {
+          const ok = await copyTextToClipboard(entry.rtmp_base);
+          setSettingsStatus(ok ? "Copied platform URL to clipboard." : "Failed to copy platform URL.", ok ? "ok" : "err");
+        });
+
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "source-remove";
+        removeBtn.type = "button";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", () => {
+          const nextServices = streamUrlServicesState.filter((_, i) => i !== idx);
+          setStreamUrlServicesState(nextServices);
+          const selected = String(streamUrlPreset && streamUrlPreset.value || "").trim();
+          const current = savedServiceForOption(selected);
+          if (!current) {
+            rebuildStreamPresetOptions(selected || "youtube");
+          } else {
+            const currentNormalized = normalizeStreamUrl(current.rtmp_base);
+            const stillExists = nextServices.some((item) => normalizeStreamUrl(item.rtmp_base) === currentNormalized);
+            rebuildStreamPresetOptions(stillExists ? selected : "youtube");
+          }
+          queueAutoSave(180);
+        });
+
+        main.appendChild(name);
+        main.appendChild(url);
+        row.appendChild(main);
+        row.appendChild(copyBtn);
+        row.appendChild(removeBtn);
+        streamPlatformsList.appendChild(row);
+      });
+    }
+
+    function syncStreamPlatformHint() {
+      if (!streamPlatformHint || !streamUrlPreset) return;
+      const selected = String(streamUrlPreset.value || "").trim();
+      const saved = savedServiceForOption(selected);
+      if (saved) {
+        streamPlatformHint.textContent = String(saved.rtmp_base || "").trim();
+        return;
+      }
+      const presetUrl = presetUrlForKey(selected);
+      streamPlatformHint.textContent = presetUrl || "";
+    }
 
     function normalizeSources(value) {
       const out = [];
@@ -111,11 +274,67 @@
       return urls.map((url) => ({ url, name: namesMap[url] || "" }));
     }
 
+    function normalizeStreamKeys(value) {
+      const out = [];
+      const seen = new Set();
+      const push = (raw) => {
+        const key = String(raw || "").trim();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        out.push(key);
+      };
+      if (Array.isArray(value)) {
+        value.forEach((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) {
+            push(item);
+            return;
+          }
+          push(item.stream_key || item.key || item.value || "");
+        });
+      } else if (typeof value === "string") {
+        value.split(/\r?\n/g).forEach(push);
+      }
+      return out;
+    }
+
+    function normalizeStreamKeyNames(value) {
+      const out = {};
+      if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+      for (const [rawKey, rawName] of Object.entries(value)) {
+        const streamKey = String(rawKey || "").trim();
+        const name = String(rawName || "").trim();
+        if (!streamKey || !name) continue;
+        out[streamKey] = name;
+      }
+      return out;
+    }
+
+    function normalizeStreamKeyEntries(value, streamKeyNames) {
+      const keys = normalizeStreamKeys(value);
+      const namesMap = normalizeStreamKeyNames(streamKeyNames);
+      if (Array.isArray(value)) {
+        value.forEach((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) return;
+          const streamKey = String(item.stream_key || item.key || item.value || "").trim();
+          const name = String(item.name || "").trim();
+          if (streamKey && name && !namesMap[streamKey]) namesMap[streamKey] = name;
+        });
+      }
+      return keys.map((streamKey) => ({ key: streamKey, name: namesMap[streamKey] || "" }));
+    }
+
     function truncateUrl(url) {
       const src = String(url || "").trim();
       const limit = (window.innerWidth <= 700) ? 36 : 70;
       if (src.length <= limit) return src;
       return src.slice(0, Math.max(8, limit - 3)) + "...";
+    }
+
+    function maskStreamKey(streamKey) {
+      const key = String(streamKey || "").trim();
+      if (!key) return "";
+      if (key.length <= 4) return "*".repeat(key.length);
+      return "*".repeat(Math.max(3, key.length - 4)) + key.slice(-4);
     }
 
     function sourceLabel(entry) {
@@ -133,6 +352,14 @@
       return String(match && match.name || "").trim();
     }
 
+    function streamKeyLabel(entry) {
+      const streamKey = String(entry && entry.key || "").trim();
+      const name = String(entry && entry.name || "").trim();
+      if (!streamKey) return "";
+      if (name) return name;
+      return maskStreamKey(streamKey);
+    }
+
     function normalizeStateEntries(value) {
       const raw = Array.isArray(value) ? value : [];
       const byUrl = new Map();
@@ -147,6 +374,22 @@
         }
       });
       return Array.from(byUrl.values());
+    }
+
+    function normalizeStreamKeyStateEntries(value) {
+      const raw = Array.isArray(value) ? value : [];
+      const byKey = new Map();
+      raw.forEach((entry) => {
+        const streamKey = String(entry && entry.key || "").trim();
+        if (!streamKey) return;
+        const name = String(entry && entry.name || "").trim();
+        if (!byKey.has(streamKey)) {
+          byKey.set(streamKey, { key: streamKey, name });
+        } else if (name && !String(byKey.get(streamKey).name || "").trim()) {
+          byKey.get(streamKey).name = name;
+        }
+      });
+      return Array.from(byKey.values());
     }
 
     async function copyTextToClipboard(text) {
@@ -296,41 +539,185 @@
       return setSourcesState(sources, fallbackPlaylist);
     }
 
-    function normalizeStreamUrl(url) {
-      return String(url || "").trim().replace(/\/+$/, "");
+    function renderStreamKeysList() {
+      streamKeysList.innerHTML = "";
+      if (!streamKeysState.length) {
+        streamKeysEmpty.style.display = "";
+        return;
+      }
+      streamKeysEmpty.style.display = "none";
+      streamKeysState.forEach((entry, idx) => {
+        const row = document.createElement("div");
+        row.className = "source-item";
+
+        const main = document.createElement("div");
+        main.className = "source-main";
+
+        const name = document.createElement("div");
+        name.className = "source-name";
+        name.textContent = String(entry.name || "").trim() || "Unnamed Stream Key";
+
+        const keyText = document.createElement("div");
+        keyText.className = "source-url";
+        keyText.textContent = maskStreamKey(entry.key);
+        keyText.title = "Ends with " + String(entry.key || "").slice(-4);
+
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "source-copy";
+        copyBtn.type = "button";
+        copyBtn.textContent = "Copy Key";
+        copyBtn.addEventListener("click", async () => {
+          const ok = await copyTextToClipboard(entry.key);
+          if (ok) {
+            setSettingsStatus("Copied stream key to clipboard.", "ok");
+          } else {
+            setSettingsStatus("Failed to copy stream key.", "err");
+          }
+        });
+
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "source-remove";
+        removeBtn.type = "button";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", () => {
+          const nextKeys = streamKeysState.filter((_, i) => i !== idx);
+          const selected = String(streamKeySelect.value || "").trim();
+          const preferred = (selected && selected !== entry.key) ? selected : "";
+          setStreamKeysState(nextKeys, preferred);
+          queueAutoSave(180);
+        });
+
+        main.appendChild(name);
+        main.appendChild(keyText);
+        row.appendChild(main);
+        row.appendChild(copyBtn);
+        row.appendChild(removeBtn);
+        streamKeysList.appendChild(row);
+      });
+    }
+
+    function syncStreamKeySelect(entries, preferred) {
+      const safeEntries = normalizeStreamKeyStateEntries(entries);
+      streamKeySelect.innerHTML = "";
+      if (!safeEntries.length) {
+        const emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "No stream keys configured";
+        streamKeySelect.appendChild(emptyOption);
+        streamKeySelect.value = "";
+        streamKeySelect.disabled = true;
+        streamKeyHint.textContent = "Add stream keys in the Stream Keys tab.";
+        return "";
+      }
+      safeEntries.forEach((entry) => {
+        const opt = document.createElement("option");
+        opt.value = entry.key;
+        opt.textContent = streamKeyLabel(entry);
+        streamKeySelect.appendChild(opt);
+      });
+      const keys = safeEntries.map((entry) => entry.key);
+      const wanted = keys.includes(preferred) ? preferred : keys[0];
+      streamKeySelect.value = wanted;
+      streamKeySelect.disabled = (safeEntries.length <= 1);
+      streamKeyHint.textContent = (safeEntries.length <= 1)
+        ? "Only one stream key is configured. It will be used automatically."
+        : "Choose which stream key to use.";
+      return wanted;
+    }
+
+    function setStreamKeysState(nextStreamKeys, preferred) {
+      streamKeysState = normalizeStreamKeyStateEntries(nextStreamKeys);
+      const selected = syncStreamKeySelect(streamKeysState, preferred);
+      renderStreamKeysList();
+      return selected;
+    }
+
+    function addStreamKeyFromInput() {
+      const rawStreamKey = String(streamKeyAddInput.value || "").trim();
+      const rawName = String(streamKeyAddName && streamKeyAddName.value || "").trim();
+      if (!rawStreamKey) return;
+      const selected = String(streamKeySelect.value || "").trim();
+      const nextKeys = [{ key: rawStreamKey, name: rawName }];
+      streamKeysState.forEach((entry) => {
+        if (entry.key === rawStreamKey) return;
+        nextKeys.push({ key: entry.key, name: entry.name });
+      });
+      const preferred = selected && selected !== rawStreamKey ? selected : rawStreamKey;
+      setStreamKeysState(nextKeys, preferred);
+      streamKeyAddInput.value = "";
+      if (streamKeyAddName) streamKeyAddName.value = "";
+      queueAutoSave(180);
+    }
+
+    function syncStreamKeysUIFromSettings(settings) {
+      const keys = normalizeStreamKeyEntries(settings.stream_keys, settings.stream_key_names);
+      const fallbackStreamKey = String(settings.stream_key || "").trim();
+      if (!keys.length && fallbackStreamKey) {
+        keys.push({ key: fallbackStreamKey, name: "" });
+      }
+      return setStreamKeysState(keys, fallbackStreamKey);
     }
 
     function streamPresetFromUrl(url) {
       const wanted = normalizeStreamUrl(url);
       if (!wanted) return "youtube";
-      for (const [presetKey, presetUrl] of Object.entries(STREAM_URL_PRESETS)) {
-        if (normalizeStreamUrl(presetUrl) === wanted) return presetKey;
+      for (const [presetKey, presetMeta] of Object.entries(STREAM_URL_PRESETS)) {
+        if (normalizeStreamUrl(presetMeta.rtmp_base) === wanted) return presetKey;
       }
-      return "custom";
+      const savedMatch = streamUrlServicesState.find((entry) => normalizeStreamUrl(entry.rtmp_base) === wanted);
+      if (savedMatch) return streamServiceOptionValue(savedMatch);
+      return "";
     }
 
-    function setStreamUrlUiFromCurrentValue() {
-      if (!streamUrlPreset || !rtmpBaseInput) return;
-      const selectedPreset = String(streamUrlPreset.value || "youtube");
-      const isCustom = (selectedPreset === "custom");
-      if (rtmpBaseField) {
-        rtmpBaseField.style.display = isCustom ? "" : "none";
-      }
-      if (isCustom) {
-        if (lastCustomStreamUrl) rtmpBaseInput.value = lastCustomStreamUrl;
-      } else {
-        const presetUrl = STREAM_URL_PRESETS[selectedPreset] || STREAM_URL_PRESETS.youtube;
-        rtmpBaseInput.value = presetUrl;
+    function defaultStreamServiceName(url) {
+      const rawUrl = String(url || "").trim();
+      if (!rawUrl) return "Custom Service";
+      try {
+        const parsed = new URL(rawUrl);
+        const host = String(parsed.hostname || "").trim();
+        if (!host) return "Custom Service";
+        return host.replace(/^www\./i, "");
+      } catch (err) {
+        return "Custom Service";
       }
     }
 
-    function syncStreamPresetFromInputValue() {
-      if (!streamUrlPreset || !rtmpBaseInput) return;
-      const currentUrl = String(rtmpBaseInput.value || "").trim();
-      const preset = streamPresetFromUrl(currentUrl);
-      if (preset === "custom") lastCustomStreamUrl = currentUrl;
-      streamUrlPreset.value = preset;
-      setStreamUrlUiFromCurrentValue();
+    function addStreamPlatformFromInput() {
+      const rtmpBase = String(streamPlatformAddInput && streamPlatformAddInput.value || "").trim();
+      if (!rtmpBase) {
+        setSettingsStatus("Enter a platform RTMP URL first.", "warn");
+        return;
+      }
+      const normalizedUrl = normalizeStreamUrl(rtmpBase);
+      if (!normalizedUrl) {
+        setSettingsStatus("Enter a valid platform RTMP URL first.", "warn");
+        return;
+      }
+      const inputName = String(streamPlatformAddName && streamPlatformAddName.value || "").trim();
+      const serviceName = inputName || defaultStreamServiceName(rtmpBase);
+      if (!serviceName) {
+        setSettingsStatus("Enter a platform name to save this URL.", "warn");
+        return;
+      }
+      const nextServices = [{ name: serviceName, rtmp_base: rtmpBase }];
+      streamUrlServicesState.forEach((entry) => {
+        if (normalizeStreamUrl(entry.rtmp_base) === normalizedUrl) return;
+        nextServices.push({ name: String(entry.name || "").trim(), rtmp_base: String(entry.rtmp_base || "").trim() });
+      });
+      setStreamUrlServicesState(nextServices);
+      const selectedValue = "saved:" + rtmpBase;
+      rebuildStreamPresetOptions(selectedValue);
+      streamUrlPreset.value = selectedValue;
+      if (streamPlatformAddName) streamPlatformAddName.value = "";
+      if (streamPlatformAddInput) streamPlatformAddInput.value = "";
+      queueAutoSave(180);
+      setSettingsStatus("Custom stream platform saved.", "ok");
+    }
+
+    function syncStreamPresetFromRtmpBase(rtmpBase) {
+      const preset = streamPresetFromUrl(rtmpBase);
+      rebuildStreamPresetOptions(preset || "youtube");
+      if (streamUrlPreset) streamUrlPreset.value = preset || "youtube";
     }
 
     function setSettingsStatus(text, level) {
@@ -513,6 +900,17 @@
 
     function applySettingsToForm(s) {
       const selectedSource = syncSourcesUIFromSettings(s || {});
+      const selectedStreamKey = syncStreamKeysUIFromSettings(s || {});
+      setStreamUrlServicesState((s && s.stream_url_services) || []);
+      const currentRtmpBase = String((s && s.rtmp_base) || "").trim();
+      if (currentRtmpBase && !streamPresetFromUrl(currentRtmpBase)) {
+        const importedName = defaultStreamServiceName(currentRtmpBase);
+        const nextServices = [{ name: importedName, rtmp_base: currentRtmpBase }];
+        streamUrlServicesState.forEach((entry) => {
+          nextServices.push({ name: entry.name, rtmp_base: entry.rtmp_base });
+        });
+        setStreamUrlServicesState(nextServices);
+      }
       for (const id of fieldIds) {
         const el = document.getElementById(id);
         if (!el || !(id in s)) continue;
@@ -526,10 +924,13 @@
           el.value = String(s[id] ?? "");
         }
       }
+      if (streamKeySelect) {
+        streamKeySelect.value = selectedStreamKey || String(s.stream_key ?? "");
+      }
       if (s && Object.prototype.hasOwnProperty.call(s, "theme")) {
         applyTheme(String(s.theme || "blue"));
       }
-      syncStreamPresetFromInputValue();
+      syncStreamPresetFromRtmpBase(currentRtmpBase);
     }
 
     function formToPayload() {
@@ -541,8 +942,17 @@
         const name = String(entry.name || "").trim();
         if (url && name) sourceNames[url] = name;
       });
+      const currentStreamKeys = streamKeysState.map((entry) => String(entry.key || "").trim()).filter(Boolean);
+      const streamKeyNames = {};
+      streamKeysState.forEach((entry) => {
+        const streamKey = String(entry.key || "").trim();
+        const name = String(entry.name || "").trim();
+        if (streamKey && name) streamKeyNames[streamKey] = name;
+      });
       const selected = String(sourceSelect.value || "").trim();
       const normalizedSelected = syncSourceSelect(sourcesState, selected);
+      const selectedStreamKey = String(streamKeySelect.value || "").trim();
+      const normalizedStreamKey = syncStreamKeySelect(streamKeysState, selectedStreamKey);
       for (const id of fieldIds) {
         const el = document.getElementById(id);
         if (!el) continue;
@@ -550,21 +960,39 @@
       }
       if (streamUrlPreset) {
         const selectedPreset = String(streamUrlPreset.value || "youtube");
-        if (selectedPreset !== "custom") {
-          out.rtmp_base = STREAM_URL_PRESETS[selectedPreset] || STREAM_URL_PRESETS.youtube;
+        const selectedSavedService = savedServiceForOption(selectedPreset);
+        if (selectedSavedService) {
+          out.rtmp_base = String(selectedSavedService.rtmp_base || "").trim();
         } else {
-          out.rtmp_base = String(out.rtmp_base || "").trim();
+          out.rtmp_base = presetUrlForKey(selectedPreset) || presetUrlForKey("youtube");
         }
+      } else {
+        out.rtmp_base = presetUrlForKey("youtube");
       }
       out.theme = String(themeSelect && themeSelect.value || "blue").trim().toLowerCase();
+      out.stream_url_services = streamUrlServicesState.map((entry) => ({
+        name: String(entry.name || "").trim(),
+        rtmp_base: String(entry.rtmp_base || "").trim()
+      })).filter((entry) => entry.name && entry.rtmp_base);
       out.sources = currentSources;
       out.source_names = sourceNames;
+      out.stream_keys = currentStreamKeys;
+      out.stream_key_names = streamKeyNames;
       if (currentSources.length === 1) {
         out.playlist_url = currentSources[0];
       } else if (!currentSources.length) {
         out.playlist_url = "";
       } else if (!currentSources.includes(String(out.playlist_url || ""))) {
         out.playlist_url = normalizedSelected || currentSources[0];
+      }
+      if (currentStreamKeys.length === 1) {
+        out.stream_key = currentStreamKeys[0];
+      } else if (!currentStreamKeys.length) {
+        out.stream_key = "";
+      } else if (!currentStreamKeys.includes(String(normalizedStreamKey || ""))) {
+        out.stream_key = currentStreamKeys[0];
+      } else {
+        out.stream_key = normalizedStreamKey;
       }
       out.framerate = Number(out.framerate || 30);
       out.update_download_cap_mbps = 50;
@@ -602,16 +1030,13 @@
           el.addEventListener("change", () => queueAutoSave(180));
         }
       }
+      if (streamKeySelect) {
+        streamKeySelect.addEventListener("change", () => queueAutoSave(180));
+      }
       if (streamUrlPreset) {
         streamUrlPreset.addEventListener("change", () => {
-          setStreamUrlUiFromCurrentValue();
+          syncStreamPlatformHint();
           queueAutoSave(180);
-        });
-      }
-      if (rtmpBaseInput) {
-        rtmpBaseInput.addEventListener("input", () => {
-          if (!streamUrlPreset || String(streamUrlPreset.value || "") !== "custom") return;
-          lastCustomStreamUrl = String(rtmpBaseInput.value || "").trim();
         });
       }
     }
@@ -1015,18 +1440,71 @@
         }
       });
     }
+    if (streamKeyAddBtn) {
+      streamKeyAddBtn.addEventListener("click", () => addStreamKeyFromInput());
+    }
+    if (streamKeyAddInput) {
+      streamKeyAddInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          addStreamKeyFromInput();
+        }
+      });
+    }
+    if (streamKeyAddName) {
+      streamKeyAddName.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          addStreamKeyFromInput();
+        }
+      });
+    }
+    if (streamPlatformAddBtn) {
+      streamPlatformAddBtn.addEventListener("click", () => addStreamPlatformFromInput());
+    }
+    if (streamPlatformAddInput) {
+      streamPlatformAddInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          addStreamPlatformFromInput();
+        }
+      });
+    }
+    if (streamPlatformAddName) {
+      streamPlatformAddName.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          addStreamPlatformFromInput();
+        }
+      });
+    }
     // Fallback for stale partial DOM states: keep Add functional via delegation.
     document.addEventListener("click", (ev) => {
       const target = ev.target;
       if (!(target instanceof Element)) return;
       const addBtn = target.closest("#source_add_btn");
-      if (!addBtn) return;
+      if (addBtn) {
+        ev.preventDefault();
+        addSourceFromInput();
+        return;
+      }
+      const addKeyBtn = target.closest("#stream_key_add_btn");
+      if (addKeyBtn) {
+        ev.preventDefault();
+        addStreamKeyFromInput();
+        return;
+      }
+      const addPlatformBtn = target.closest("#stream_platform_add_btn");
+      if (!addPlatformBtn) return;
       ev.preventDefault();
-      addSourceFromInput();
+      addStreamPlatformFromInput();
     });
     window.addEventListener("resize", () => {
       renderSourcesList();
       syncSourceSelect(sourcesState, String(sourceSelect.value || "").trim());
+      renderStreamKeysList();
+      syncStreamKeySelect(streamKeysState, String(streamKeySelect.value || "").trim());
+      renderStreamPlatformsList();
     });
     checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
@@ -1051,6 +1529,8 @@
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
     bindAutoSaveListeners();
     initThemeSelector();
+    rebuildStreamPresetOptions("youtube");
+    syncStreamPlatformHint();
     try {
       activateTab(localStorage.getItem(STORAGE_TAB_KEY) || "", false);
       activateSubtab(localStorage.getItem(STORAGE_SUBTAB_KEY) || "", false);

@@ -19,6 +19,8 @@
         <button class="tab-btn active" data-tab="tab-stream">Stream</button>
         <button class="tab-btn" data-tab="tab-settings">Settings</button>
         <button class="tab-btn" data-tab="tab-sources">Sources</button>
+        <button class="tab-btn" data-tab="tab-stream-platforms">Stream Platforms</button>
+        <button class="tab-btn" data-tab="tab-stream-keys">Stream Keys</button>
         <button class="tab-btn" data-tab="tab-console">Console</button>
         <button class="tab-btn" data-tab="tab-about">About</button>
       </div>
@@ -33,9 +35,16 @@
               <select id="playlist_url"></select>
               <div id="sourceHint" class="statusline"></div>
             </div>
-            <div class="field"><label for="stream_url_preset">Stream Platform</label><select id="stream_url_preset"><option value="youtube">YouTube</option><option value="twitch">Twitch</option><option value="kick">Kick</option><option value="facebook">Facebook Live</option><option value="tiktok">TikTok Live</option><option value="trovo">Trovo</option><option value="custom">Custom</option></select></div>
-            <div class="field" id="rtmp_base_field"><label for="rtmp_base">Custom Stream URL</label><input id="rtmp_base" type="text"></div>
-            <div class="field"><label for="stream_key">Stream Key</label><input id="stream_key" type="password"></div>
+            <div class="field">
+              <label for="stream_url_preset">Stream Platform</label>
+              <select id="stream_url_preset"></select>
+              <div id="streamPlatformHint" class="statusline"></div>
+            </div>
+            <div class="field">
+              <label for="stream_key">Stream Key</label>
+              <select id="stream_key"></select>
+              <div id="streamKeyHint" class="statusline"></div>
+            </div>
             <div class="field"><label for="resolution">Resolution</label><select id="resolution"><option>480p</option><option>720p</option><option>1080p</option><option>1440p</option><option>2160p</option></select></div>
             <div class="field"><label for="framerate">Frame Rate</label><select id="framerate"><option value="30">30</option><option value="60">60</option></select></div>
             <div class="field"><label for="video_bitrate">Video Bitrate (kbps)</label><input id="video_bitrate" type="text" placeholder="7500"></div>
@@ -94,6 +103,48 @@
           <label>Configured Sources (newest to oldest)</label>
           <div id="sources_empty" class="statusline">No sources added yet.</div>
           <div id="sources_list" class="source-list"></div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-panel" id="tab-stream-keys">
+      <div class="card">
+        <h2>Stream Keys</h2>
+        <div class="field">
+          <label for="stream_key_add_name">Key Name (optional)</label>
+          <input id="stream_key_add_name" type="text" placeholder="Main Channel">
+        </div>
+        <div class="field">
+          <label for="stream_key_add_input">Add Stream Key</label>
+          <div class="row">
+            <input id="stream_key_add_input" type="password" placeholder="Paste your stream key">
+            <button id="stream_key_add_btn" class="primary" type="button">Add</button>
+          </div>
+        </div>
+        <div class="field" style="margin-top: 10px;">
+          <label>Configured Stream Keys (newest to oldest)</label>
+          <div id="stream_keys_empty" class="statusline">No stream keys added yet.</div>
+          <div id="stream_keys_list" class="source-list"></div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-panel" id="tab-stream-platforms">
+      <div class="card">
+        <h2>Stream Platforms</h2>
+        <div class="field">
+          <label for="stream_platform_add_name">Platform Name</label>
+          <input id="stream_platform_add_name" type="text" placeholder="Owncast">
+        </div>
+        <div class="field">
+          <label for="stream_platform_add_input">Platform RTMP URL</label>
+          <div class="row">
+            <input id="stream_platform_add_input" type="text" placeholder="rtmp://example.com/live">
+            <button id="stream_platform_add_btn" class="primary" type="button">Add</button>
+          </div>
+        </div>
+        <div class="field" style="margin-top: 10px;">
+          <label>Configured Custom Platforms (newest to oldest)</label>
+          <div id="stream_platforms_empty" class="statusline">No custom platforms added yet.</div>
+          <div id="stream_platforms_list" class="source-list"></div>
         </div>
       </div>
     </div>

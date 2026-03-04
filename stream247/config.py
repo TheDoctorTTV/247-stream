@@ -141,6 +141,34 @@ def _normalize_sources(value: object) -> List[str]:
     return out
 
 
+def _normalize_stream_keys(value: object) -> List[str]:
+    """Normalize stream keys into an ordered, de-duplicated list."""
+    raw_items: List[object]
+    if isinstance(value, str):
+        raw_items = value.splitlines()
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    out: List[str] = []
+    seen = set()
+    for item in raw_items:
+        key = ""
+        if isinstance(item, dict):
+            for item_key in ("stream_key", "key", "value"):
+                raw = str(item.get(item_key, "")).strip()
+                if raw:
+                    key = raw
+                    break
+        else:
+            key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
 def _normalize_source_names(value: object, valid_sources: List[str]) -> Dict[str, str]:
     """Normalize source display-name mapping keyed by URL."""
     raw_map: Dict[str, str] = {}
@@ -167,6 +195,58 @@ def _normalize_source_names(value: object, valid_sources: List[str]) -> Dict[str
     return out
 
 
+def _normalize_stream_key_names(value: object, valid_keys: List[str]) -> Dict[str, str]:
+    """Normalize stream-key display-name mapping keyed by stream key."""
+    raw_map: Dict[str, str] = {}
+    if isinstance(value, dict):
+        for raw_key, raw_name in value.items():
+            key = str(raw_key or "").strip()
+            name = str(raw_name or "").strip()
+            if key and name:
+                raw_map[key] = name
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("stream_key", "") or item.get("key", "") or item.get("value", "")).strip()
+            name = str(item.get("name", "")).strip()
+            if key and name:
+                raw_map[key] = name
+
+    out: Dict[str, str] = {}
+    for stream_key in valid_keys:
+        name = raw_map.get(stream_key, "").strip()
+        if name:
+            out[stream_key] = name
+    return out
+
+
+def _normalize_stream_url_services(value: object) -> List[Dict[str, str]]:
+    """Normalize saved custom RTMP services into ordered unique entries."""
+    raw_items: List[object] = []
+    if isinstance(value, dict):
+        for raw_name, raw_url in value.items():
+            raw_items.append({"name": raw_name, "rtmp_base": raw_url})
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+
+    out: List[Dict[str, str]] = []
+    seen_urls = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "") or item.get("label", "") or item.get("title", "")).strip()
+        url = str(item.get("rtmp_base", "") or item.get("url", "") or item.get("value", "")).strip()
+        if (not name) or (not url):
+            continue
+        normalized_url = re.sub(r"/+$", "", url)
+        if (not normalized_url) or (normalized_url in seen_urls):
+            continue
+        seen_urls.add(normalized_url)
+        out.append({"name": name, "rtmp_base": url})
+    return out
+
+
 def _resolved_source_names(cfg: Dict[str, object], sources: List[str]) -> Dict[str, str]:
     """Resolve normalized source display names for known sources."""
     names = _normalize_source_names(cfg.get("source_names", {}), sources)
@@ -181,6 +261,23 @@ def _resolved_source_names(cfg: Dict[str, object], sources: List[str]) -> Dict[s
             name = str(item.get("name", "")).strip()
             if name:
                 names[src] = name
+    return names
+
+
+def _resolved_stream_key_names(cfg: Dict[str, object], stream_keys: List[str]) -> Dict[str, str]:
+    """Resolve normalized stream-key display names for known keys."""
+    names = _normalize_stream_key_names(cfg.get("stream_key_names", {}), stream_keys)
+    raw_keys = cfg.get("stream_keys", [])
+    if isinstance(raw_keys, (list, tuple)):
+        for item in raw_keys:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("stream_key", "") or item.get("key", "") or item.get("value", "")).strip()
+            if (not key) or (key not in stream_keys) or (key in names):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name:
+                names[key] = name
     return names
 
 
@@ -199,11 +296,29 @@ def _resolved_sources_and_playlist(cfg: Dict[str, object]) -> Tuple[List[str], s
     return sources, selected
 
 
+def _resolved_stream_keys_and_selected(cfg: Dict[str, object]) -> Tuple[List[str], str]:
+    """Resolve a normalized stream-key list and selected stream key."""
+    selected = str(cfg.get("stream_key", "")).strip()
+    stream_keys = _normalize_stream_keys(cfg.get("stream_keys", []))
+    if selected and not stream_keys:
+        stream_keys = [selected]
+    if len(stream_keys) == 1:
+        selected = stream_keys[0]
+    elif selected and selected in stream_keys:
+        pass
+    elif stream_keys:
+        selected = stream_keys[0]
+    return stream_keys, selected
+
+
 def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -> Dict[str, object]:
     """Return normalized stream settings for the web UI/API."""
     cfg = data or {}
     sources, playlist_url = _resolved_sources_and_playlist(cfg)
     source_names = _resolved_source_names(cfg, sources)
+    stream_keys, stream_key = _resolved_stream_keys_and_selected(cfg)
+    stream_key_names = _resolved_stream_key_names(cfg, stream_keys)
+    stream_url_services = _normalize_stream_url_services(cfg.get("stream_url_services", []))
     resolution = str(cfg.get("resolution", "720p"))
     if resolution not in WEB_ALLOWED_RESOLUTIONS:
         resolution = "720p"
@@ -237,7 +352,10 @@ def web_settings_payload_from_config(data: Optional[Dict[str, object]] = None) -
         "sources": sources,
         "source_names": source_names,
         "rtmp_base": str(cfg.get("rtmp_base", "rtmp://a.rtmp.youtube.com/live2")).strip(),
-        "stream_key": str(cfg.get("stream_key", "")).strip(),
+        "stream_url_services": stream_url_services,
+        "stream_key": stream_key,
+        "stream_keys": stream_keys,
+        "stream_key_names": stream_key_names,
         "resolution": resolution,
         "framerate": framerate,
         "video_bitrate": _kbps_to_text(bitrate_kbps),
@@ -271,6 +389,8 @@ def apply_web_settings_payload(base: Dict[str, object], payload: Dict[str, objec
             out[key] = value
     if ("sources" in payload) and ("playlist_url" not in payload):
         out["playlist_url"] = normalized.get("playlist_url", "")
+    if ("stream_keys" in payload) and ("stream_key" not in payload):
+        out["stream_key"] = normalized.get("stream_key", "")
     if ("buffer_mode" in payload) or ("video_bitrate" in payload):
         out.pop("bufsize", None)
     out["update_download_cap_mbps"] = 50

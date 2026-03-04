@@ -3,7 +3,13 @@
 from dataclasses import dataclass
 from typing import Dict, List
 
-from .config import _kbps_to_text, _parse_bitrate_kbps, _resolved_sources_and_playlist, _to_bool
+from .config import (
+    _kbps_to_text,
+    _parse_bitrate_kbps,
+    _resolved_sources_and_playlist,
+    _resolved_stream_keys_and_selected,
+    _to_bool,
+)
 from .constants import (
     BITRATE_DEFAULT_KBPS,
     BITRATE_MIN_KBPS,
@@ -50,6 +56,7 @@ class StreamConfig:
 def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
     """Build StreamConfig from a persisted settings dictionary."""
     _, playlist_url = _resolved_sources_and_playlist(data)
+    _, stream_key = _resolved_stream_keys_and_selected(data)
     resolution = str(data.get("resolution", "720p"))
     height, preset_bitrate = RESOLUTION_PRESETS.get(resolution, RESOLUTION_PRESETS["720p"])
     fps_raw = data.get("framerate", 30)
@@ -70,7 +77,7 @@ def stream_config_from_settings(data: Dict[str, object]) -> StreamConfig:
 
     return StreamConfig(
         playlist_url=playlist_url,
-        stream_key=str(data.get("stream_key", "")).strip(),
+        stream_key=stream_key,
         rtmp_base=str(data.get("rtmp_base", "rtmp://a.rtmp.youtube.com/live2")).strip(),
         fps=fps,
         height=height,

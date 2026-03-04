@@ -176,6 +176,12 @@
       overflow: hidden;
       white-space: nowrap;
     }
+    #stream_platform_add_name {
+      min-width: 170px;
+    }
+    #stream_platform_add_btn {
+      white-space: nowrap;
+    }
     input[type="text"]:hover, input[type="password"]:hover, select:hover {
       border-color: #2d4362;
     }

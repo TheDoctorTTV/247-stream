@@ -3,7 +3,7 @@
 from typing import Dict, Tuple
 
 APP_NAME = "Stream247"  # Name shown in logs and dashboard
-APP_VERSION = "2.1-prerelease-7"  # Current version
+APP_VERSION = "2.1"  # Current version
 GITHUB_REPO = "TheDoctorTTV/247-stream"  # GitHub repository for updates
 APP_UPDATE_MIN_VERSION = "2.0-pre-release-2"  # Oldest version eligible for in-app updater
 
