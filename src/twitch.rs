@@ -242,12 +242,7 @@ fn endpoint(app: &App, response: &Value, cfg: &StreamConfig) -> Result<(String, 
 pub fn negotiate(app: &App, cfg: &StreamConfig, binary: &Path) -> Result<Plan> {
     let version = crate::updates::tool_version(Some(binary), "ffmpeg", &app.dir)
         .context("Cannot determine FFmpeg version for Enhanced Broadcasting")?;
-    let major = version
-        .split('.')
-        .next()
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(0);
-    anyhow::ensure!(major>=8,"Twitch Enhanced Broadcasting requires an upstream FFmpeg 8 or newer build with multitrack FLV support");
+    anyhow::ensure!(crate::updates::ffmpeg_version_supported(&version), "Twitch Enhanced Broadcasting requires an upstream FFmpeg 8 or newer build with multitrack FLV support");
     let max_tracks = integer(&cfg.settings, "twitch_enhanced_max_tracks", 0);
     let max_bitrate = integer(&cfg.settings, "twitch_enhanced_max_bitrate_kbps", 0);
     let width = ((cfg.height * 16 / 9) + 1) / 2 * 2;

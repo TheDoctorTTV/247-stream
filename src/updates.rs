@@ -246,6 +246,57 @@ pub fn tool_version(path: Option<&Path>, tool: &str, dir: &Path) -> Option<Strin
         out.lines().next().map(|s| s.trim().to_owned())
     }
 }
+pub const FFMPEG_MIN_MAJOR: u32 = 8;
+pub fn ffmpeg_version_supported(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|v| v.parse::<u32>().ok())
+        .is_some_and(|major| major >= FFMPEG_MIN_MAJOR)
+}
+struct FfmpegRelease {
+    version: String,
+    name: String,
+    url: String,
+}
+/// Use stable release-branch, non-shared GPL builds (libx264 is required).
+/// Discover the asset instead of constructing a URL that may not exist.
+fn ffmpeg_release() -> Result<FfmpegRelease> {
+    let platform = match std::env::consts::ARCH {
+        "x86_64" => "linux64",
+        "aarch64" => "linuxarm64",
+        _ => bail!("Automatic FFmpeg download supports Linux x86_64 and aarch64"),
+    };
+    let data =
+        get_json("https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest")?;
+    let assets = data["assets"]
+        .as_array()
+        .context("Invalid FFmpeg build release metadata")?;
+    let pattern = regex::Regex::new(&format!(
+        r"^ffmpeg-n(\d+\.\d+(?:\.\d+)?)-latest-{platform}-gpl-(\d+\.\d+(?:\.\d+)?)\.tar\.xz$"
+    ))?;
+    let mut choices = Vec::new();
+    for asset in assets {
+        let name = text(asset, "name", "");
+        let Some(captures) = pattern.captures(&name) else {
+            continue;
+        };
+        let version = captures[1].to_owned();
+        if captures[1] != captures[2] || !ffmpeg_version_supported(&version) {
+            continue;
+        }
+        let url = text(asset, "browser_download_url", "");
+        anyhow::ensure!(
+            url.starts_with("https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/"),
+            "Unexpected FFmpeg build download URL"
+        );
+        choices.push(FfmpegRelease { version, name, url });
+    }
+    choices.sort_by(|a, b| compare(&a.version, &b.version));
+    choices
+        .pop()
+        .context("No stable FFmpeg 8+ GPL build found for this architecture")
+}
 pub fn binaries_status(dir: &Path) -> Value {
     let mut result = json!({});
     let mut all = true;
@@ -258,35 +309,25 @@ pub fn binaries_status(dir: &Path) -> Value {
                 .ok()
                 .map(|v| text(&v, "tag_name", "").trim_start_matches('v').to_owned())
         } else {
-            (|| -> Result<Option<String>> {
-                let html = client(Duration::from_secs(15))?
-                    .get("https://johnvansickle.com/ffmpeg/")
-                    .send()?
-                    .error_for_status()?
-                    .text()?;
-                let re = regex::Regex::new(r"ffmpeg-(\d+\.\d+(?:\.\d+)?)-amd64-static\.tar\.xz")?;
-                let mut versions: Vec<String> =
-                    re.captures_iter(&html).map(|c| c[1].to_owned()).collect();
-                versions.sort_by(|a, b| compare(a, b));
-                if let Some(v) = versions.pop() {
-                    return Ok(Some(v));
-                }
-                Ok(regex::Regex::new(r"(?i)release[:\s]+(\d+\.\d+(?:\.\d+)?)")?
-                    .captures(&html)
-                    .map(|c| c[1].to_owned()))
-            })()
-            .ok()
-            .flatten()
+            ffmpeg_release().ok().map(|release| release.version)
         };
-        let status = match (&current, &latest) {
-            (Some(a), Some(b)) => {
-                if compare(a, b) == Ordering::Less {
-                    "update_available"
-                } else {
-                    "up_to_date"
+        let below_minimum = tool == "ffmpeg"
+            && current
+                .as_deref()
+                .is_some_and(|v| !ffmpeg_version_supported(v));
+        let status = if below_minimum {
+            "update_available"
+        } else {
+            match (&current, &latest) {
+                (Some(a), Some(b)) => {
+                    if compare(a, b) == Ordering::Less {
+                        "update_available"
+                    } else {
+                        "up_to_date"
+                    }
                 }
+                _ => "unknown",
             }
-            _ => "unknown",
         };
         all &= status == "up_to_date";
         any |= status == "update_available";
@@ -331,13 +372,19 @@ fn healthy(path: &Path, dir: &Path) -> bool {
     )
     .is_ok_and(|(s, _, _)| s.success())
 }
+fn usable_ffmpeg(path: &Path, dir: &Path) -> bool {
+    tool_version(Some(path), "ffmpeg", dir)
+        .as_deref()
+        .is_some_and(ffmpeg_version_supported)
+        && healthy(path, dir)
+}
 pub fn ensure_binaries(app: &App, force: bool) -> Result<()> {
     if !cfg!(target_os = "linux") {
         bail!("Automatic tool provisioning currently supports Linux");
     }
     for (tool, base, span) in [("yt-dlp", 10, 35), ("ffmpeg", 60, 30)] {
         let path = app.dir.join(tool);
-        if !force && path.exists() && (tool != "ffmpeg" || healthy(&path, &app.dir)) {
+        if !force && path.exists() && (tool != "ffmpeg" || usable_ffmpeg(&path, &app.dir)) {
             continue;
         }
         app.progress(false, &format!("Downloading {tool}..."), base);
@@ -368,44 +415,57 @@ pub fn ensure_binaries(app: &App, force: bool) -> Result<()> {
                     "Downloaded yt-dlp is not executable"
                 );
             } else {
-                anyhow::ensure!(
-                    std::env::consts::ARCH == "x86_64",
-                    "Automatic FFmpeg download requires x86_64"
-                );
+                let release = ffmpeg_release()?;
+                app.log(&format!(
+                    "[INFO] Acquiring stable FFmpeg {} ({}) from FFmpeg-Builds.",
+                    release.version, release.name
+                ));
                 let archive = app.dir.join("ffmpeg-latest.tar.xz");
-                download(
-                    "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
-                    &archive,
-                    |done, total| {
-                        if total > 0 {
-                            app.progress(
-                                false,
-                                &format!("Downloading ffmpeg... {}%", done * 100 / total),
-                                base + (done * span / total) as i64,
-                            );
-                        }
-                    },
-                )?;
-                let mut tar = tar::Archive::new(xz2::read::XzDecoder::new(File::open(&archive)?));
-                let mut found = false;
-                for entry in tar.entries()? {
-                    let mut entry = entry?;
-                    if entry.header().entry_type().is_file()
-                        && entry.path()?.file_name().is_some_and(|s| s == "ffmpeg")
-                    {
-                        let mut file = File::create(&staged)?;
-                        std::io::copy(&mut entry, &mut file)?;
-                        found = true;
-                        break;
+                download(&release.url, &archive, |done, total| {
+                    if total > 0 {
+                        app.progress(
+                            false,
+                            &format!("Downloading ffmpeg... {}%", done * 100 / total),
+                            base + (done * span / total) as i64,
+                        );
                     }
-                }
-                anyhow::ensure!(found, "ffmpeg not found in downloaded archive");
-                process::chmod(&staged)?;
-                anyhow::ensure!(
-                    healthy(&staged, &app.dir),
-                    "Downloaded FFmpeg failed its startup probe"
-                );
+                })?;
+                let extracted = (|| -> Result<()> {
+                    let mut tar =
+                        tar::Archive::new(xz2::read::XzDecoder::new(File::open(&archive)?));
+                    let mut found = false;
+                    for entry in tar.entries()? {
+                        let mut entry = entry?;
+                        if entry.header().entry_type().is_file()
+                            && entry.path()?.file_name().is_some_and(|s| s == "ffmpeg")
+                        {
+                            let mut file = File::create(&staged)?;
+                            std::io::copy(&mut entry, &mut file)?;
+                            found = true;
+                            break;
+                        }
+                    }
+                    anyhow::ensure!(found, "ffmpeg not found in downloaded archive");
+                    process::chmod(&staged)?;
+                    let version = tool_version(Some(&staged), "ffmpeg", &app.dir)
+                        .context("Downloaded FFmpeg could not report its version")?;
+                    anyhow::ensure!(
+                        ffmpeg_version_supported(&version),
+                        "Downloaded FFmpeg {version} does not meet the FFmpeg 8+ requirement"
+                    );
+                    anyhow::ensure!(
+                        compare(&version, &release.version) != Ordering::Less,
+                        "Downloaded FFmpeg version does not match the selected release branch"
+                    );
+                    anyhow::ensure!(
+                        healthy(&staged, &app.dir),
+                        "Downloaded FFmpeg failed its startup/encoding probe"
+                    );
+                    app.log(&format!("[INFO] Acquired FFmpeg {version}; version and startup/encoding probes passed."));
+                    Ok(())
+                })();
                 let _ = fs::remove_file(archive);
+                extracted?;
             }
             fs::rename(&staged, &path)?;
             Ok(())
@@ -414,18 +474,19 @@ pub fn ensure_binaries(app: &App, force: bool) -> Result<()> {
             let _ = fs::remove_file(&staged);
             app.log(&format!("[WARN] Could not refresh {tool}: {e}"));
             // A failed update leaves the previous local binary in place.
-            if tool == "ffmpeg" && !healthy(&path, &app.dir) {
+            if tool == "ffmpeg" && !usable_ffmpeg(&path, &app.dir) {
                 let system = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
                     .map(|p| p.join(tool))
-                    .find(|p| p != &path && p.is_file() && healthy(p, &app.dir));
+                    .find(|p| p != &path && p.is_file() && usable_ffmpeg(p, &app.dir));
                 if let Some(system) = system {
+                    app.log("[WARN] FFmpeg download failed; using a compatible, verified FFmpeg 8+ from PATH.");
                     fs::copy(system, &staged)?;
                     process::chmod(&staged)?;
                     fs::rename(&staged, &path)?;
                 } else {
-                    bail!("No usable FFmpeg available: {e}");
+                    bail!("No usable FFmpeg 8+ available; previous binary was preserved: {e}");
                 }
-            } else if process::find(&app.dir, tool).is_none() {
+            } else if (tool == "ffmpeg" && force) || process::find(&app.dir, tool).is_none() {
                 return Err(e);
             }
         }

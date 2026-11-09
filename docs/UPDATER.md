@@ -56,3 +56,26 @@ are included in logs/app.log when application file logging is enabled.
 
 This change has been formatted and manually reviewed only. No builds, runtime
 checks, or tests were run by the agent.
+
+## FFmpeg provisioning
+
+Automatic FFmpeg acquisition and binary version checks share the stable-release
+asset discovery in `ffmpeg_release`. It reads the public
+[FFmpeg-Builds release metadata](https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/tag/latest),
+selects the highest eligible release branch at version 8 or newer, and downloads
+the non-shared GPL tar.xz for Linux x86_64 or aarch64. Master/nightly branch builds,
+LGPL builds lacking libx264, and shared-library variants are excluded.
+
+Both stream-start provisioning and the manual binary updater enforce the minimum.
+Cached versions below 8 are not accepted as healthy. Downloaded executables must
+report a supported version at least as new as the selected release branch and
+pass the existing startup/audio-video encoding probe before replacing the local
+binary. Failed downloads/probes preserve the previous executable. A PATH fallback
+must satisfy the same minimum and startup probe; an old FFmpeg is never accepted
+to satisfy an upgrade. A forced FFmpeg refresh failure is reported even when a
+compatible previous version remains available.
+
+The provider documents glibc 2.28+ and Linux 4.18+ for these builds; see its
+[build requirements](https://github.com/FFmpeg-Builds/FFmpeg-Builds#targets-variants-and-addins).
+These runtime checks are code executed by the application, not tests run by the
+agent. No binaries were downloaded or executed during this change.

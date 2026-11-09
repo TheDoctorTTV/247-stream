@@ -930,7 +930,11 @@ impl Worker {
                 let system = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
                     .map(|p| p.join("ffmpeg"))
                     .find(|p| {
-                        p.is_file() && fs::canonicalize(p).ok() != fs::canonicalize(&local).ok()
+                        p.is_file()
+                            && fs::canonicalize(p).ok() != fs::canonicalize(&local).ok()
+                            && updates::tool_version(Some(p), "ffmpeg", &self.app.dir)
+                                .as_deref()
+                                .is_some_and(updates::ffmpeg_version_supported)
                     });
                 if let Some(system) = system {
                     self.ffmpeg = system;
@@ -983,8 +987,8 @@ impl Worker {
         if self.cfg.enhanced() {
             let supports = |path: &Path| {
                 updates::tool_version(Some(path), "ffmpeg", &self.app.dir)
-                    .and_then(|v| v.split('.').next().and_then(|s| s.parse::<u32>().ok()))
-                    .is_some_and(|major| major >= 8)
+                    .as_deref()
+                    .is_some_and(updates::ffmpeg_version_supported)
             };
             if !supports(&self.ffmpeg) {
                 if let Some(path) =
