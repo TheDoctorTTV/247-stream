@@ -53,16 +53,20 @@ It downloads the latest package, extracts it into that directory, and runs the
 included installer. Requires `curl` and standard Linux utilities; no `jq`,
 Python, or Rust toolchain.
 
+The helper URL follows the repository default branch automatically (`HEAD`).
+Publish `install.sh` on that branch before using these commands. The selected
+channel downloads published release assets, regardless of their source branch.
+
 **Release (recommended)**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TheDoctorTTV/247-stream/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TheDoctorTTV/247-stream/HEAD/install.sh | bash
 ```
 
 **Pre-release**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TheDoctorTTV/247-stream/main/install.sh | bash -s -- prerelease
+curl -fsSL https://raw.githubusercontent.com/TheDoctorTTV/247-stream/HEAD/install.sh | bash -s -- prerelease
 ```
 
 Open **http://SERVER_IP:7788**. A new installation follows the chosen update
