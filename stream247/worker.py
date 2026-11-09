@@ -1,4 +1,5 @@
 import random
+import tarfile
 
 from .shared import *
 from .config import _app_dir
@@ -912,7 +913,15 @@ class StreamWorker(QtCore.QObject):
             time.sleep(min(0.05, remaining))
 
     def _use_persistent_rtmp_bridge(self) -> bool:
-        """Keep one RTMP session open for non-YouTube ingest targets."""
+        """Only allow the bridge for continuous inputs with one timeline."""
+        # Playlist items (including a looping single video) each start a new
+        # MPEG-TS timeline. Appending them to one demuxer can make its shared
+        # discontinuity correction oscillate between audio and video, causing
+        # desync or silence (#38). Use the existing direct RTMP path per item
+        # until the bridge can explicitly join both timelines. This also
+        # overrides persisted youtube_persistent_output=True for looping inputs.
+        if detect_input_type(self.cfg.playlist_url) not in ('twitch_stream', 'direct_hls'):
+            return False
         out_url = self.cfg.rtmp_url().lower()
         if not out_url.startswith(("rtmp://", "rtmps://")):
             return False
@@ -1608,6 +1617,10 @@ class StreamWorker(QtCore.QObject):
                             self._stop.set()
                             break
             else:
+                self.log.emit(
+                    "[INFO] Playlist audio timing protection active: each video uses "
+                    "a fresh RTMP connection. Brief interruptions between items are expected."
+                )
                 if self._use_persistent_rtmp_bridge():
                     if not self._start_rtmp_bridge():
                         raise RuntimeError("Failed to initialize persistent RTMP bridge")
