@@ -54,6 +54,41 @@ pub fn command(binary: &Path, args: &[String], dir: &Path) -> Command {
 }
 pub struct OwnedChild(pub Child);
 impl OwnedChild {
+    /// Let FFmpeg flush its muxer and run the RTMP unpublish/delete close path.
+    /// Sources have a command stdin; a bridge is first given EOF by its owner.
+    pub fn finish_ffmpeg(&mut self, timeout: Duration) -> Result<bool> {
+        if self.0.try_wait()?.is_some() {
+            return Ok(true);
+        }
+        let requested =
+            self.0.stdin.take().is_some_and(|mut input| {
+                input.write_all(b"q\n").and_then(|_| input.flush()).is_ok()
+            });
+        if !requested {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(self.0.id() as i32), libc::SIGINT);
+            }
+        }
+        if self.drain(timeout)?.is_some() {
+            return Ok(true);
+        }
+        // Hung I/O must not prevent shutdown indefinitely. Escalation is reported by the caller.
+        self.stop();
+        Ok(false)
+    }
+    pub fn drain(&mut self, timeout: Duration) -> Result<Option<ExitStatus>> {
+        let until = Instant::now() + timeout;
+        loop {
+            if let Some(status) = self.0.try_wait()? {
+                return Ok(Some(status));
+            }
+            if Instant::now() >= until {
+                return Ok(None);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
     pub fn stop(&mut self) {
         if self.0.try_wait().ok().flatten().is_some() {
             return;

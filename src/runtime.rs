@@ -66,6 +66,9 @@ impl App {
     pub fn log(&self, line: &str) {
         self.state.lock().unwrap().log(line, "");
     }
+    pub fn register_secret(&self, secret: &str) {
+        self.state.lock().unwrap().register_secret(secret);
+    }
     pub fn debug_enabled(&self) -> bool {
         self.state.lock().unwrap().debug
     }

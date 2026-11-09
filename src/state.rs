@@ -50,6 +50,11 @@ impl State {
     pub fn snapshot(&self) -> Value {
         json!({"app_name":APP_NAME,"app_version":VERSION,"streaming":self.streaming,"status":self.status,"updated_at":self.updated,"meta":self.meta,"logs":self.logs,"logs_other":self.other,"logs_ffmpeg":self.ffmpeg})
     }
+    pub fn register_secret(&mut self, secret: &str) {
+        if !secret.is_empty() {
+            self.secrets.insert(secret.to_owned());
+        }
+    }
     pub fn register_settings(&mut self, v: &Value) {
         let normalized = config::normalize(v);
         let key = config::text(&normalized, "stream_key", "");

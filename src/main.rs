@@ -5,6 +5,7 @@ mod logfiles;
 mod process;
 mod runtime;
 mod state;
+mod twitch;
 mod updates;
 mod web;
 mod worker;

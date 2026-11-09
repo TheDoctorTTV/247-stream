@@ -17,6 +17,8 @@ It can:
 - Source support: YouTube playlist/video, Twitch URL, direct HLS URL
 - Output controls: resolution (480p to 2160p), 30/60 FPS, bitrate, stream buffer mode
 - Encoder selection: auto or explicit (`libx264`, NVENC, QSV, AMF, VAAPI)
+- Experimental Twitch Enhanced Broadcasting with Auto or custom track/bandwidth limits (FFmpeg 8+); see [Twitch output notes](docs/TWITCH.md)
+- Graceful FFmpeg shutdown and RTMP output drain when stopping a stream
 - Optional title overlay and playlist shuffle
 - YouTube auth options (`yt-dlp` browser cookie import + optional profile path)
 - In-app binary updates for `yt-dlp` and `ffmpeg`

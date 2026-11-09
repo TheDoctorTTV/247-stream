@@ -46,6 +46,7 @@
     const subtabButtons = Array.from(document.querySelectorAll(".subtab-btn"));
     const subtabPanels = Array.from(document.querySelectorAll(".subtab-panel"));
     let busy = false;
+    let streamActive = false;
     let appUpdateRunning = false;
     let binariesUpdateRunning = false;
     let prevBinariesUpdateRunning = false;
@@ -68,7 +69,7 @@
     let appUpdateStatusLoading = false;
     const STORAGE_TAB_KEY = "stream247.active_tab";
     const STORAGE_SUBTAB_KEY = "stream247.active_subtab";
-    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
+    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
     const STREAM_URL_PRESETS = {
       youtube: { name: "YouTube", rtmp_base: "rtmp://a.rtmp.youtube.com/live2" },
       twitch: { name: "Twitch", rtmp_base: "rtmp://live.twitch.tv/app" },
@@ -221,7 +222,32 @@
       });
     }
 
+    function syncEnhancedBroadcastingUI() {
+      const group = document.getElementById("twitchEnhancedGroup");
+      const enabled = document.getElementById("twitch_enhanced_broadcasting");
+      if (!group || !enabled) return;
+      const selected = String(streamUrlPreset && streamUrlPreset.value || "");
+      const saved = savedServiceForOption(selected);
+      const url = saved ? String(saved.rtmp_base || "") : presetUrlForKey(selected);
+      let twitch = false;
+      try {
+        const host = new URL(url).hostname.toLowerCase();
+        twitch = host === "twitch.tv" || host.endsWith(".twitch.tv") || host.endsWith(".contribute.live-video.net");
+      } catch (err) {}
+      group.hidden = !twitch;
+      enabled.disabled = streamActive || !twitch;
+      const active = twitch && enabled.checked;
+      document.getElementById("twitchEnhancedOptions").hidden = !active;
+      const tracksAuto = document.getElementById("twitch_enhanced_tracks_auto");
+      const bitrateAuto = document.getElementById("twitch_enhanced_bitrate_auto");
+      tracksAuto.disabled = streamActive || !active;
+      bitrateAuto.disabled = streamActive || !active;
+      document.getElementById("twitch_enhanced_max_tracks").disabled = streamActive || !active || tracksAuto.checked;
+      document.getElementById("twitch_enhanced_max_bitrate_kbps").disabled = streamActive || !active || bitrateAuto.checked;
+    }
+
     function syncStreamPlatformHint() {
+      syncEnhancedBroadcastingUI();
       if (!streamPlatformHint || !streamUrlPreset) return;
       const selected = String(streamUrlPreset.value || "").trim();
       const saved = savedServiceForOption(selected);
@@ -874,6 +900,8 @@
         if (!res.ok) throw new Error("state fetch failed");
         const s = await res.json();
         const streaming = !!s.streaming;
+        streamActive = streaming;
+        syncEnhancedBroadcastingUI();
         stateText.textContent = s.status || "Unknown";
         stateText.className = "status" + (streaming ? " on" : "");
         const meta = s.meta || {};
@@ -933,6 +961,13 @@
         applyTheme(String(s.theme || "blue"));
       }
       syncStreamPresetFromRtmpBase(currentRtmpBase);
+      const tracks = Number(s.twitch_enhanced_max_tracks || 0);
+      const bandwidth = Number(s.twitch_enhanced_max_bitrate_kbps || 0);
+      document.getElementById("twitch_enhanced_tracks_auto").checked = tracks === 0;
+      document.getElementById("twitch_enhanced_bitrate_auto").checked = bandwidth === 0;
+      document.getElementById("twitch_enhanced_max_tracks").value = tracks || 3;
+      document.getElementById("twitch_enhanced_max_bitrate_kbps").value = bandwidth || 12000;
+      syncEnhancedBroadcastingUI();
     }
 
     function formToPayload() {
@@ -960,6 +995,8 @@
         if (!el) continue;
         out[id] = (el.type === "checkbox") ? !!el.checked : el.value;
       }
+      out.twitch_enhanced_max_tracks = document.getElementById("twitch_enhanced_tracks_auto").checked ? 0 : Number(document.getElementById("twitch_enhanced_max_tracks").value);
+      out.twitch_enhanced_max_bitrate_kbps = document.getElementById("twitch_enhanced_bitrate_auto").checked ? 0 : Number(document.getElementById("twitch_enhanced_max_bitrate_kbps").value);
       if (streamUrlPreset) {
         const selectedPreset = String(streamUrlPreset.value || "youtube");
         const selectedSavedService = savedServiceForOption(selectedPreset);
@@ -1031,6 +1068,10 @@
           el.addEventListener("input", () => queueAutoSave(650));
           el.addEventListener("change", () => queueAutoSave(180));
         }
+      }
+      for (const id of ["twitch_enhanced_broadcasting", "twitch_enhanced_tracks_auto", "twitch_enhanced_bitrate_auto", "twitch_enhanced_max_tracks", "twitch_enhanced_max_bitrate_kbps"]) {
+        const el = document.getElementById(id);
+        el.addEventListener("change", () => { syncEnhancedBroadcastingUI(); queueAutoSave(180); });
       }
       if (streamKeySelect) {
         streamKeySelect.addEventListener("change", () => queueAutoSave(180));
@@ -1136,11 +1177,12 @@
       if (a.phase === "downloaded") return a.progress_message;
       const r = a.last_result;
       if (!r) return "No app update check has completed yet.";
+      if (r.updater_enabled === false) return String(r.disabled_reason || "App updater disabled.");
       const current = String(r.current_version || "unknown");
       const selected = String(r.selected_version || "unknown");
       const comparison = compareVersions(current, selected);
       let state = "Up to date";
-      if (comparison === 1) state = "Installed version is newer";
+      if (comparison === 1) state = r.asset_supported ? "Downgrade available" : "Downgrade unavailable (unsupported asset)";
       else if (comparison === -1) {
         state = r.asset_supported ? "Update available" : "Update available (unsupported asset)";
       }
@@ -1200,14 +1242,17 @@
       if (info.last_error || info.phase === "downloaded") appInstallPending = false;
       updateAppVersionDropdown(info);
       const comparison = compareVersions(result.current_version, result.selected_version);
-      const supported = result.asset_supported === true;
+      const enabled = result.updater_enabled === true;
+      const supported = enabled && result.asset_supported === true;
       const updateAvailable = comparison === -1 && supported;
+      const installAvailable = supported;
       const reinstallAvailable = comparison === 0 && supported;
+      const disabledReason = String(result.disabled_reason || "Check the selected GitHub release first.");
       let level = "updated";
       if (info.last_error) level = "error";
       else if (info.running) level = "running";
       else if (updateAvailable) level = "outdated";
-      else if (!info.last_result) level = "unknown";
+      else if (!info.last_result || !enabled) level = "unknown";
       if (info.finished_at) lastAppCheckAt = new Date(Number(info.finished_at) * 1000).toLocaleTimeString();
       setAppUpdateStatus(formatAppUpdateSummary(info), level);
       const pct = Number(info.progress_percent || 0);
@@ -1217,13 +1262,15 @@
       checkAppUpdateBtn.title = info.running ? "An update operation is running" : "Check GitHub for the selected version";
       appUpdateVersion.disabled = !!info.running;
       document.getElementById("app_update_channel").disabled = !!info.running;
-      downloadAppUpdateBtn.disabled = !!info.running || !updateAvailable;
-      downloadAppUpdateBtn.title = updateAvailable ? "Install the newer selected version and restart" :
-        (comparison === -1 ? "Selected release has no self-installable asset" : "Selected version is not newer than the installed version");
+      downloadAppUpdateBtn.disabled = !!info.running || !installAvailable;
+      downloadAppUpdateBtn.textContent = comparison === 1 ? "Downgrade" : comparison === 0 ? "Reinstall" : "Install";
+      downloadAppUpdateBtn.title = !enabled ? disabledReason : !supported ?
+        "Selected release has no self-installable asset" :
+        "Install the selected version and restart, including older or identical versions";
       if (reinstallAppBtn) {
         reinstallAppBtn.disabled = !!info.running || !reinstallAvailable;
-        reinstallAppBtn.title = reinstallAvailable ? "Reinstall the currently installed version" :
-          "Reinstall is available only for the same version; use Install Update for a newer version";
+        reinstallAppBtn.title = !enabled ? disabledReason : reinstallAvailable ?
+          "Reinstall the currently installed version" : "Select the installed version to reinstall it";
       }
     }
 

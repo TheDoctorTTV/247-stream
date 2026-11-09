@@ -1,6 +1,7 @@
 //! Opt-in host summaries and aggregated FFmpeg packet progress. No media content is inspected.
 use crate::{process, runtime::App, updates, VERSION};
 use std::{
+    collections::BTreeMap,
     fs,
     path::Path,
     sync::{atomic::Ordering, Arc, Mutex},
@@ -124,6 +125,7 @@ struct Track {
 struct Measurements {
     video: Track,
     audio: Track,
+    tracks: BTreeMap<(String, u32), Track>,
     last_report: Instant,
     last_warning: Instant,
     section: &'static str,
@@ -145,6 +147,7 @@ impl FfmpegStats {
             data: Mutex::new(Measurements {
                 video: Track::default(),
                 audio: Track::default(),
+                tracks: BTreeMap::new(),
                 last_report: Instant::now() - Duration::from_secs(30),
                 last_warning: Instant::now() - Duration::from_secs(30),
                 section: "input",
@@ -160,9 +163,29 @@ impl FfmpegStats {
     pub fn ingest(&self, line: &str, app: &App) -> bool {
         if let Some(pos) = line.find(MARKER) {
             let words: Vec<_> = line[pos..].split_whitespace().collect();
-            if words.len() >= 4 {
-                if let (Ok(n), Ok(pts)) = (words[2].parse::<u64>(), words[3].parse::<f64>()) {
+            if words.len() >= 5 {
+                if let (Ok(index), Ok(n), Ok(pts)) = (
+                    words[2].parse::<u32>(),
+                    words[3].parse::<u64>(),
+                    words[4].parse::<f64>(),
+                ) {
                     let mut data = self.data.lock().unwrap();
+                    if !["video", "audio"].contains(&words[1]) {
+                        return true;
+                    }
+                    let track = data.tracks.entry((words[1].to_owned(), index)).or_default();
+                    track.packets = n.saturating_add(1);
+                    track.pts = pts.is_finite().then_some(pts);
+                    track.last = Some(Instant::now());
+                    let first_index = data
+                        .tracks
+                        .keys()
+                        .filter(|(kind, _)| kind == words[1])
+                        .map(|(_, idx)| *idx)
+                        .min();
+                    if first_index != Some(index) {
+                        return true;
+                    }
                     let track = match words[1] {
                         "video" => Some(&mut data.video),
                         "audio" => Some(&mut data.audio),
@@ -259,9 +282,25 @@ impl FfmpegStats {
         if warn {
             data.last_warning = Instant::now();
         }
+        let track_summaries: Vec<_> = data
+            .tracks
+            .iter()
+            .map(|((kind, index), track)| {
+                format!(
+                    "{} {kind} output_stream={index}: packets={}, pts_s={}, idle_s={}",
+                    self.context,
+                    track.packets,
+                    pts(track),
+                    age(track)
+                )
+            })
+            .collect();
         let descriptions = data.descriptions.clone();
         drop(data);
         app.debug(&summary);
+        for summary in track_summaries {
+            app.debug(&summary);
+        }
         for description in descriptions {
             app.debug(&format!("{} codec: {description}", self.context));
         }
@@ -293,11 +332,11 @@ pub fn instrument(args: &[String], stats: bool) -> Vec<String> {
             "-stats_mux_pre:v",
             "pipe:2",
             "-stats_mux_pre_fmt:v",
-            "__STREAM247_STATS__ video {n} {t}",
+            "__STREAM247_STATS__ video {sidx} {n} {t}",
             "-stats_mux_pre:a",
             "pipe:2",
             "-stats_mux_pre_fmt:a",
-            "__STREAM247_STATS__ audio {n} {t}",
+            "__STREAM247_STATS__ audio {sidx} {n} {t}",
         ]);
         let index = out.len() - 1;
         out.splice(index..index, options);

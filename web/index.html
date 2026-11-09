@@ -49,6 +49,24 @@
             <div class="field"><label for="framerate">Frame Rate</label><select id="framerate"><option value="30">30</option><option value="60">60</option></select></div>
             <div class="field"><label for="video_bitrate">Video Bitrate (kbps)</label><input id="video_bitrate" type="text" placeholder="7500"></div>
           </div>
+          <div id="twitchEnhancedGroup" style="margin-top:12px;" hidden>
+            <label class="check"><input id="twitch_enhanced_broadcasting" type="checkbox">Twitch Enhanced Broadcasting</label>
+            <div id="twitchEnhancedOptions" style="margin-top:12px;" hidden>
+              <div class="grid">
+                <div class="field">
+                  <label for="twitch_enhanced_max_tracks">Maximum Video Tracks</label>
+                  <label class="check"><input id="twitch_enhanced_tracks_auto" type="checkbox" checked>Auto</label>
+                  <input id="twitch_enhanced_max_tracks" type="number" min="1" max="6" step="1" value="3" disabled>
+                </div>
+                <div class="field">
+                  <label for="twitch_enhanced_max_bitrate_kbps">Maximum Streaming Bandwidth (kbps)</label>
+                  <label class="check"><input id="twitch_enhanced_bitrate_auto" type="checkbox" checked>Auto</label>
+                  <input id="twitch_enhanced_max_bitrate_kbps" type="number" min="1000" max="100000" step="500" value="12000" disabled>
+                </div>
+              </div>
+              <p class="muted">Twitch selects the video qualities and bitrates at stream start, within any limits you set. Your server encodes and uploads those qualities.</p>
+            </div>
+          </div>
           <div class="row" style="margin-top:12px;">
             <button id="reloadSettingsBtn">Reload Settings</button>
             <div id="settingsStatus" class="statusline"></div>

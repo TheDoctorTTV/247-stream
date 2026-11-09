@@ -1,6 +1,6 @@
 [package]
 name = "stream247"
-version = "2.1.2"
+version = "2.1.2-rust"
 edition = "2021"
 publish = false
 description = "Headless playlist streamer with a web dashboard"
@@ -13,7 +13,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 chrono = "0.4"
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1", default-features = false, features = [
+    "rust_backend",
+] }
 ctrlc = { version = "3", features = ["termination"] }
 libc = "0.2"
 rand = "0.8"

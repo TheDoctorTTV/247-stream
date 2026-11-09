@@ -4,7 +4,7 @@ use crate::{
     diagnostics::{self, FfmpegStats},
     process::{self, Control, OwnedChild},
     runtime::App,
-    state, updates,
+    state, twitch, updates,
 };
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -258,6 +258,7 @@ pub struct Worker {
     ffmpeg: PathBuf,
     resolver: Resolver,
     bridge: Option<Bridge>,
+    enhanced: Option<twitch::Plan>,
     live_opts: bool,
     stats_supported: bool,
     telemetry: Mutex<BTreeMap<u32, Arc<FfmpegStats>>>,
@@ -291,11 +292,33 @@ impl Worker {
             ffmpeg,
             resolver,
             bridge: None,
+            enhanced: None,
             live_opts: true,
             stats_supported,
             telemetry: Mutex::new(BTreeMap::new()),
         };
-        worker.execute()
+        let result = worker.execute();
+        worker.finish_bridge();
+        result
+    }
+    fn finish_bridge(&mut self) {
+        if let Some(Bridge { mut process, input }) = self.bridge.take() {
+            self.log("[INFO] Closing RTMP input and draining the output before unpublishing...");
+            drop(input);
+            match process.drain(Duration::from_secs(15)) {
+                Ok(Some(status)) => {
+                    self.log(&format!("[INFO] RTMP output closed after EOF: {status}."))
+                }
+                _ => {
+                    self.log("[WARN] RTMP drain exceeded its deadline; requesting FFmpeg cleanup.");
+                    match process.finish_ffmpeg(Duration::from_secs(5)) {
+                        Ok(true) => self.log("[INFO] RTMP output completed FFmpeg shutdown."),
+                        _ => self.log("[WARN] RTMP output required a forced stop after graceful shutdown timed out."),
+                    }
+                }
+            }
+            self.report_processes(Some(process.0.id()));
+        }
     }
     fn log(&self, line: &str) {
         self.app.log(&state::redact(line, &self.cfg.key));
@@ -347,14 +370,19 @@ impl Worker {
         }
     }
     fn launch(&self, args: &[String], output: Stdio, role: &str) -> Result<OwnedChild> {
-        let args = diagnostics::instrument(args, self.stats_supported);
+        let mut args = diagnostics::instrument(args, self.stats_supported);
+        for option in &mut args {
+            if option == "-nostdin" {
+                *option = "-stdin".into();
+            }
+        }
         self.log(&format!(
             "[CMD] ffmpeg: {} {}",
             self.ffmpeg.display(),
             args.join(" ")
         ));
         let mut cmd = process::command(&self.ffmpeg, &args, &self.app.dir);
-        cmd.stdout(output);
+        cmd.stdout(output).stdin(Stdio::piped());
         let mut child = OwnedChild(cmd.spawn().context("Start FFmpeg")?);
         self.watch(&mut child, role);
         Ok(child)
@@ -381,7 +409,13 @@ impl Worker {
                 || (skippable && self.control.skipped())
                 || timeout.is_some_and(|t| start.elapsed() > t)
             {
-                child.stop();
+                self.log(&format!(
+                    "[INFO] Requesting graceful FFmpeg stop for pid={}...",
+                    child.0.id()
+                ));
+                if !child.finish_ffmpeg(Duration::from_secs(15))? {
+                    self.log("[WARN] FFmpeg required a forced stop after its graceful shutdown deadline.");
+                }
                 self.report_processes(Some(child.0.id()));
                 self.app.debug(&format!(
                     "FFmpeg process cancelled: pid={}, stop={}, skip={}",
@@ -522,20 +556,36 @@ impl Worker {
         Ok(())
     }
     fn output_options(&self, args: &mut Vec<String>) {
+        let (url, tcurl) = self
+            .enhanced
+            .as_ref()
+            .map(|plan| (plan.endpoint.clone(), plan.tcurl.clone()))
+            .unwrap_or_else(|| (self.cfg.url(), self.cfg.base.clone()));
         if self.live_opts {
             args.extend(process::args(&[
                 "-rtmp_live",
                 "live",
                 "-rtmp_tcurl",
-                &self.cfg.base,
+                &tcurl,
             ]));
         }
-        args.extend(process::args(&["-f", "flv", &self.cfg.url()]));
+        args.extend(process::args(&[
+            "-flvflags",
+            "no_duration_filesize",
+            "-f",
+            "flv",
+            &url,
+        ]));
     }
     fn start_bridge(&mut self) -> Result<()> {
         if let Some(bridge) = &mut self.bridge {
             if bridge.process.0.try_wait()?.is_none() {
                 return Ok(());
+            }
+            if self.enhanced.is_some() {
+                bail!(
+                    "Enhanced Broadcasting RTMP output exited; restart to negotiate a new session"
+                );
             }
         }
         if let Some(old) = self.bridge.take() {
@@ -570,6 +620,9 @@ impl Worker {
             "-ac",
             "2",
         ]);
+        if let Some(plan) = &self.enhanced {
+            args = plan.encoder_args();
+        }
         self.output_options(&mut args);
         let args = diagnostics::instrument(&args, self.stats_supported);
         self.log(&format!("[CMD] ffmpeg (bridge): {}", args.join(" ")));
@@ -883,7 +936,11 @@ impl Worker {
                     self.ffmpeg = system;
                     self.stats_supported =
                         diagnostics::stats_supported(&self.ffmpeg, &self.app.dir, &self.control);
-                    self.bridge = None;
+                    self.finish_bridge();
+                    // A negotiated configuration must not silently change encoders or transport.
+                    if self.enhanced.is_some() {
+                        bail!("Enhanced Broadcasting source encoder crashed; restart to renegotiate the session");
+                    }
                     self.select_encoder();
                     bail!("FFmpeg crashed; switched to system FFmpeg for the next item");
                 }
@@ -923,9 +980,44 @@ impl Worker {
         rx
     }
     fn execute(&mut self) -> Result<()> {
+        if self.cfg.enhanced() {
+            let supports = |path: &Path| {
+                updates::tool_version(Some(path), "ffmpeg", &self.app.dir)
+                    .and_then(|v| v.split('.').next().and_then(|s| s.parse::<u32>().ok()))
+                    .is_some_and(|major| major >= 8)
+            };
+            if !supports(&self.ffmpeg) {
+                if let Some(path) =
+                    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                        .map(|p| p.join("ffmpeg"))
+                        .find(|p| p.is_file() && supports(p))
+                {
+                    self.ffmpeg = path;
+                    self.stats_supported =
+                        diagnostics::stats_supported(&self.ffmpeg, &self.app.dir, &self.control);
+                    self.log("[INFO] Using a system FFmpeg 8+ build for Enhanced Broadcasting.");
+                }
+            }
+        }
         self.select_encoder();
         if self.control.stopped() {
             return Ok(());
+        }
+        if self.cfg.enhanced() {
+            self.app.status("Negotiating Twitch Enhanced Broadcasting…");
+            let plan = twitch::negotiate(&self.app, &self.cfg, &self.ffmpeg)?;
+            let mut checked = std::collections::HashSet::new();
+            for rendition in &plan.renditions {
+                if checked.insert(rendition.encoder.clone())
+                    && !self.encoder_available(&rendition.encoder)
+                {
+                    bail!(
+                        "A Twitch-negotiated video encoder is unavailable on this server: {}",
+                        rendition.encoder
+                    );
+                }
+            }
+            self.enhanced = Some(plan);
         }
         self.preflight()?;
         self.app.status("Starting…");
@@ -980,7 +1072,7 @@ impl Worker {
                     video,
                     audio: None,
                 },
-                false,
+                self.enhanced.is_some(),
                 false,
             )?;
             self.log("[INFO] Source ended. Stopping relay.");
@@ -994,6 +1086,7 @@ impl Worker {
             self.start_bridge()?;
         }
         while !self.control.stopped() {
+            let mut enhanced_output_failed = false;
             let result = (|| -> Result<()> {
                 let out = self.resolver.run(&[
                     "--ignore-errors",
@@ -1041,10 +1134,21 @@ impl Worker {
                         prefetched = Some((next.clone(), self.prefetch(next.clone())));
                     }
                     let media = cached.unwrap_or_else(|| self.resolver.media(id));
+                    let attempted_play = media.is_ok();
                     let result = media.and_then(|m| self.play(&m, self.cfg.bridge(), true));
                     if let Err(e) = result {
                         if self.control.stopped() {
                             break;
+                        }
+                        if attempted_play && self.enhanced.is_some() {
+                            let dead = match self.bridge.as_mut() {
+                                Some(bridge) => bridge.process.0.try_wait()?.is_some(),
+                                None => true,
+                            };
+                            if dead {
+                                enhanced_output_failed = true;
+                                return Err(e.context("Enhanced Broadcasting output stopped"));
+                            }
                         }
                         self.log(&format!("[WARN] Stream error for video {id}: {e:#}"));
                         if let Err(e) = self.slate(0.8) {
@@ -1061,6 +1165,9 @@ impl Worker {
                 Ok(())
             })();
             if let Err(e) = result {
+                if enhanced_output_failed {
+                    return Err(e);
+                }
                 if !self.control.stopped() {
                     self.log(&format!(
                         "[WARN] Loop error: {e:#}. Retrying in 30 seconds..."
@@ -1071,7 +1178,6 @@ impl Worker {
                 self.log("[INFO] End of playlist. Refreshing IDs and looping...");
             }
         }
-        self.bridge = None;
         Ok(())
     }
 }

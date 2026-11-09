@@ -100,20 +100,49 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
     if !selected.is_empty() && compare(selected, "2.0-pre-release-2") == Ordering::Less {
         bail!("Selected version is below the minimum supported in-app target");
     }
-    let data = get_json(&format!(
-        "https://api.github.com/repos/{REPO}/releases?per_page=100"
-    ))?;
-    let mut releases: Vec<&Value> = data
-        .as_array()
-        .context("Invalid GitHub releases response")?
+    // Check all published tags, across both channels and every page. An unpublished
+    // package version must never replace itself with a release binary.
+    let mut published = Vec::new();
+    for page in 1.. {
+        let data = get_json(&format!(
+            "https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}"
+        ))?;
+        let entries = data
+            .as_array()
+            .context("Invalid GitHub releases response")?;
+        let count = entries.len();
+        published.extend(
+            entries
+                .iter()
+                .filter(|r| !boolean(r, "draft", false))
+                .cloned(),
+        );
+        if count < 100 {
+            break;
+        }
+    }
+    let tag_version = |v: &str| v.trim().trim_start_matches(['v', 'V']).to_owned();
+    let current_published = published
+        .iter()
+        .any(|r| tag_version(&text(r, "tag_name", "")) == tag_version(VERSION));
+    let mut releases: Vec<&Value> = published
         .iter()
         .filter(|r| {
-            !boolean(r, "draft", false)
-                && boolean(r, "prerelease", false) == (channel == "prerelease")
+            boolean(r, "prerelease", false) == (channel == "prerelease")
                 && compare(&text(r, "tag_name", ""), "2.0-pre-release-2") != Ordering::Less
         })
         .collect();
     releases.sort_by(|a, b| compare(&text(b, "tag_name", ""), &text(a, "tag_name", "")));
+    if !current_published {
+        return Ok(json!({
+            "current_version": VERSION, "current_published": false,
+            "updater_enabled": false,
+            "disabled_reason": "App updater disabled: the running version has no matching published GitHub release.",
+            "requested_version": selected, "channel": channel,
+            "asset_supported": false, "is_newer": false, "should_install": false,
+            "available_versions": releases.iter().map(|r| tag_version(&text(r, "tag_name", ""))).collect::<Vec<_>>()
+        }));
+    }
     let latest = *releases
         .first()
         .context("No supported release found for this channel")?;
@@ -143,7 +172,7 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
         .to_owned();
     let name = text(&asset, "name", "");
     Ok(
-        json!({"current_version":VERSION,"latest_version":version,"selected_version":version,"requested_version":selected,"latest_channel_version":text(latest,"tag_name","").trim_start_matches(['v','V']),"is_newer":compare(&version,VERSION)==Ordering::Greater,"should_install":compare(&version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
+        json!({"current_version":VERSION,"current_published":true,"updater_enabled":true,"disabled_reason":"","latest_version":version,"selected_version":version,"requested_version":selected,"latest_channel_version":text(latest,"tag_name","").trim_start_matches(['v','V']),"is_newer":compare(&version,VERSION)==Ordering::Greater,"should_install":compare(&version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
     )
 }
 pub fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
@@ -495,15 +524,28 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     }
                 ));
                 cloned.progress(true, "Checking GitHub releases...", 5);
-                let info = release(&channel, &selected)?;
+                let mut info = release(&channel, &selected)?;
+                if cloned.development {
+                    info["updater_enabled"] = json!(false);
+                    info["disabled_reason"] =
+                        json!("App updater disabled for a Cargo development executable.");
+                }
+                if !boolean(&info, "updater_enabled", false) {
+                    let message = text(&info, "disabled_reason", "App updater disabled.");
+                    cloned.app_job.lock().unwrap()["outcome"] = json!("disabled");
+                    cloned.progress(true, &message, 100);
+                    cloned.log(&format!("[INFO] {message}"));
+                    return Ok(info);
+                }
                 let target = text(&info, "selected_version", "");
                 let ordering = compare(&target, VERSION);
                 let newer = ordering == Ordering::Greater;
-                let reinstall = force && ordering == Ordering::Equal;
+                let reinstall = ordering == Ordering::Equal;
+                let downgrade = ordering == Ordering::Less;
                 let automatic = !install
                     && boolean(&cloned.settings(), "auto_app_updates", false)
                     && !cloned.development;
-                let do_install = (install && (newer || reinstall)) || (automatic && newer);
+                let do_install = install || (automatic && newer);
                 let supported = boolean(&info, "asset_supported", false);
                 {
                     let mut job = cloned.app_job.lock().unwrap();
@@ -512,7 +554,7 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     job["outcome"] = json!(if newer {
                         "update_available"
                     } else if ordering == Ordering::Less {
-                        "local_newer"
+                        "downgrade_available"
                     } else {
                         "up_to_date"
                     });
@@ -537,7 +579,13 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     cloned.log(&format!(
                         "[INFO] {} app {}: {VERSION} -> {target}.",
                         if automatic { "Automatic" } else { "Manual" },
-                        if reinstall { "reinstall" } else { "update" }
+                        if reinstall {
+                            "reinstall"
+                        } else if downgrade {
+                            "downgrade"
+                        } else {
+                            "update"
+                        }
                     ));
                     download(&text(&info, "download_url", ""), &staged, |done, total| {
                         if total > 0 {
@@ -550,32 +598,20 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     })?;
                     process::chmod(&staged)?;
                     cloned.app_job.lock().unwrap()["downloaded_path"] = json!(staged);
-                    if cloned.development {
-                        let mut job = cloned.app_job.lock().unwrap();
-                        job["phase"] = json!("downloaded");
-                        job["outcome"] = json!("downloaded");
-                        job["progress_message"] =
-                            json!("Downloaded update; install manually in development mode.");
-                    } else {
-                        cloned.progress(true, "Installing update and restarting...", 95);
-                        cloned.app_job.lock().unwrap()["phase"] = json!("installing");
-                        cloned.install_update(&staged)?;
-                        let mut job = cloned.app_job.lock().unwrap();
-                        job["phase"] = json!("installed");
-                        job["outcome"] = json!("installed");
-                        job["progress_message"] = json!("Update installed. Restarting...");
-                    }
+                    cloned.progress(true, "Installing update and restarting...", 95);
+                    cloned.app_job.lock().unwrap()["phase"] = json!("installing");
+                    cloned.install_update(&staged)?;
+                    let mut job = cloned.app_job.lock().unwrap();
+                    job["phase"] = json!("installed");
+                    job["outcome"] = json!("installed");
+                    job["progress_message"] = json!("Update installed. Restarting...");
                 } else {
-                    let message = if ordering == Ordering::Less {
-                        "Installed version is newer than the selected release; no update needed."
-                    } else if !newer {
-                        "Already on the selected version."
-                    } else if !supported {
-                        "A newer release exists, but it has no self-installable asset for this platform."
-                    } else if cloned.development
-                        && boolean(&cloned.settings(), "auto_app_updates", false)
-                    {
-                        "Update available; automatic installation is disabled in development mode."
+                    let message = if !supported {
+                        "The selected release has no self-installable asset for this platform."
+                    } else if downgrade {
+                        "An older release is selected. Use Install to downgrade; automatic checks do not downgrade."
+                    } else if reinstall {
+                        "Already on the selected version. Use Reinstall to install it again."
                     } else {
                         "Update available. Use Install Update to install the selected version."
                     };

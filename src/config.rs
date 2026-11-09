@@ -214,6 +214,14 @@ pub fn normalize(v: &Value) -> Value {
     ] {
         out[k] = choice(v, k, allowed, default);
     }
+    let tracks = integer(v, "twitch_enhanced_max_tracks", 0);
+    out["twitch_enhanced_max_tracks"] = json!(if (0..=6).contains(&tracks) { tracks } else { 0 });
+    let bandwidth = integer(v, "twitch_enhanced_max_bitrate_kbps", 0);
+    out["twitch_enhanced_max_bitrate_kbps"] = json!(if bandwidth == 0 {
+        0
+    } else {
+        bandwidth.clamp(1000, 100000)
+    });
     out["app_update_selected_version"] = json!(text(v, "app_update_selected_version", ""));
     let fps = integer(v, "framerate", 30);
     out["framerate"] = json!(if [30, 60].contains(&fps) { fps } else { 30 });
@@ -223,6 +231,7 @@ pub fn normalize(v: &Value) -> Value {
         ("log_to_file", false),
         ("ffmpeg_log_to_file", false),
         ("debug_logging", false),
+        ("twitch_enhanced_broadcasting", false),
         ("remember", true),
         ("check_updates_startup", true),
         ("auto_app_updates", false),
@@ -349,6 +358,19 @@ impl StreamConfig {
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned))
             .is_some_and(|h| h.contains("youtube"))
+    }
+    pub fn twitch(&self) -> bool {
+        reqwest::Url::parse(&self.base)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .is_some_and(|host| {
+                host == "twitch.tv"
+                    || host.ends_with(".twitch.tv")
+                    || host.ends_with(".contribute.live-video.net")
+            })
+    }
+    pub fn enhanced(&self) -> bool {
+        self.twitch() && boolean(&self.settings, "twitch_enhanced_broadcasting", false)
     }
     pub fn bridge(&self) -> bool {
         (self.base.starts_with("rtmp://") || self.base.starts_with("rtmps://"))

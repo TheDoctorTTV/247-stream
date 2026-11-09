@@ -74,3 +74,5 @@ source metadata are not dumped. Debug mode never disables sanitization.
 
 No builds, runtime executions, compression trials or tests were run by the agent
 for this change. Source formatting/manual review do not verify runtime behavior.
+
+FFmpeg packet summaries include each output stream index separately. With Twitch Enhanced Broadcasting this identifies each video rendition; the summary mux PTS gap uses the lowest-index video and audio streams and is not a measurement of lip sync.
