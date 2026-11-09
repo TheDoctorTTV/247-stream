@@ -13,7 +13,7 @@ Select a Twitch output on the Stream page to expose **Twitch Enhanced Broadcasti
 - **Maximum Video Tracks:** Auto, or a cap of 1–6 video renditions.
 - **Maximum Streaming Bandwidth (kbps):** Auto, or a cap for aggregate upload bitrate.
 
-Auto sends an unset limit to Twitch's GoLive configuration endpoint. Twitch returns encoder configurations, rendition dimensions/frame rates/bitrates, audio settings, and an ingest endpoint. Manual values are maximums; Twitch can return fewer tracks or lower bitrates. Negotiation happens at stream startup. These settings cannot be edited during a stream and apply on the next start.
+Auto sends an unset limit to Twitch's GoLive configuration endpoint. Twitch returns encoder configurations, rendition dimensions/frame rates/bitrates, audio settings, and an ingest endpoint. Manual values are maximums; Twitch can return fewer tracks or lower bitrates. Twitch may omit the optional response `status` field or return it as null; this proceeds to full configuration validation, as in OBS. An explicit error or unsupported status still stops startup. Negotiation happens at stream startup. These settings cannot be edited during a stream and apply on the next start.
 
 Your server encodes and uploads each rendition; Auto does not move the encoding work to Twitch. The existing resolution/frame-rate controls describe the source canvas, and the ordinary video bitrate still controls the intermediate source encode. The enhanced bandwidth control applies to the negotiated output. All negotiated renditions and one AAC audio track are muxed into one persistent RTMP/RTMPS connection across playlist transitions.
 

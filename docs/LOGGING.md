@@ -87,3 +87,8 @@ message/type fields are logged; raw responses, request bodies, validation input
 values and headers are never logged. Responses are limited to 256 KiB and logged
 explanations to 4096 characters. Malformed/non-JSON responses report HTTP status
 and parser position/category without body contents.
+
+Twitch configuration debug summaries also report whether the optional status was
+present and the counts of returned video configurations, ingest endpoints, and
+live audio tracks. Missing/null status is logged as optional, not as a rejection;
+all required configuration and encoder validations still apply.

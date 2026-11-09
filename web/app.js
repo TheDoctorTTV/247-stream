@@ -237,6 +237,9 @@
       group.hidden = !twitch;
       enabled.disabled = streamActive || !twitch;
       const active = twitch && enabled.checked;
+      const videoBitrate = document.getElementById("video_bitrate");
+      videoBitrate.disabled = active;
+      videoBitrate.title = active ? "Disable Enhanced Broadcasting to edit the video bitrate." : "";
       document.getElementById("twitchEnhancedOptions").hidden = !active;
       const tracksAuto = document.getElementById("twitch_enhanced_tracks_auto");
       const bitrateAuto = document.getElementById("twitch_enhanced_bitrate_auto");

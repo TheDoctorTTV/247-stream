@@ -292,6 +292,7 @@
     }
     button:active { transform: translateY(1px); }
     button:disabled { opacity: 0.45; cursor: default; }
+    #video_bitrate:disabled { opacity: 0.45; filter: grayscale(1); cursor: not-allowed; }
     .status {
       font-weight: 700;
       color: var(--warn);

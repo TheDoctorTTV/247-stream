@@ -444,7 +444,14 @@ pub fn negotiate(app: &App, cfg: &StreamConfig, binary: &Path) -> Result<Plan> {
         anyhow::anyhow!("Invalid Twitch configuration JSON: HTTP {}, category={:?}, line={}, column={}; response body withheld", http_status.as_u16(), error.classify(), error.line(), error.column())
     })?;
     register_response_secrets(app, &response);
-    let status = text(&response["status"], "result", "missing");
+    // OBS GoLiveApi::Config.status is optional: successful configuration responses
+    // can omit it or set it to null. Only an explicit status can signal rejection.
+    let has_status = response.get("status").is_some_and(|value| !value.is_null());
+    let status = if has_status {
+        text(&response["status"], "result", "invalid")
+    } else {
+        "not provided (optional)".into()
+    };
     let safe_status = response_text(app, &status, 128);
     let status = status.to_ascii_lowercase();
     let reason = response_reason(app, &response);
@@ -456,7 +463,13 @@ pub fn negotiate(app: &App, cfg: &StreamConfig, binary: &Path) -> Result<Plan> {
         "Twitch configuration request failed: HTTP {}; status={safe_status}; reason={reason}",
         http_status.as_u16()
     );
-    anyhow::ensure!(["success", "warning"].contains(&status.as_str()), "Twitch declined Enhanced Broadcasting configuration: status={safe_status}; reason={reason}");
+    anyhow::ensure!(!has_status || ["success", "warning"].contains(&status.as_str()), "Twitch declined Enhanced Broadcasting configuration: status={safe_status}; reason={reason}");
+    app.debug(&format!(
+        "Twitch configuration shape: status_present={has_status}, video_configurations={:?}, ingest_endpoints={:?}, live_audio_tracks={:?}; validating supported settings.",
+        response["encoder_configurations"].as_array().map(Vec::len),
+        response["ingest_endpoints"].as_array().map(Vec::len),
+        response["audio_configurations"]["live"].as_array().map(Vec::len)
+    ));
     if status == "warning" {
         app.log(&format!(
             "[WARN] Twitch Enhanced Broadcasting configuration warning: {reason}"

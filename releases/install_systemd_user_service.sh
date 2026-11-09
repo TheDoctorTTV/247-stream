@@ -28,4 +28,15 @@ WantedBy=default.target
 UNIT
 systemctl --user daemon-reload
 systemctl --user enable --now stream247.service
-echo "Installed stream247.service. Dashboard: http://127.0.0.1:7788"
+# Prefer the source address selected by the default route. This only queries the
+# local routing table; it does not contact the destination or an external service.
+SERVER_IP=""
+if command -v ip >/dev/null 2>&1; then
+  SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<NF; i++) if ($i == "src") {print $(i+1); exit}}' || true)"
+fi
+if [[ -z "$SERVER_IP" ]] && command -v hostname >/dev/null 2>&1; then
+  SERVER_IP="$(hostname -I 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./) {print $i; exit}}' || true)"
+fi
+echo "Installed stream247.service."
+echo "Dashboard (default port): http://${SERVER_IP:-SERVER_IP}:7788"
+echo "Existing web_server_host/web_server_port settings in config.json still apply."

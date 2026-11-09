@@ -11,7 +11,11 @@ chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user
 ./install_systemd_user_service.sh
 ```
 
-The dashboard is at http://127.0.0.1:7788. Streaming starts from the dashboard.
+Open **http://SERVER_IP:7788** from your PC, using the server's reachable IP.
+The service installer prints a detected server address. `127.0.0.1` is only for
+access on the server itself. The application listens on all interfaces by default
+(`web_server_host: "0.0.0.0"`); an existing config.json can override the bind host
+and port. Streaming starts from the dashboard.
 The application uses FFmpeg and yt-dlp beside the executable, with PATH fallback
 and automatic Linux downloads when needed. Python is not required by Stream247.
 

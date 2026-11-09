@@ -40,7 +40,8 @@ cargo run --bin stream247-server
 
 When running, open:
 
-- `http://127.0.0.1:7788`
+- On the server itself: `http://127.0.0.1:7788`
+- From another PC: `http://SERVER_IP:7788` (use the server's reachable IP)
 
 If `config.json` exists, host/port are read from:
 - `web_server_host` (default `0.0.0.0`)
