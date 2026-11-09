@@ -1,50 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
-
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-APP_ENTRY="${APP_ENTRY:-Stream247.py}"
-APP_NAME="${APP_NAME:-stream247-server}"
-
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  echo "ERROR: Python not found: $PYTHON_BIN" >&2
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "ERROR: Cargo is required. Install the stable Rust toolchain first." >&2
   exit 1
 fi
-
-if [[ ! -f "$APP_ENTRY" ]]; then
-  echo "ERROR: Entry file not found: $APP_ENTRY" >&2
-  exit 1
+BUILD_ARGS=(build --release --locked --bin stream247-server)
+ARTIFACT_ROOT="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
+if [[ "${ARTIFACT_ROOT}" != /* ]]; then
+  ARTIFACT_ROOT="${ROOT_DIR}/${ARTIFACT_ROOT}"
 fi
-
-echo "Installing/updating pip and build tooling..."
-"$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
-
-if [[ -f "requirements.txt" ]]; then
-  echo "Installing project dependencies from requirements.txt..."
-  "$PYTHON_BIN" -m pip install -r requirements.txt
+if [[ -n "${BUILD_TARGET:-}" ]]; then
+  BUILD_ARGS+=(--target "${BUILD_TARGET}")
+  ARTIFACT_ROOT="${ARTIFACT_ROOT}/${BUILD_TARGET}"
 fi
-
-echo "Ensuring PyInstaller is installed..."
-"$PYTHON_BIN" -m pip install --upgrade pyinstaller
-
-echo "Building $APP_NAME from $APP_ENTRY ..."
-ADD_DATA_ARGS=()
-if [[ -f "icon.ico" ]]; then
-  ADD_DATA_ARGS+=(--add-data "icon.ico:.")
-fi
-if [[ -d "web" ]]; then
-  ADD_DATA_ARGS+=(--add-data "web:web")
-fi
-"$PYTHON_BIN" -m PyInstaller \
-  --noconfirm \
-  --clean \
-  --onefile \
-  --name "$APP_NAME" \
-  "${ADD_DATA_ARGS[@]}" \
-  "$APP_ENTRY"
-
-echo
-echo "Build complete:"
-echo "  Binary: dist/$APP_NAME"
+cargo "${BUILD_ARGS[@]}"
+mkdir -p "${ROOT_DIR}/releases"
+install -m 755 "${ARTIFACT_ROOT}/release/stream247-server" "${ROOT_DIR}/releases/stream247-server"
+echo "Build complete: releases/stream247-server"

@@ -1,6 +1,9 @@
 # Stream247
 
-Stream247 is a headless 24/7 streamer/relay with a built-in web dashboard.
+Stream247 is a native Rust headless streamer/relay with a built-in web dashboard.
+
+This branch migrates the existing Python runtime; the known audio/timestamp issue
+is not resolved by the language migration. See [Rust migration notes](docs/RUST_MIGRATION.md).
 
 It can:
 - Loop a YouTube playlist or single YouTube video
@@ -26,12 +29,12 @@ It can:
 ### From source
 
 ```bash
-python3 Stream247.py
+cargo run --bin stream247-server
 ```
 
 ### From built binary
 
-- Linux: `dist/stream247-server`
+- Linux: `releases/stream247-server`
 
 When running, open:
 
@@ -79,7 +82,9 @@ journalctl --user -u stream247.service -f
 
 ## Configuration
 
-`config.json` is read from the app runtime directory.
+`config.json` is read from the executable directory for packaged builds, or the
+current directory for `cargo run`. Use `--data-dir PATH` to override it. Existing
+Python-version configuration files use the same settings format.
 
 Common fields:
 - `playlist_url`
@@ -102,18 +107,23 @@ Common fields:
 - `app_update_channel`
 - `update_download_cap_mbps`
 
-A current example is available at `dist/config.json` after building/running.
+A current example is available at `releases/config.json` after building/running.
 
 ## Build
 
 ### Linux
 
+Requires stable Rust/Cargo, a linker, pkg-config, and liblzma development headers.
+On Debian, the system packages are `build-essential pkg-config liblzma-dev`.
+Python and PyInstaller are no longer needed.
+
 ```bash
 ./build_linux.sh
+./package_linux_release.sh
 ```
 
 Build output:
-- Linux: `dist/stream247-server`
+- Linux: `releases/stream247-server`
 
 The build bundles web dashboard assets from `web/` (`index.html`, `style.css`, `app.js`) into the binary.
 
@@ -122,11 +132,11 @@ The build bundles web dashboard assets from `web/` (`index.html`, `style.css`, `
 After building:
 
 ```bash
-./scripts/install_systemd_user_service.sh
+./releases/install_systemd_user_service.sh
 ```
 
 This installs and starts `~/.config/systemd/user/stream247.service` with:
-- `ExecStart` pointing to `dist/stream247-server`
+- `ExecStart` pointing to `releases/stream247-server`
 - `Restart=always`
 - `STREAM247_SYSTEMD=1` so in-app updates hand restart control to `systemd`
 

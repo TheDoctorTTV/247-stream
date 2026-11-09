@@ -1,0 +1,28 @@
+[package]
+name = "stream247"
+version = "2.1.1"
+edition = "2021"
+publish = false
+description = "Headless playlist streamer with a web dashboard"
+repository = "https://github.com/TheDoctorTTV/247-stream"
+
+[[bin]]
+name = "stream247-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+ctrlc = { version = "3", features = ["termination"] }
+libc = "0.2"
+rand = "0.8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde_json = "1"
+tar = "0.4"
+tiny_http = "0.12"
+xz2 = "0.1"
+
+[profile.release]
+lto = "thin"
+strip = true

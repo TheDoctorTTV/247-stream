@@ -1,31 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DIST_BINARY="${ROOT_DIR}/dist/stream247-server"
-RELEASE_DIR="${ROOT_DIR}/stream247-linux"
-RELEASE_BINARY="${RELEASE_DIR}/stream247-server"
+RELEASE_DIR="${ROOT_DIR}/releases"
 ARCHIVE_PATH="${ROOT_DIR}/stream247-linux-x86_64.tar.gz"
-
-if [[ ! -f "${DIST_BINARY}" ]]; then
-  echo "ERROR: Missing built binary: ${DIST_BINARY}" >&2
-  echo "Build first with: ./build_linux.sh" >&2
+if [[ ! -x "${RELEASE_DIR}/stream247-server" ]]; then
+  echo "ERROR: Missing executable releases/stream247-server. Run ./build_linux.sh first." >&2
   exit 1
 fi
-
-if [[ ! -d "${RELEASE_DIR}" ]]; then
-  echo "ERROR: Missing release folder: ${RELEASE_DIR}" >&2
-  exit 1
-fi
-
-mv -f "${DIST_BINARY}" "${RELEASE_BINARY}"
-chmod +x "${RELEASE_BINARY}"
-
-rm -f "${ARCHIVE_PATH}"
-(
-  cd "${ROOT_DIR}"
-  tar -czf "$(basename "${ARCHIVE_PATH}")" "$(basename "${RELEASE_DIR}")"
-)
-
-echo "Release package ready:"
-echo "  ${ARCHIVE_PATH}"
+# Package only distributable files; runtime keys, logs and downloaded tools stay local.
+tar -czf "${ARCHIVE_PATH}.tmp" -C "${ROOT_DIR}" \
+  releases/stream247-server \
+  releases/install_systemd_user_service.sh \
+  releases/uninstall_systemd_user_service.sh \
+  releases/LINUX_INSTALL.md
+mv -f "${ARCHIVE_PATH}.tmp" "${ARCHIVE_PATH}"
+echo "Release package ready: ${ARCHIVE_PATH}"
