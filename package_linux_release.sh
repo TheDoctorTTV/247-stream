@@ -7,8 +7,10 @@ if [[ ! -x "${RELEASE_DIR}/stream247-server" ]]; then
   echo "ERROR: Missing executable releases/stream247-server. Run ./build_linux.sh first." >&2
   exit 1
 fi
+# Keep build output in releases/; expose stream247/ as the archive directory.
 # Package only distributable files; runtime keys, logs and downloaded tools stay local.
 tar -czf "${ARCHIVE_PATH}.tmp" -C "${ROOT_DIR}" \
+  --transform='s,^releases/,stream247/,' \
   releases/stream247-server \
   releases/install_systemd_user_service.sh \
   releases/uninstall_systemd_user_service.sh \

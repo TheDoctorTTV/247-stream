@@ -17,7 +17,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory="${ROOT_DIR}"
+WorkingDirectory=${ROOT_DIR}
 ExecStart="${BINARY_PATH}"
 Restart=always
 RestartSec=2

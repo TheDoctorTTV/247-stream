@@ -122,6 +122,9 @@ Python and PyInstaller are no longer needed.
 Build output:
 - Linux: `releases/stream247-server`
 
+The package `stream247-linux-x86_64.tar.gz` contains a top-level `stream247/` directory.
+Local build output remains in `releases/`.
+
 The build bundles web dashboard assets from `web/` (`index.html`, `style.css`, `app.js`) into the binary.
 
 ### Linux systemd user service (recommended for 24/7)
