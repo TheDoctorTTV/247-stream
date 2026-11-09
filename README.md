@@ -31,7 +31,7 @@ python3 Stream247.py
 
 ### From built binary
 
-- Linux: `dist/stream247-server`
+- Linux: `releases/stream247-server`
 
 When running, open:
 
@@ -102,7 +102,7 @@ Common fields:
 - `app_update_channel`
 - `update_download_cap_mbps`
 
-A current example is available at `dist/config.json` after building/running.
+A current example is available at `releases/config.json` after building/running.
 
 ## Build
 
@@ -113,7 +113,7 @@ A current example is available at `dist/config.json` after building/running.
 ```
 
 Build output:
-- Linux: `dist/stream247-server`
+- Linux: `releases/stream247-server`
 
 The build bundles web dashboard assets from `web/` (`index.html`, `style.css`, `app.js`) into the binary.
 
@@ -122,11 +122,11 @@ The build bundles web dashboard assets from `web/` (`index.html`, `style.css`, `
 After building:
 
 ```bash
-./scripts/install_systemd_user_service.sh
+./releases/install_systemd_user_service.sh
 ```
 
 This installs and starts `~/.config/systemd/user/stream247.service` with:
-- `ExecStart` pointing to `dist/stream247-server`
+- `ExecStart` pointing to `releases/stream247-server`
 - `Restart=always`
 - `STREAM247_SYSTEMD=1` so in-app updates hand restart control to `systemd`
 

@@ -41,10 +41,11 @@ fi
   --noconfirm \
   --clean \
   --onefile \
+  --distpath "${ROOT_DIR}/releases" \
   --name "$APP_NAME" \
   "${ADD_DATA_ARGS[@]}" \
   "$APP_ENTRY"
 
 echo
 echo "Build complete:"
-echo "  Binary: dist/$APP_NAME"
+echo "  Binary: releases/$APP_NAME"
