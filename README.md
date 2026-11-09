@@ -41,40 +41,33 @@ If `config.json` exists, host/port are read from:
 - `web_server_host` (default `0.0.0.0`)
 - `web_server_port` (default `7788`)
 
-### Headless server quick install (Linux latest release)
+### Quick install (Linux x86_64)
+
+Run either command from the directory where you want Stream247 installed.
+The helper downloads the latest package for your chosen channel, extracts it
+into the current directory, and runs the included installer. Requires `curl`
+and standard Linux utilities; no `jq` or manual release tags.
+
+**Release (recommended)**
 
 ```bash
-curl -L -o stream247-linux-x86_64.tar.gz \
-  https://github.com/TheDoctorTTV/247-stream/releases/latest/download/stream247-linux-x86_64.tar.gz
-tar -xzf stream247-linux-x86_64.tar.gz
-PKG_DIR="$(tar -tzf stream247-linux-x86_64.tar.gz | head -n1 | cut -d/ -f1)"
-cd "$PKG_DIR"
-chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user_service.sh
-./install_systemd_user_service.sh
-sudo loginctl enable-linger "$USER"
-systemctl --user status stream247.service
-journalctl --user -u stream247.service -f
+curl -fsSL https://raw.githubusercontent.com/TheDoctorTTV/247-stream/HEAD/install.sh | bash
 ```
 
-### Headless server quick install (Linux latest prerelease)
-
-Requires `jq`.
+**Pre-release**
 
 ```bash
-PRE_TAG="$(curl -fsSL https://api.github.com/repos/TheDoctorTTV/247-stream/releases \
-  | jq -r '.[] | select(.prerelease==true and .draft==false) | .tag_name' \
-  | head -n1)"
-test -n "$PRE_TAG"
-curl -L -o stream247-linux-x86_64.tar.gz \
-  "https://github.com/TheDoctorTTV/247-stream/releases/download/${PRE_TAG}/stream247-linux-x86_64.tar.gz"
-tar -xzf stream247-linux-x86_64.tar.gz
-PKG_DIR="$(tar -tzf stream247-linux-x86_64.tar.gz | head -n1 | cut -d/ -f1)"
-cd "$PKG_DIR"
-chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user_service.sh
-./install_systemd_user_service.sh
+curl -fsSL https://raw.githubusercontent.com/TheDoctorTTV/247-stream/HEAD/install.sh | bash -s -- prerelease
+```
+
+Open **http://SERVER_IP:7788**. New installations follow the chosen update
+channel; existing configuration is preserved. To uninstall, run
+`./uninstall_systemd_user_service.sh` from the installation directory.
+
+For startup at boot without logging in, run once:
+
+```bash
 sudo loginctl enable-linger "$USER"
-systemctl --user status stream247.service
-journalctl --user -u stream247.service -f
 ```
 
 ## Configuration
