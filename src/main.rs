@@ -1,5 +1,7 @@
 //! Stream247's native Rust entry point. FFmpeg and yt-dlp remain external tools.
 mod config;
+mod diagnostics;
+mod logfiles;
 mod process;
 mod runtime;
 mod state;
@@ -40,7 +42,7 @@ fn main() -> Result<()> {
             "--data-dir" => {
                 dir = PathBuf::from(args.next().context("--data-dir requires a path")?);
             }
-            _ => anyhow::bail!("Unknown argument: {arg}"),
+            _ => anyhow::bail!("Unknown command-line argument. Use --help."),
         }
     }
     if dir.is_relative() {
@@ -49,6 +51,7 @@ fn main() -> Result<()> {
     let app = runtime::App::new(dir, development)?;
     let shutdown = Arc::clone(&app);
     ctrlc::set_handler(move || {
+        *shutdown.shutdown_reason.lock().unwrap() = "interrupt or termination signal";
         shutdown.shutdown.store(true, Ordering::Release);
         shutdown.stop();
     })?;

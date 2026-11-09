@@ -1,6 +1,7 @@
 //! Port of the existing FFmpeg/yt-dlp worker. Timeline redesign is intentionally separate.
 use crate::{
     config::{boolean, text, StreamConfig},
+    diagnostics::{self, FfmpegStats},
     process::{self, Control, OwnedChild},
     runtime::App,
     state, updates,
@@ -11,6 +12,7 @@ use rand::seq::SliceRandom;
 use serde_json::Value;
 use std::os::fd::AsFd;
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::{ChildStdin, Stdio},
@@ -155,10 +157,9 @@ impl Resolver {
             {
                 break;
             }
-            self.app.log(&format!(
-                "[WARN] Cookie auth attempt failed: {}",
-                cookies.get(1).map(String::as_str).unwrap_or("none")
-            ));
+            self.app.log(
+                "[WARN] Browser cookie authentication failed; trying the next configured fallback.",
+            );
         }
         bail!("yt-dlp error: {}", last.trim())
     }
@@ -167,6 +168,8 @@ impl Resolver {
         if let Ok(out) = self.run(&["-g", "-f", "best", "--hls-prefer-native", &url]) {
             if let Some(hls) = out.lines().find(|s| s.contains(".m3u8")) {
                 self.app.log(&format!("[INFO] Using HLS manifest for {id}"));
+                self.app
+                    .debug("Resolved source transport=HLS, combined audio/video input.");
                 return Ok((hls.trim().to_owned(), None));
             }
         }
@@ -191,6 +194,10 @@ impl Resolver {
                 if !urls.is_empty() {
                     self.app.log(&format!(
                         "[INFO] Using direct URLs for {id} (format: {format})"
+                    ));
+                    self.app.debug(&format!(
+                        "yt-dlp format={format}, resolved_inputs={}",
+                        urls.len()
                     ));
                     return Ok((urls[0].to_owned(), urls.get(1).map(|s| s.to_string())));
                 }
@@ -252,6 +259,8 @@ pub struct Worker {
     resolver: Resolver,
     bridge: Option<Bridge>,
     live_opts: bool,
+    stats_supported: bool,
+    telemetry: Mutex<BTreeMap<u32, Arc<FfmpegStats>>>,
 }
 impl Worker {
     pub fn run(app: Arc<App>, cfg: StreamConfig, control: Arc<Control>) -> Result<()> {
@@ -274,6 +283,7 @@ impl Worker {
             control: Arc::clone(&control),
             working_cookies: Arc::new(Mutex::new(None)),
         };
+        let stats_supported = diagnostics::stats_supported(&ffmpeg, &app.dir, &control);
         let mut worker = Self {
             app,
             cfg,
@@ -282,39 +292,71 @@ impl Worker {
             resolver,
             bridge: None,
             live_opts: true,
+            stats_supported,
+            telemetry: Mutex::new(BTreeMap::new()),
         };
         worker.execute()
     }
     fn log(&self, line: &str) {
         self.app.log(&state::redact(line, &self.cfg.key));
     }
-    fn ffmpeg_callback(&self) -> Arc<dyn Fn(String) + Send + Sync> {
+    fn ffmpeg_callback(&self, telemetry: Arc<FfmpegStats>) -> Arc<dyn Fn(String) + Send + Sync> {
         let app = Arc::clone(&self.app);
         let key = self.cfg.key.clone();
         let last = Mutex::new(Instant::now() - Duration::from_secs(1));
         Arc::new(move |line: String| {
-            if line.starts_with("frame=") {
+            if telemetry.ingest(&line, &app) {
+                return;
+            }
+            let mut message = line.trim_start();
+            if let Some(pos) = message.find("frame=").filter(|p| *p < 32) {
+                message = &message[pos..];
+            }
+            if message.starts_with("frame=") {
                 let mut last = last.lock().unwrap();
-                if last.elapsed() < Duration::from_millis(250) {
+                if last.elapsed() < Duration::from_secs(1) {
                     return;
                 }
                 *last = Instant::now();
             }
-            app.log(&state::redact(&line, &key));
+            app.ffmpeg_log(telemetry.context(), &state::redact(message, &key));
         })
     }
-    fn launch(&self, args: &[String], output: Stdio) -> Result<OwnedChild> {
+    fn watch(&self, child: &mut OwnedChild, role: &str) {
+        let pid = child.0.id();
+        let telemetry = Arc::new(FfmpegStats::new(role, pid, self.stats_supported));
+        self.telemetry
+            .lock()
+            .unwrap()
+            .insert(pid, Arc::clone(&telemetry));
+        if let Some(stderr) = child.0.stderr.take() {
+            process::lines(stderr, self.ffmpeg_callback(telemetry));
+        }
+        self.app.debug(&format!(
+            "FFmpeg process started: role={role}, pid={pid}, per_track_stats={}",
+            self.stats_supported
+        ));
+    }
+    fn report_processes(&self, finished: Option<u32>) {
+        let values: Vec<_> = self.telemetry.lock().unwrap().values().cloned().collect();
+        for value in values {
+            value.report(&self.app, finished.is_some());
+        }
+        if let Some(pid) = finished {
+            self.telemetry.lock().unwrap().remove(&pid);
+        }
+    }
+    fn launch(&self, args: &[String], output: Stdio, role: &str) -> Result<OwnedChild> {
+        let args = diagnostics::instrument(args, self.stats_supported);
         self.log(&format!(
             "[CMD] ffmpeg: {} {}",
             self.ffmpeg.display(),
             args.join(" ")
         ));
-        let mut cmd = process::command(&self.ffmpeg, args, &self.app.dir);
+        let mut cmd = process::command(&self.ffmpeg, &args, &self.app.dir);
         cmd.stdout(output);
         let mut child = OwnedChild(cmd.spawn().context("Start FFmpeg")?);
-        if let Some(stderr) = child.0.stderr.take() {
-            process::lines(stderr, self.ffmpeg_callback());
-        }
+        self.watch(&mut child, role);
         Ok(child)
     }
     fn wait(
@@ -325,7 +367,14 @@ impl Worker {
     ) -> Result<std::process::ExitStatus> {
         let start = Instant::now();
         loop {
+            self.report_processes(None);
             if let Some(status) = child.0.try_wait()? {
+                self.report_processes(Some(child.0.id()));
+                self.app.debug(&format!(
+                    "FFmpeg process finished: pid={}, elapsed_s={:.2}, status={status}",
+                    child.0.id(),
+                    start.elapsed().as_secs_f64()
+                ));
                 return Ok(status);
             }
             if self.control.stopped()
@@ -333,6 +382,13 @@ impl Worker {
                 || timeout.is_some_and(|t| start.elapsed() > t)
             {
                 child.stop();
+                self.report_processes(Some(child.0.id()));
+                self.app.debug(&format!(
+                    "FFmpeg process cancelled: pid={}, stop={}, skip={}",
+                    child.0.id(),
+                    self.control.stopped(),
+                    self.control.skipped()
+                ));
                 return Ok(child.0.wait()?);
             }
             thread::sleep(Duration::from_millis(50));
@@ -482,7 +538,9 @@ impl Worker {
                 return Ok(());
             }
         }
-        self.bridge = None;
+        if let Some(old) = self.bridge.take() {
+            self.report_processes(Some(old.process.0.id()));
+        }
         let mut args = process::args(&[
             "-hide_banner",
             "-loglevel",
@@ -513,16 +571,16 @@ impl Worker {
             "2",
         ]);
         self.output_options(&mut args);
+        let args = diagnostics::instrument(&args, self.stats_supported);
         self.log(&format!("[CMD] ffmpeg (bridge): {}", args.join(" ")));
         let mut cmd = process::command(&self.ffmpeg, &args, &self.app.dir);
         cmd.stdin(Stdio::piped());
         let mut child = OwnedChild(cmd.spawn()?);
         let input = child.0.stdin.take().context("Bridge input pipe missing")?;
-        if let Some(stderr) = child.0.stderr.take() {
-            process::lines(stderr, self.ffmpeg_callback());
-        }
+        self.watch(&mut child, "bridge");
         thread::sleep(Duration::from_millis(150));
         if let Some(status) = child.0.try_wait()? {
+            self.report_processes(Some(child.0.id()));
             drop(child);
             if self.live_opts && !self.control.stopped() {
                 self.live_opts = false;
@@ -592,7 +650,7 @@ impl Worker {
             .input
             .as_fd()
             .try_clone_to_owned()?;
-        let mut child = self.launch(&args, Stdio::from(fd))?;
+        let mut child = self.launch(&args, Stdio::from(fd), "keepalive")?;
         self.wait(
             &mut child,
             Some(Duration::from_secs_f64(duration + 3.0)),
@@ -737,6 +795,18 @@ impl Worker {
         args
     }
     fn play(&mut self, media: &Media, persistent: bool, skippable: bool) -> Result<()> {
+        let transport = if media.video.to_lowercase().contains(".m3u8") {
+            "HLS"
+        } else {
+            "direct media"
+        };
+        {
+            let mut state = self.app.state.lock().unwrap();
+            state.meta["source_type"] = serde_json::json!(input_type(&self.cfg.source));
+            state.meta["source_transport"] = serde_json::json!(transport);
+            state.meta["separate_audio"] = serde_json::json!(media.audio.is_some());
+        }
+        self.app.debug(&format!("Source transport={transport}, separate_audio={}, output_encoder={}, audio_encoder=aac, output_fps={}, output_height={}, audio_rate=44100, channels=2, video_bitrate={}, audio_bitrate={}, buffer_mode={}, persistent_RTMP={persistent}",media.audio.is_some(),self.cfg.encoder,self.cfg.fps,self.cfg.height,self.cfg.bitrate,self.cfg.audio_bitrate,text(&self.cfg.settings,"buffer_mode","Medium")));
         if boolean(&self.cfg.settings, "overlay_titles", true) {
             let title = media.title.replace(['\r', '\n'], " ");
             let suffix = if media.date.is_empty() {
@@ -779,7 +849,7 @@ impl Worker {
             } else {
                 Stdio::null()
             };
-            let mut child = self.launch(&args, output)?;
+            let mut child = self.launch(&args, output, "source")?;
             let status = self.wait(&mut child, None, skippable)?;
             if self.control.stopped() || (skippable && self.control.skipped()) {
                 return Ok(());
@@ -811,6 +881,8 @@ impl Worker {
                     });
                 if let Some(system) = system {
                     self.ffmpeg = system;
+                    self.stats_supported =
+                        diagnostics::stats_supported(&self.ffmpeg, &self.app.dir, &self.control);
                     self.bridge = None;
                     self.select_encoder();
                     bail!("FFmpeg crashed; switched to system FFmpeg for the next item");
@@ -873,6 +945,12 @@ impl Worker {
             }
         ));
         let kind = input_type(&self.cfg.source);
+        self.app.debug(&format!(
+            "Source type={kind}; FFmpeg={}, yt-dlp={}, per_track_stats={}",
+            self.ffmpeg.display(),
+            self.resolver.binary.display(),
+            self.stats_supported
+        ));
         if kind == "twitch" || kind == "hls" {
             let video = if kind == "twitch" {
                 self.resolver

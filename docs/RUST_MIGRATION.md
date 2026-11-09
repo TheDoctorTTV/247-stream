@@ -41,15 +41,23 @@ FFmpeg and yt-dlp remain separate executables.
   Chromium keyring fallbacks. Prefetching still resolves next-item URLs ahead of
   playback; playback-time URL refreshing is future work.
 - Console buckets hold 100 lines. FFmpeg progress supports both CR and LF framing.
-  Logs redact the active stream key and signed Google media URLs.
+  Logs use central redaction for saved/active keys, credential labels, headers and
+  URL credentials/paths/queries. Independent logs/app.log and logs/ffmpeg.log sinks
+  rotate by size/session and compress closed archives with fast gzip. Debug
+  logging can be switched live; see LOGGING.md.
 - Binary and release status checks run in background jobs rather than blocking
-  HTTP handlers. Initial status can temporarily report running while checking.
+  HTTP handlers. App jobs distinguish checks, downloads, installation and completion;
+  status polling never initiates an app operation. Only newer selected releases are
+  update candidates, including automatic installation. Older releases are never
+  installed; same-version reinstalls remain an explicit manual action. The selected
+  version/channel are persisted for startup checks. Dashboard reloads require an
+  observed installation or restart, never merely a completed check. Initial status can temporarily report running while checking.
   Tool installation is refused while streaming, to avoid replacing active tools.
 - Downloads are staged and atomically renamed. The configured 50 MB/s cap remains;
   HTTP range-parallel downloading was not carried over. A previous working tool
   is kept when its replacement fails. FFmpeg runtime startup/encoder probes remain
   part of provisioning and encoder selection, as in the Python runtime.
-- Application updates support release/prerelease selection, reinstall, downgrade,
+- Application updates support release/prerelease selection, same-version reinstall,
   executable permission setting and systemd restart handoff. Cargo development
   builds download updates for manual installation and do not self-replace.
 - The build script now uses Cargo and writes releases/stream247-server. Packaging

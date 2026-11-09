@@ -48,9 +48,7 @@
     let busy = false;
     let appUpdateRunning = false;
     let binariesUpdateRunning = false;
-    let prevAppUpdateRunning = false;
     let prevBinariesUpdateRunning = false;
-    let appJustUpdatedUntil = 0;
     let binariesJustUpdatedUntil = 0;
     let lastAppCheckAt = "";
     let lastBinariesCheckAt = "";
@@ -63,10 +61,14 @@
     const APP_UPDATE_AUTO_CHECK_MS = 10 * 60 * 1000;
     let appAutoCheckTimer = null;
     let appUpdateRefreshScheduled = false;
-    let appUpdateLoadFailures = 0;
+    let appRequestedVersion = "";
+    let savedAutoInstallEnabled = false;
+    let appInstallPending = false;
+    let appInstallInstance = "";
+    let appUpdateStatusLoading = false;
     const STORAGE_TAB_KEY = "stream247.active_tab";
     const STORAGE_SUBTAB_KEY = "stream247.active_subtab";
-    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
+    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
     const STREAM_URL_PRESETS = {
       youtube: { name: "YouTube", rtmp_base: "rtmp://a.rtmp.youtube.com/live2" },
       twitch: { name: "Twitch", rtmp_base: "rtmp://live.twitch.tv/app" },
@@ -782,7 +784,7 @@
       }
       const runCheck = () => {
         if (appUpdateRunning) return;
-        triggerAppUpdateCheck("");
+        triggerAppUpdateCheck(appRequestedVersion);
       };
       if (runNow) runCheck();
       appAutoCheckTimer = setInterval(runCheck, APP_UPDATE_AUTO_CHECK_MS);
@@ -1076,6 +1078,8 @@
         if (!payload.ok || !payload.settings) throw new Error(payload.error || "invalid response");
         suppressAutoSave = true;
         applySettingsToForm(payload.settings);
+        appRequestedVersion = String(payload.settings.app_update_selected_version || "");
+        savedAutoInstallEnabled = !!payload.settings.auto_app_updates;
         lastSavedPayload = payloadSignature(formToPayload());
         setSettingsStatus("Settings loaded.", "ok");
         resetAppAutoCheckTimer(true);
@@ -1108,7 +1112,11 @@
         suppressAutoSave = true;
         applySettingsToForm(payload.settings || {});
         lastSavedPayload = payloadSignature(formToPayload());
+        const enabledNow = !!(payload.settings || {}).auto_app_updates;
+        const justEnabled = enabledNow && !savedAutoInstallEnabled;
+        savedAutoInstallEnabled = enabledNow;
         setSettingsStatus(reason === "auto" ? "Changes saved automatically." : "Settings saved.", "ok");
+        if (justEnabled && !appUpdateRunning) await triggerAppUpdateCheck(appRequestedVersion);
       } catch (err) {
         setSettingsStatus("Failed to save settings.", "err");
       } finally {
@@ -1123,22 +1131,19 @@
 
     function formatAppUpdateSummary(a) {
       if (!a) return "No app update status available.";
-      if (a.running) return a.progress_message || "App update install is running...";
+      if (a.running) return a.progress_message || "Checking app versions...";
       if (a.last_error) return "App update error: " + a.last_error;
-      const r = a.last_result || null;
-      if (!r) return "App update status not available yet.";
+      if (a.phase === "downloaded") return a.progress_message;
+      const r = a.last_result;
+      if (!r) return "No app update check has completed yet.";
       const current = String(r.current_version || "unknown");
-      const latest = String(r.latest_version || "unknown");
-      const selected = String(r.selected_version || latest || "unknown");
-      const rel = compareVersions(current, latest);
-      const shouldInstall = (!!r.should_install || !!r.is_newer || rel === -1 || rel === 1);
-      const assetSupported = (r.asset_supported !== false);
-      const selectedCmp = compareVersions(current, selected);
-      const downgrading = (selectedCmp === 1);
+      const selected = String(r.selected_version || "unknown");
+      const comparison = compareVersions(current, selected);
       let state = "Up to date";
-      if (downgrading) state = "Downgrade selected";
-      else if (shouldInstall && assetSupported) state = "Install available";
-      else if (shouldInstall && !assetSupported) state = "Install available (unsupported asset)";
+      if (comparison === 1) state = "Installed version is newer";
+      else if (comparison === -1) {
+        state = r.asset_supported ? "Update available" : "Update available (unsupported asset)";
+      }
       let text = state + " | current " + current + " | selected " + selected;
       if (lastAppCheckAt) text += " | checked " + lastAppCheckAt;
       return text;
@@ -1149,8 +1154,7 @@
       const result = info.last_result;
       const channel = String(result.channel || document.getElementById("app_update_channel").value || "release");
       const versions = Array.isArray(result.available_versions) ? result.available_versions : [];
-      const selected = String(result.selected_version || appUpdateVersion.value || "");
-      const previous = String(appUpdateVersion.value || "");
+      const selected = String(result.requested_version || "");
       appUpdateVersion.innerHTML = "";
       const fallback = document.createElement("option");
       fallback.value = "";
@@ -1172,90 +1176,71 @@
         }
         return "";
       };
-      let want = canonicalMatch(selected);
-      if (!want && selected) want = "";
-      if (!want && previous && appVersionsBoundToChannel === channel) {
-        want = canonicalMatch(previous);
-      }
-      appUpdateVersion.value = want;
+      appUpdateVersion.value = canonicalMatch(selected);
+      appRequestedVersion = selected;
       appVersionsBoundToChannel = channel;
     }
 
-    async function loadAppUpdateStatus(selectedVersion = "") {
+    function renderAppUpdateStatus(info) {
+      appUpdateRunning = !!info.running;
+      const result = info.last_result || {};
+      const restarted = appInstallPending && appInstallInstance &&
+        String(info.instance_id || "") !== appInstallInstance;
+      if (!restarted && info.restart_expected && info.operation === "install") {
+        appInstallPending = true;
+        appInstallInstance = String(info.instance_id || "");
+      }
+      if (!info.last_error && (info.phase === "installed" || restarted) && !appUpdateRefreshScheduled) {
+        appUpdateRefreshScheduled = true;
+        setAppUpdateStatus("Update installed. Refreshing dashboard...", "just-updated");
+        setAppUpdateProgress(100, "Update installed. Refreshing dashboard...");
+        setTimeout(() => window.location.reload(), 1500);
+        return;
+      }
+      if (info.last_error || info.phase === "downloaded") appInstallPending = false;
+      updateAppVersionDropdown(info);
+      const comparison = compareVersions(result.current_version, result.selected_version);
+      const supported = result.asset_supported === true;
+      const updateAvailable = comparison === -1 && supported;
+      const reinstallAvailable = comparison === 0 && supported;
+      let level = "updated";
+      if (info.last_error) level = "error";
+      else if (info.running) level = "running";
+      else if (updateAvailable) level = "outdated";
+      else if (!info.last_result) level = "unknown";
+      if (info.finished_at) lastAppCheckAt = new Date(Number(info.finished_at) * 1000).toLocaleTimeString();
+      setAppUpdateStatus(formatAppUpdateSummary(info), level);
+      const pct = Number(info.progress_percent || 0);
+      const message = String(info.progress_message || "");
+      setAppUpdateProgress(pct, message ? message + " (" + pct + "%)" : "");
+      checkAppUpdateBtn.disabled = !!info.running;
+      checkAppUpdateBtn.title = info.running ? "An update operation is running" : "Check GitHub for the selected version";
+      appUpdateVersion.disabled = !!info.running;
+      document.getElementById("app_update_channel").disabled = !!info.running;
+      downloadAppUpdateBtn.disabled = !!info.running || !updateAvailable;
+      downloadAppUpdateBtn.title = updateAvailable ? "Install the newer selected version and restart" :
+        (comparison === -1 ? "Selected release has no self-installable asset" : "Selected version is not newer than the installed version");
+      if (reinstallAppBtn) {
+        reinstallAppBtn.disabled = !!info.running || !reinstallAvailable;
+        reinstallAppBtn.title = reinstallAvailable ? "Reinstall the currently installed version" :
+          "Reinstall is available only for the same version; use Install Update for a newer version";
+      }
+    }
+
+    async function loadAppUpdateStatus() {
+      if (appUpdateStatusLoading) return;
+      appUpdateStatusLoading = true;
       try {
         const res = await fetch("/api/app-update?ts=" + Date.now(), { cache: "no-store" });
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
-        appUpdateLoadFailures = 0;
-        const info = payload.app_update || {};
-        if (selectedVersion && !info.running) {
-          await triggerAppUpdateCheck(selectedVersion);
-          return;
-        }
-        appUpdateRunning = !!info.running;
-        const result = info.last_result || {};
-        updateAppVersionDropdown(info);
-        const rel = compareVersions(result.current_version, result.latest_version);
-        const shouldInstall = (!!result.should_install || !!result.is_newer || rel === -1 || rel === 1);
-        const assetSupported = (result.asset_supported !== false);
-        const updateAvailable = shouldInstall && assetSupported;
-        const reinstallAvailable = assetSupported && (!!result && Object.keys(result).length > 0);
-        const nowMs = Date.now();
-        if (prevAppUpdateRunning && !info.running && !info.last_error && !updateAvailable) {
-          appJustUpdatedUntil = nowMs + 12000;
-        }
-        if (prevAppUpdateRunning && !info.running && !info.last_error && !appUpdateRefreshScheduled) {
-          appUpdateRefreshScheduled = true;
-          setAppUpdateStatus("Update completed. Refreshing dashboard...", "just-updated");
-          setAppUpdateProgress(100, "Update completed. Refreshing dashboard...");
-          setTimeout(() => {
-            window.location.reload();
-          }, 1500);
-        }
-        prevAppUpdateRunning = !!info.running;
-        const selectedCmp = compareVersions(result.current_version, result.selected_version);
-        const downgrading = (selectedCmp === 1);
-        let level = "updated";
-        if (info.last_error) level = "error";
-        else if (info.running) level = "running";
-        else if (nowMs < appJustUpdatedUntil) level = "just-updated";
-        else if (downgrading) level = "downgrading";
-        else if (updateAvailable) level = "outdated";
-        else if (!result || Object.keys(result).length === 0) level = "unknown";
-        lastAppCheckAt = new Date().toLocaleTimeString();
-        setAppUpdateStatus(formatAppUpdateSummary(info), level);
-        const appPct = Number(info.progress_percent || 0);
-        const appMsg = String(info.progress_message || "");
-        setAppUpdateProgress(appPct, appMsg ? (appMsg + " (" + appPct + "%)") : (appPct > 0 ? ("Progress: " + appPct + "%") : ""));
-        checkAppUpdateBtn.disabled = !!info.running;
-        checkAppUpdateBtn.title = !!info.running ? "Cannot check while install is running" : "Check for app updates now";
-        downloadAppUpdateBtn.disabled = !!info.running || !updateAvailable;
-        if (updateAvailable) {
-          downloadAppUpdateBtn.title = "Install selected app version and restart";
-        } else if (shouldInstall && !assetSupported) {
-          downloadAppUpdateBtn.title = "Selected release does not include a self-installable asset for this platform";
-        } else {
-          downloadAppUpdateBtn.title = "No app install needed";
-        }
-        if (reinstallAppBtn) {
-          reinstallAppBtn.disabled = !!info.running || !reinstallAvailable;
-          if (!reinstallAvailable) {
-            reinstallAppBtn.title = "Check for app updates first";
-          } else if (!assetSupported) {
-            reinstallAppBtn.title = "Selected release does not include a self-installable asset for this platform";
-          } else {
-            reinstallAppBtn.title = "Reinstall selected app version even if unchanged";
-          }
-        }
+        renderAppUpdateStatus(payload.app_update || {});
       } catch (err) {
-        setAppUpdateStatus("Failed to load app update status.", "error");
-        appUpdateLoadFailures += 1;
-        if (appUpdateRunning && appUpdateLoadFailures >= 3 && !appUpdateRefreshScheduled) {
-          appUpdateRefreshScheduled = true;
-          setTimeout(() => {
-            window.location.reload();
-          }, 1200);
-        }
+        setAppUpdateStatus(appInstallPending ? "Waiting for the application to restart..." : "Failed to load app update status.",
+          appInstallPending ? "running" : "error");
+        // A failed check or transient request failure must never reload the page.
+      } finally {
+        appUpdateStatusLoading = false;
       }
     }
 
@@ -1278,7 +1263,7 @@
         });
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
-        await loadAppUpdateStatus();
+        renderAppUpdateStatus(payload.app_update || {});
       } catch (err) {
         setAppUpdateStatus(
           forceReinstall ? "Failed to start app reinstall." : "Failed to start app update install.",
@@ -1290,9 +1275,10 @@
 
     async function triggerAppUpdateCheck(selectedVersion = null) {
       const selected = (selectedVersion === null || selectedVersion === undefined)
-        ? String(appUpdateVersion.value || "").trim()
+        ? appRequestedVersion
         : String(selectedVersion || "").trim();
       const selectedChannel = String(document.getElementById("app_update_channel").value || "release").trim();
+      appRequestedVersion = selected;
       setAppUpdateStatus("Checking app update...", "running");
       try {
         const res = await fetch("/api/app-update/check", {
@@ -1302,7 +1288,7 @@
         });
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
-        await loadAppUpdateStatus();
+        renderAppUpdateStatus(payload.app_update || {});
       } catch (err) {
         setAppUpdateStatus("Failed to check app update.", "error");
         setAppUpdateProgress(0, "");
@@ -1511,11 +1497,15 @@
     if (reinstallAppBtn) {
       reinstallAppBtn.addEventListener("click", () => triggerAppUpdateDownload(true));
     }
-    appUpdateVersion.addEventListener("change", () => triggerAppUpdateCheck());
+    appUpdateVersion.addEventListener("change", () => {
+      appRequestedVersion = String(appUpdateVersion.value || "").trim();
+      triggerAppUpdateCheck(appRequestedVersion);
+    });
     const appUpdateChannel = document.getElementById("app_update_channel");
     if (appUpdateChannel) {
       appUpdateChannel.addEventListener("change", () => {
         appVersionsBoundToChannel = "";
+        appRequestedVersion = "";
         appUpdateVersion.innerHTML = '<option value="">Latest in selected channel</option>';
         triggerAppUpdateCheck("");
       });
@@ -1544,7 +1534,7 @@
     setInterval(() => {
       refreshState(false);
       if (binariesUpdateRunning) loadBinariesStatus();
-      if (appUpdateRunning) loadAppUpdateStatus();
+      if (appUpdateRunning || appInstallPending) loadAppUpdateStatus();
     }, 1200);
     setInterval(() => {
       loadBinariesStatus();

@@ -170,3 +170,7 @@ stream247-linux-x86_64.tar.gz
 /latest*.log
 *.download-part
 /stream247-linux-x86_64.tar.gz.tmp
+
+# Runtime logs and compressed archives
+/logs/
+/releases/logs/

@@ -97,7 +97,9 @@ Common fields:
 - `encoder_preference`
 - `overlay_titles`
 - `shuffle`
-- `log_to_file`
+- `log_to_file` (application log)
+- `ffmpeg_log_to_file` (separate FFmpeg log)
+- `debug_logging` (extra diagnostics)
 - `remember`
 - `yt_auth_enabled`
 - `yt_auth_browser`
@@ -152,6 +154,14 @@ sudo loginctl enable-linger "$USER"
 - Dashboard binds to `0.0.0.0` by default; secure network access yourself (firewall/VPN/reverse proxy).
 - YouTube/Twitch source retrieval depends on `yt-dlp`.
 - Keep platform bitrate/resolution limits in mind for your destination ingest.
+
+## Logging
+
+The App log and Save FFmpeg log toggles independently enable `logs/app.log` and
+`logs/ffmpeg.log` inside the application data directory. Debug logging takes effect
+immediately and adds system, source/codec and periodic process/timing diagnostics.
+It does not enable saving files by itself. Rotated logs are compressed with fast
+gzip; active files stay plain text. See [logging details](docs/LOGGING.md).
 
 ## Creator
 

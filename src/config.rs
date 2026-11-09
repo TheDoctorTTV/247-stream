@@ -214,6 +214,7 @@ pub fn normalize(v: &Value) -> Value {
     ] {
         out[k] = choice(v, k, allowed, default);
     }
+    out["app_update_selected_version"] = json!(text(v, "app_update_selected_version", ""));
     let fps = integer(v, "framerate", 30);
     out["framerate"] = json!(if [30, 60].contains(&fps) { fps } else { 30 });
     for (k, default) in [
@@ -221,6 +222,7 @@ pub fn normalize(v: &Value) -> Value {
         ("shuffle", false),
         ("log_to_file", false),
         ("ffmpeg_log_to_file", false),
+        ("debug_logging", false),
         ("remember", true),
         ("check_updates_startup", true),
         ("auto_app_updates", false),
@@ -246,6 +248,11 @@ pub fn merge(base: &Value, payload: &Value) -> Result<Value> {
         if obj.contains_key(list) && !obj.contains_key(selected) {
             out.insert(selected.to_owned(), normalized[selected].clone());
         }
+    }
+    if obj.contains_key("app_update_channel")
+        && out.get("app_update_channel") != base.get("app_update_channel")
+    {
+        out.insert("app_update_selected_version".into(), json!(""));
     }
     if obj.contains_key("video_bitrate") || obj.contains_key("buffer_mode") {
         out.remove("bufsize");

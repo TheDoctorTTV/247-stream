@@ -1,6 +1,6 @@
 //! Owns application state, worker lifetime, and update/restart coordination.
 use crate::{
-    config::{self, text, StreamConfig},
+    config::{self, StreamConfig},
     process::Control,
     state::{SharedState, State},
     updates,
@@ -16,6 +16,7 @@ use std::{
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
+    time::Instant,
 };
 struct Running {
     control: Arc<Control>,
@@ -23,6 +24,8 @@ struct Running {
 }
 pub struct App {
     pub dir: PathBuf,
+    pub started: Instant,
+    pub shutdown_reason: Mutex<&'static str>,
     pub development: bool,
     pub state: SharedState,
     config: Mutex<Value>,
@@ -41,6 +44,8 @@ impl App {
         state.files(&dir, &cfg, true)?;
         Ok(Arc::new(Self {
             dir,
+            started: Instant::now(),
+            shutdown_reason: Mutex::new("shutdown requested"),
             development,
             state: Mutex::new(state),
             config: Mutex::new(cfg),
@@ -59,8 +64,22 @@ impl App {
         self.config.lock().unwrap().clone()
     }
     pub fn log(&self, line: &str) {
-        let key = text(&self.settings(), "stream_key", "");
-        self.state.lock().unwrap().log(line, &key);
+        self.state.lock().unwrap().log(line, "");
+    }
+    pub fn debug_enabled(&self) -> bool {
+        self.state.lock().unwrap().debug
+    }
+    pub fn debug(&self, message: &str) {
+        self.log(&format!("[DEBUG] {message}"));
+    }
+    pub fn ffmpeg_log(&self, context: &str, line: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .ffmpeg_log(&format!("({context}) {line}"));
+    }
+    pub fn sanitize(&self, message: &str) -> String {
+        self.state.lock().unwrap().sanitize(message)
     }
     pub fn status(&self, status: &str) {
         {
@@ -74,6 +93,8 @@ impl App {
         self.state.lock().unwrap().streaming
     }
     pub fn save_settings(&self, payload: &Value) -> Result<Value> {
+        let previous = self.settings();
+        let debug_before = self.debug_enabled();
         let normalized = {
             let mut cfg = self.config.lock().unwrap();
             let merged = config::merge(&cfg, payload)?;
@@ -86,22 +107,41 @@ impl App {
             .unwrap()
             .files(&self.dir, &normalized, false)?;
         {
-            let mut job = self.app_job.lock().unwrap();
-            if !config::boolean(&job, "running", false) {
-                job["last_result"] = Value::Null;
-                job["last_error"] = json!("");
-            }
-        }
-        {
             let mut state = self.state.lock().unwrap();
             state.meta["source"] = normalized["playlist_url"].clone();
             state.meta["resolution"] = normalized["resolution"].clone();
             state.meta["fps"] = normalized["framerate"].clone();
         }
+        if ["log_to_file", "ffmpeg_log_to_file"]
+            .iter()
+            .any(|key| previous[*key] != normalized[*key])
+        {
+            self.log(&format!(
+                "[INFO] File logging configured: app={}, FFmpeg={}, directory=logs/.",
+                config::boolean(&normalized, "log_to_file", false),
+                config::boolean(&normalized, "ffmpeg_log_to_file", false)
+            ));
+        }
+        if debug_before != self.debug_enabled() {
+            self.log(if self.debug_enabled() {
+                "[INFO] Debug logging enabled."
+            } else {
+                "[INFO] Debug logging disabled."
+            });
+        }
         if self.is_streaming() {
-            self.log("[INFO] Web settings saved. Changes apply on next start.");
+            self.log("[INFO] Web settings saved. Streaming changes apply on next start; logging changes apply immediately.");
         }
         Ok(normalized)
+    }
+    pub fn remember_update_selection(&self, channel: &str, version: &str) -> Result<()> {
+        let mut cfg = self.config.lock().unwrap();
+        let mut next = cfg.clone();
+        next["app_update_channel"] = json!(channel);
+        next["app_update_selected_version"] = json!(version);
+        config::save(&self.dir, &next)?;
+        *cfg = next;
+        Ok(())
     }
     pub fn start(self: &Arc<Self>) -> Result<()> {
         let mut running = self.worker.lock().unwrap();
@@ -131,7 +171,10 @@ impl App {
         let control = Arc::new(Control::default());
         let worker_control = Arc::clone(&control);
         let app = Arc::clone(self);
-        self.log("[INFO] Starting stream (headless)...");
+        self.log(&format!(
+            "[INFO] Starting stream (headless), app version {}...",
+            crate::VERSION
+        ));
         let handle = thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Worker::run(Arc::clone(&app), cfg, Arc::clone(&worker_control))
@@ -217,6 +260,7 @@ impl App {
         } else {
             "[INFO] Update installed; restarting application."
         });
+        *self.shutdown_reason.lock().unwrap() = "application update";
         self.restart.store(!systemd, Ordering::Release);
         self.shutdown.store(true, Ordering::Release);
         Ok(())

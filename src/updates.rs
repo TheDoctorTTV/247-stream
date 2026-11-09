@@ -14,7 +14,7 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::Path,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -103,7 +103,7 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
     let data = get_json(&format!(
         "https://api.github.com/repos/{REPO}/releases?per_page=100"
     ))?;
-    let releases: Vec<&Value> = data
+    let mut releases: Vec<&Value> = data
         .as_array()
         .context("Invalid GitHub releases response")?
         .iter()
@@ -113,6 +113,7 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
                 && compare(&text(r, "tag_name", ""), "2.0-pre-release-2") != Ordering::Less
         })
         .collect();
+    releases.sort_by(|a, b| compare(&text(b, "tag_name", ""), &text(a, "tag_name", "")));
     let latest = *releases
         .first()
         .context("No supported release found for this channel")?;
@@ -142,7 +143,7 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
         .to_owned();
     let name = text(&asset, "name", "");
     Ok(
-        json!({"current_version":VERSION,"latest_version":version,"selected_version":version,"latest_channel_version":text(latest,"tag_name","").trim_start_matches(['v','V']),"is_newer":compare(&version,VERSION)==Ordering::Greater,"should_install":compare(&version,VERSION)!=Ordering::Equal,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
+        json!({"current_version":VERSION,"latest_version":version,"selected_version":version,"requested_version":selected,"latest_channel_version":text(latest,"tag_name","").trim_start_matches(['v','V']),"is_newer":compare(&version,VERSION)==Ordering::Greater,"should_install":compare(&version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
     )
 }
 pub fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
@@ -402,11 +403,26 @@ pub fn ensure_binaries(app: &App, force: bool) -> Result<()> {
     }
     Ok(())
 }
-pub fn empty_job() -> Value {
-    json!({"running":false,"last_result":null,"last_error":"","started_at":0.0,"finished_at":0.0,"progress_percent":0,"progress_message":"","downloaded_path":"","selected_version":"","selected_channel":"","force_reinstall":false,"mode":"manual"})
+fn instance_id() -> &'static str {
+    static INSTANCE: OnceLock<String> = OnceLock::new();
+    INSTANCE
+        .get_or_init(|| format!("{}-{}", std::process::id(), now()))
+        .as_str()
 }
+
+pub fn empty_job() -> Value {
+    json!({
+        "running":false,"operation":"idle","phase":"idle","outcome":"",
+        "instance_id":instance_id(),"restart_expected":false,
+        "last_result":null,"last_error":"","started_at":0.0,"finished_at":0.0,
+        "progress_percent":0,"progress_message":"","downloaded_path":"",
+        "selected_version":"","selected_channel":"","force_reinstall":false,"mode":"manual"
+    })
+}
+
 pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value) -> Value {
     let settings = app.settings();
+    let raw = app.raw_settings();
     let channel = text(
         payload,
         "channel",
@@ -418,8 +434,14 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
         "release"
     }
     .to_owned();
-    let selected = text(payload, "selected_version", "");
-    let force = boolean(payload, "force_reinstall", false);
+    // Missing means retain the user's selection; an explicit empty string means latest.
+    let fallback = if channel == text(&settings, "app_update_channel", "release") {
+        text(&raw, "app_update_selected_version", "")
+    } else {
+        String::new()
+    };
+    let selected = text(payload, "selected_version", &fallback);
+    let force = install && boolean(payload, "force_reinstall", false);
     {
         let lock = if app_update {
             &app.app_job
@@ -432,25 +454,71 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
         }
         *job = empty_job();
         job["running"] = json!(true);
+        job["operation"] = json!(if app_update {
+            if install {
+                "install"
+            } else {
+                "check"
+            }
+        } else if install {
+            "binaries_update"
+        } else {
+            "binaries_status"
+        });
+        job["phase"] = json!("checking");
         job["started_at"] = json!(now());
         job["selected_channel"] = json!(channel);
         job["selected_version"] = json!(selected);
         job["force_reinstall"] = json!(force);
+        job["progress_message"] = json!("Checking versions...");
+    }
+    if app_update && (payload.get("selected_version").is_some() || payload.get("channel").is_some())
+    {
+        if let Err(e) = app.remember_update_selection(&channel, &selected) {
+            let mut job = app.app_job.lock().unwrap();
+            job["running"] = json!(false);
+            job["phase"] = json!("failed");
+            job["last_error"] = json!(format!("Save update selection: {e:#}"));
+            return job.clone();
+        }
     }
     let cloned = Arc::clone(app);
     std::thread::spawn(move || {
         let result = (|| -> Result<Value> {
             if app_update {
-                cloned.progress(true, "Checking latest app release...", 5);
-                let mut info = release(&channel, &selected)?;
-                if force {
-                    info["should_install"] = json!(true);
+                cloned.log(&format!(
+                    "[INFO] App update check: current {VERSION}, channel {channel}, selection {}.",
+                    if selected.is_empty() {
+                        "latest"
+                    } else {
+                        &selected
+                    }
+                ));
+                cloned.progress(true, "Checking GitHub releases...", 5);
+                let info = release(&channel, &selected)?;
+                let target = text(&info, "selected_version", "");
+                let ordering = compare(&target, VERSION);
+                let newer = ordering == Ordering::Greater;
+                let reinstall = force && ordering == Ordering::Equal;
+                let automatic = !install
+                    && boolean(&cloned.settings(), "auto_app_updates", false)
+                    && !cloned.development;
+                let do_install = (install && (newer || reinstall)) || (automatic && newer);
+                let supported = boolean(&info, "asset_supported", false);
+                {
+                    let mut job = cloned.app_job.lock().unwrap();
+                    job["last_result"] = info.clone();
+                    job["mode"] = json!(if automatic { "automatic" } else { "manual" });
+                    job["outcome"] = json!(if newer {
+                        "update_available"
+                    } else if ordering == Ordering::Less {
+                        "local_newer"
+                    } else {
+                        "up_to_date"
+                    });
                 }
-                if install && boolean(&info, "should_install", false) {
-                    anyhow::ensure!(
-                        boolean(&info, "asset_supported", false),
-                        "Selected asset is not self-installable"
-                    );
+                cloned.log(&format!("[INFO] App update check complete: current {VERSION}, selected {target}, newer={newer}, asset_supported={supported}."));
+                if do_install && supported {
                     let name = text(&info, "asset_name", "");
                     anyhow::ensure!(
                         Path::new(&name).file_name().and_then(|s| s.to_str())
@@ -460,7 +528,17 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     let dir = cloned.dir.join("updates");
                     fs::create_dir_all(&dir)?;
                     let staged = dir.join(name);
-                    cloned.log("[INFO] Downloading app update...");
+                    {
+                        let mut job = cloned.app_job.lock().unwrap();
+                        job["operation"] = json!("install");
+                        job["phase"] = json!("downloading");
+                        job["restart_expected"] = json!(!cloned.development);
+                    }
+                    cloned.log(&format!(
+                        "[INFO] {} app {}: {VERSION} -> {target}.",
+                        if automatic { "Automatic" } else { "Manual" },
+                        if reinstall { "reinstall" } else { "update" }
+                    ));
                     download(&text(&info, "download_url", ""), &staged, |done, total| {
                         if total > 0 {
                             cloned.progress(
@@ -473,19 +551,40 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     process::chmod(&staged)?;
                     cloned.app_job.lock().unwrap()["downloaded_path"] = json!(staged);
                     if cloned.development {
-                        cloned.progress(
-                            true,
-                            "Downloaded update (development mode: install manually).",
-                            100,
-                        );
+                        let mut job = cloned.app_job.lock().unwrap();
+                        job["phase"] = json!("downloaded");
+                        job["outcome"] = json!("downloaded");
+                        job["progress_message"] =
+                            json!("Downloaded update; install manually in development mode.");
                     } else {
+                        cloned.progress(true, "Installing update and restarting...", 95);
+                        cloned.app_job.lock().unwrap()["phase"] = json!("installing");
                         cloned.install_update(&staged)?;
+                        let mut job = cloned.app_job.lock().unwrap();
+                        job["phase"] = json!("installed");
+                        job["outcome"] = json!("installed");
+                        job["progress_message"] = json!("Update installed. Restarting...");
                     }
+                } else {
+                    let message = if ordering == Ordering::Less {
+                        "Installed version is newer than the selected release; no update needed."
+                    } else if !newer {
+                        "Already on the selected version."
+                    } else if !supported {
+                        "A newer release exists, but it has no self-installable asset for this platform."
+                    } else if cloned.development
+                        && boolean(&cloned.settings(), "auto_app_updates", false)
+                    {
+                        "Update available; automatic installation is disabled in development mode."
+                    } else {
+                        "Update available. Use Install Update to install the selected version."
+                    };
+                    cloned.progress(true, message, 100);
+                    cloned.log(&format!("[INFO] {message}"));
                 }
                 Ok(info)
             } else {
                 if install {
-                    // Never overwrite tool binaries while an active worker uses them.
                     let _guard = cloned.provision_lock.lock().unwrap();
                     anyhow::ensure!(
                         !cloned.is_streaming(),
@@ -496,27 +595,41 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                 Ok(binaries_status(&cloned.dir))
             }
         })();
-        let lock = if app_update {
-            &cloned.app_job
-        } else {
-            &cloned.binary_job
-        };
-        let mut job = lock.lock().unwrap();
-        job["running"] = json!(false);
-        job["finished_at"] = json!(now());
-        match result {
-            Ok(info) => {
-                job["last_result"] = info;
-                job["progress_percent"] = json!(100);
-                if text(&job, "progress_message", "").is_empty() {
-                    job["progress_message"] = json!("Complete");
+        let error = result.as_ref().err().map(|e| format!("{e:#}"));
+        {
+            let lock = if app_update {
+                &cloned.app_job
+            } else {
+                &cloned.binary_job
+            };
+            let mut job = lock.lock().unwrap();
+            job["running"] = json!(false);
+            job["finished_at"] = json!(now());
+            match result {
+                Ok(info) => {
+                    job["last_result"] = info;
+                    job["progress_percent"] = json!(100);
+                    if !["installed", "downloaded"].contains(&text(&job, "phase", "").as_str()) {
+                        job["phase"] = json!("complete");
+                    }
+                    if !app_update {
+                        job["progress_message"] = json!(if install {
+                            "Binary update complete."
+                        } else {
+                            "Binary check complete."
+                        });
+                    }
+                }
+                Err(e) => {
+                    job["phase"] = json!("failed");
+                    job["last_error"] = json!(format!("{e:#}"));
+                    job["progress_message"] = json!("Update operation failed.");
+                    job["restart_expected"] = json!(false);
                 }
             }
-            Err(e) => {
-                job["last_error"] = json!(format!("{e:#}"));
-                job["progress_message"] = json!("Update failed");
-                cloned.log(&format!("[ERROR] Update failed: {e:#}"));
-            }
+        }
+        if let Some(error) = error {
+            cloned.log(&format!("[ERROR] Update operation failed: {error}"));
         }
     });
     let lock = if app_update {
@@ -527,6 +640,7 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
     let snapshot = lock.lock().unwrap().clone();
     snapshot
 }
+
 pub fn initial_status(app: &Arc<App>, is_app: bool) -> Value {
     let lock = if is_app {
         &app.app_job
@@ -534,32 +648,23 @@ pub fn initial_status(app: &Arc<App>, is_app: bool) -> Value {
         &app.binary_job
     };
     let job = lock.lock().unwrap().clone();
-    if !boolean(&job, "running", false)
+    // Reading app status never starts an installation or a new check.
+    if !is_app
+        && !boolean(&job, "running", false)
         && job["last_result"].is_null()
         && text(&job, "last_error", "").is_empty()
     {
-        return trigger(app, is_app, false, &json!({}));
+        return trigger(app, false, false, &json!({}));
     }
     job
 }
+
 pub fn startup(app: Arc<App>) {
-    let v = app.settings();
-    if !boolean(&v, "check_updates_startup", true) {
+    let settings = app.settings();
+    if !boolean(&settings, "check_updates_startup", true) {
         app.log("[INFO] Startup update check is disabled.");
         return;
     }
-    if !boolean(&v, "auto_app_updates", false) {
-        app.log("[INFO] Automatic app updates are disabled (manual install mode).");
-        return;
-    }
-    if app.development {
-        app.log("[INFO] Automatic app updates skipped in development mode.");
-        return;
-    }
-    trigger(
-        &app,
-        true,
-        true,
-        &json!({"channel":text(&v,"app_update_channel","release")}),
-    );
+    // Checking is independent of automatic installation; trigger applies that policy.
+    trigger(&app, true, false, &json!({}));
 }

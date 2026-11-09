@@ -100,7 +100,10 @@ fn handle(mut request: Request, app: Arc<App>) {
     })();
     let (status, payload) = match result {
         Ok(v) => v,
-        Err(e) => (400, json!({"ok":false,"error":format!("{e:#}")})),
+        Err(e) => (
+            400,
+            json!({"ok":false,"error":app.sanitize(&format!("{e:#}"))}),
+        ),
     };
     respond(
         request,
@@ -130,7 +133,10 @@ pub fn serve(app: Arc<App>) -> Result<()> {
     };
     let server = Server::http(&bind).map_err(|e| anyhow::anyhow!("Bind dashboard {bind}: {e}"))?;
     app.log(&format!("[INFO] Web dashboard listening on http://{bind}"));
-    app.log("[INFO] Headless runtime active.");
+    app.log(&format!(
+        "[INFO] {APP_NAME} version {VERSION}; headless runtime active."
+    ));
+    crate::diagnostics::start(Arc::clone(&app));
     let startup = Arc::clone(&app);
     thread::spawn(move || updates::startup(startup));
     while !app.shutdown.load(Ordering::Acquire) {
@@ -140,6 +146,8 @@ pub fn serve(app: Arc<App>) -> Result<()> {
         }
     }
     drop(server);
+    let reason = *app.shutdown_reason.lock().unwrap();
+    app.log(&format!("[INFO] Application shutting down: {reason}."));
     app.stop();
     app.join_worker();
     Ok(())
