@@ -11,7 +11,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
-use std::{collections::HashSet, fs, path::Path, time::Duration};
+use std::{collections::HashSet, fs, io::Read, path::Path, time::Duration};
 const CONFIG_URL: &str = "https://ingest.twitch.tv/api/v3/GetClientConfiguration";
 #[derive(Clone)]
 pub struct Rendition {
@@ -239,6 +239,145 @@ fn endpoint(app: &App, response: &Value, cfg: &StreamConfig) -> Result<(String, 
         tcurl.to_string().trim_end_matches('/').to_owned(),
     ))
 }
+/// Register credentials before extracting any human-readable response fields.
+/// In particular, Twitch can return different ingest authentication from the request.
+fn register_response_secrets(app: &App, value: &Value) {
+    match value {
+        Value::Object(fields) => {
+            for (name, value) in fields {
+                let name = name.to_ascii_lowercase();
+                if [
+                    "authentication",
+                    "authorization",
+                    "password",
+                    "secret",
+                    "token",
+                    "cookie",
+                    "stream_key",
+                    "streamkey",
+                    "api_key",
+                    "config_id",
+                ]
+                .iter()
+                .any(|part| name.contains(part))
+                {
+                    if let Some(secret) = value.as_str().filter(|s| !s.is_empty()) {
+                        app.register_secret(secret);
+                        if let Some((base, query)) = secret.split_once('?') {
+                            app.register_secret(base);
+                            if let Ok(url) =
+                                reqwest::Url::parse(&format!("https://redaction.invalid/?{query}"))
+                            {
+                                for (_, value) in url.query_pairs() {
+                                    app.register_secret(&value);
+                                }
+                            }
+                        }
+                    }
+                }
+                register_response_secrets(app, value);
+            }
+        }
+        Value::Array(items) => {
+            for value in items {
+                register_response_secrets(app, value);
+            }
+        }
+        _ => {}
+    }
+}
+/// Flatten Twitch's HTML explanation to a bounded, sanitized single line.
+/// Never render HTML, log attributes, or copy arbitrary response/configuration JSON.
+fn response_text(app: &App, raw: &str, limit: usize) -> String {
+    let entities =
+        regex::Regex::new(r"&(#x[0-9a-fA-F]+|#X[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos|nbsp);")
+            .unwrap();
+    let mut decoded = raw.to_owned();
+    // Decode nested entities before stripping tags and redacting secrets.
+    for _ in 0..4 {
+        let next = entities
+            .replace_all(&decoded, |c: &regex::Captures<'_>| match &c[1] {
+                "amp" => "&".into(),
+                "lt" => "<".into(),
+                "gt" => ">".into(),
+                "quot" => "\"".into(),
+                "apos" => "'".into(),
+                "nbsp" => " ".into(),
+                code => {
+                    let number = if code.starts_with("#x") || code.starts_with("#X") {
+                        u32::from_str_radix(&code[2..], 16).ok()
+                    } else {
+                        code.strip_prefix('#').and_then(|v| v.parse::<u32>().ok())
+                    };
+                    number
+                        .and_then(char::from_u32)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| " ".into())
+                }
+            })
+            .into_owned();
+        if next == decoded {
+            break;
+        }
+        decoded = next;
+    }
+    let scripts =
+        regex::Regex::new(r"(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>").unwrap();
+    let tags = regex::Regex::new(r"(?s)<[^>]*>").unwrap();
+    let without_scripts = scripts.replace_all(&decoded, " ");
+    let plain = tags.replace_all(&without_scripts, " ");
+    // Sanitize before truncation so a long credential cannot leak a truncated prefix.
+    let safe = app.sanitize(&plain);
+    let line = safe.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut result: String = line
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(limit)
+        .collect();
+    if line.chars().count() > limit {
+        result.push_str(" [truncated]");
+    }
+    result
+}
+fn response_reason(app: &App, response: &Value) -> String {
+    let mut messages = Vec::new();
+    for path in [
+        "/status/html_en_us",
+        "/status/message",
+        "/status/reason",
+        "/message",
+        "/error/message",
+        "/error_description",
+        "/error",
+        "/detail",
+    ] {
+        if let Some(raw) = response.pointer(path).and_then(Value::as_str) {
+            let message = response_text(app, raw, 2048);
+            if !message.is_empty() && !messages.contains(&message) {
+                messages.push(message);
+            }
+        }
+    }
+    // Some API validation errors use a detail array. Its `input` field can contain
+    // credentials or the entire request; only the explicit message/type are allowed.
+    if let Some(items) = response["detail"].as_array() {
+        for item in items.iter().take(16) {
+            for field in ["msg", "type"] {
+                if let Some(raw) = item[field].as_str() {
+                    let message = response_text(app, raw, 512);
+                    if !message.is_empty() && !messages.contains(&message) {
+                        messages.push(message);
+                    }
+                }
+            }
+        }
+    }
+    if messages.is_empty() {
+        "No explanation provided by Twitch".into()
+    } else {
+        response_text(app, &messages.join("; "), 4096)
+    }
+}
 pub fn negotiate(app: &App, cfg: &StreamConfig, binary: &Path) -> Result<Plan> {
     let version = crate::updates::tool_version(Some(binary), "ffmpeg", &app.dir)
         .context("Cannot determine FFmpeg version for Enhanced Broadcasting")?;
@@ -275,26 +414,53 @@ pub fn negotiate(app: &App, cfg: &StreamConfig, binary: &Path) -> Result<Plan> {
         .timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
+    register_response_secrets(app, &json!({"authentication": cfg.key}));
     let response = client
         .post(CONFIG_URL)
         .json(&request)
         .send()
         .context("Twitch Enhanced Broadcasting configuration request failed")?;
+    let http_status = response.status();
+    // Consume a bounded response even on HTTP errors so JSON validation/authentication
+    // explanations are available. Never include the raw body in logs or errors.
+    const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+    let mut body = Vec::new();
+    response
+        .take((MAX_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut body)
+        .context("Could not read Twitch Enhanced Broadcasting response")?;
+    app.debug(&format!(
+        "Twitch Enhanced Broadcasting response: HTTP {}, received_bytes={}.",
+        http_status.as_u16(),
+        body.len()
+    ));
     anyhow::ensure!(
-        response.status().is_success(),
-        "Twitch configuration request failed with HTTP {}",
-        response.status().as_u16()
+        body.len() <= MAX_RESPONSE_BYTES,
+        "Twitch configuration response exceeded the 256 KiB limit (HTTP {})",
+        http_status.as_u16()
     );
-    let response: Value = response
-        .json()
-        .context("Invalid Twitch Enhanced Broadcasting response")?;
-    let status = text(&response["status"], "result", "success");
+    let response: Value = serde_json::from_slice(&body).map_err(|error| {
+        // JSON parser details can contain response data; report only position/category.
+        anyhow::anyhow!("Invalid Twitch configuration JSON: HTTP {}, category={:?}, line={}, column={}; response body withheld", http_status.as_u16(), error.classify(), error.line(), error.column())
+    })?;
+    register_response_secrets(app, &response);
+    let status = text(&response["status"], "result", "missing");
+    let safe_status = response_text(app, &status, 128);
+    let status = status.to_ascii_lowercase();
+    let reason = response_reason(app, &response);
+    app.debug(&format!(
+        "Twitch Enhanced Broadcasting configuration: status={safe_status}; explanation={reason}"
+    ));
     anyhow::ensure!(
-        ["success", "warning"].contains(&status.as_str()),
-        "Twitch declined Enhanced Broadcasting configuration"
+        http_status.is_success(),
+        "Twitch configuration request failed: HTTP {}; status={safe_status}; reason={reason}",
+        http_status.as_u16()
     );
+    anyhow::ensure!(["success", "warning"].contains(&status.as_str()), "Twitch declined Enhanced Broadcasting configuration: status={safe_status}; reason={reason}");
     if status == "warning" {
-        app.log("[WARN] Twitch returned an Enhanced Broadcasting configuration warning; applying only validated supported settings.");
+        app.log(&format!(
+            "[WARN] Twitch Enhanced Broadcasting configuration warning: {reason}"
+        ));
     }
     let configs = response["encoder_configurations"]
         .as_array()

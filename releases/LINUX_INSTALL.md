@@ -1,6 +1,9 @@
 # Stream247 Linux installation
 
-Extract `stream247-linux-x86_64.tar.gz`, then enter `releases`.
+The README provides one-command release and prerelease setup. That helper
+extracts the package into the current directory and runs the included installer.
+
+For manual installation, extract `stream247-linux-x86_64.tar.gz`, then enter `releases`.
 Copy your existing `config.json` into this directory if migrating an installation.
 
 ```bash

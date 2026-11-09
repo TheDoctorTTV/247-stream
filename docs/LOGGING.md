@@ -76,3 +76,14 @@ No builds, runtime executions, compression trials or tests were run by the agent
 for this change. Source formatting/manual review do not verify runtime behavior.
 
 FFmpeg packet summaries include each output stream index separately. With Twitch Enhanced Broadcasting this identifies each video rendition; the summary mux PTS gap uses the lowest-index video and audio streams and is not a measurement of lip sync.
+
+Twitch Enhanced Broadcasting debug entries include the HTTP status, received byte
+count, returned configuration status and sanitized plain-text explanation. Error
+and warning logs also retain the explanation. HTML tags/attributes and script or
+style content are removed; entities are decoded before credential redaction.
+Returned ingest authentication and configuration IDs are registered as secrets
+before extracting messages. Only explicit explanation fields and validation
+message/type fields are logged; raw responses, request bodies, validation input
+values and headers are never logged. Responses are limited to 256 KiB and logged
+explanations to 4096 characters. Malformed/non-JSON responses report HTTP status
+and parser position/category without body contents.
