@@ -131,6 +131,25 @@ struct Measurements {
     section: &'static str,
     info: bool,
     descriptions: Vec<String>,
+    input_failed: bool,
+    drop_audio_stats: bool,
+    drop_video_stats: bool,
+}
+/// Recovery telemetry is always maintained, independently of debug/file logging.
+#[derive(Clone, Copy)]
+pub struct MediaProgress {
+    pub video_packets: u64,
+    pub audio_packets: u64,
+    pub video_pts: Option<f64>,
+    pub audio_pts: Option<f64>,
+    pub video_idle: Option<Duration>,
+    pub audio_idle: Option<Duration>,
+    pub input_failed: bool,
+}
+impl MediaProgress {
+    pub fn common_position(&self) -> Option<f64> {
+        Some(self.video_pts?.min(self.audio_pts?).max(0.0))
+    }
 }
 pub struct FfmpegStats {
     context: String,
@@ -153,11 +172,35 @@ impl FfmpegStats {
                 section: "input",
                 info: false,
                 descriptions: Vec::new(),
+                input_failed: false,
+                drop_audio_stats: false,
+                drop_video_stats: false,
             }),
         }
     }
     pub fn context(&self) -> &str {
         &self.context
+    }
+    pub fn inject_debug_failure(&self, kind: crate::debug::FaultKind) {
+        let mut data = self.data.lock().unwrap();
+        match kind {
+            crate::debug::FaultKind::AudioDrop => data.drop_audio_stats = true,
+            crate::debug::FaultKind::VideoDrop => data.drop_video_stats = true,
+            crate::debug::FaultKind::ReadError => data.input_failed = true,
+            _ => {}
+        }
+    }
+    pub fn progress(&self) -> MediaProgress {
+        let data = self.data.lock().unwrap();
+        MediaProgress {
+            video_packets: data.video.packets,
+            audio_packets: data.audio.packets,
+            video_pts: data.video.pts,
+            audio_pts: data.audio.pts,
+            video_idle: data.video.last.map(|t| t.elapsed()),
+            audio_idle: data.audio.last.map(|t| t.elapsed()),
+            input_failed: data.input_failed,
+        }
     }
     /// Consume machine stats and informational headers before any log sink sees them.
     pub fn ingest(&self, line: &str, app: &App) -> bool {
@@ -171,6 +214,11 @@ impl FfmpegStats {
                 ) {
                     let mut data = self.data.lock().unwrap();
                     if !["video", "audio"].contains(&words[1]) {
+                        return true;
+                    }
+                    if (words[1] == "audio" && data.drop_audio_stats)
+                        || (words[1] == "video" && data.drop_video_stats)
+                    {
                         return true;
                     }
                     let track = data.tracks.entry((words[1].to_owned(), index)).or_default();
@@ -204,6 +252,11 @@ impl FfmpegStats {
             return false;
         }
         let mut data = self.data.lock().unwrap();
+        if line.contains("Error during demuxing")
+            || (line.contains("[in#") && line.contains("Read error"))
+        {
+            data.input_failed = true;
+        }
         if line.contains("[info]") {
             data.info = true;
         }

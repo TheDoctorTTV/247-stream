@@ -29,7 +29,7 @@ This implementation is experimental and has not been built or tested against Twi
 - Unsupported configurations and unavailable encoders fail explicitly. There is no silent fallback to ordinary broadcasting. If an established enhanced output dies, the worker stops rather than repeatedly reconnecting with stale negotiation data.
 - Encoder availability checks at stream startup do not establish that the server can sustain several concurrent encoding sessions. This implementation retains the existing source encode before encoding the output ladder, adding CPU/GPU work and a generation of video compression.
 
-The existing media timeline/source pipeline remains in place. This change does not establish that the previously reported long-duration audio/timestamp problem is fixed.
+Source retry, per-track stall recovery and a single feeder with black-video/silence fallback now preserve the existing EB bridge through source replacement. See [source recovery](SOURCE_RECOVERY.md) for timing, resource costs and unverified runtime behavior. This has not yet established that every long-duration audio/timestamp failure is fixed.
 
 ## Source references
 

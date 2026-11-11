@@ -4,6 +4,8 @@ Stream247 is a native Rust headless streamer/relay with a built-in web dashboard
 
 This branch migrates the existing Python runtime; the known audio/timestamp issue
 is not resolved by the language migration. See [Rust migration notes](docs/RUST_MIGRATION.md).
+Source retry, audio-stall recovery and persistent fallback have since been added;
+see [source recovery behavior](docs/SOURCE_RECOVERY.md).
 
 It can:
 - Loop a YouTube playlist or single YouTube video
@@ -19,6 +21,7 @@ It can:
 - Encoder selection: auto or explicit (`libx264`, NVENC, QSV, AMF, VAAPI)
 - Experimental Twitch Enhanced Broadcasting with Auto or custom track/bandwidth limits (FFmpeg 8+); see [Twitch output notes](docs/TWITCH.md)
 - Graceful FFmpeg shutdown and RTMP output drain when stopping a stream
+- Debug tab with a local preview of the selected source and source-failure controls; see [debug testing](docs/DEBUG_TESTING.md)
 - Optional title overlay and playlist shuffle
 - YouTube auth options (`yt-dlp` browser cookie import + optional profile path)
 - In-app binary updates for `yt-dlp` and `ffmpeg`

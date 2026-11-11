@@ -31,6 +31,7 @@ pub struct App {
     config: Mutex<Value>,
     worker: Mutex<Option<Running>>,
     pub provision_lock: Mutex<()>,
+    pub fallback_image_lock: Mutex<()>,
     pub app_job: Mutex<Value>,
     pub binary_job: Mutex<Value>,
     pub shutdown: AtomicBool,
@@ -51,6 +52,7 @@ impl App {
             config: Mutex::new(cfg),
             worker: Mutex::new(None),
             provision_lock: Mutex::new(()),
+            fallback_image_lock: Mutex::new(()),
             app_job: Mutex::new(updates::empty_job()),
             binary_job: Mutex::new(updates::empty_job()),
             shutdown: AtomicBool::new(false),
@@ -147,8 +149,19 @@ impl App {
         Ok(())
     }
     pub fn start(self: &Arc<Self>) -> Result<()> {
+        self.start_mode(false, None)
+    }
+    pub fn start_preview(self: &Arc<Self>, source: Option<String>) -> Result<()> {
+        self.start_mode(true, source)
+    }
+    fn start_mode(
+        self: &Arc<Self>,
+        local_preview: bool,
+        preview_source: Option<String>,
+    ) -> Result<()> {
         let mut running = self.worker.lock().unwrap();
         if running.as_ref().is_some_and(|r| !r.thread.is_finished()) {
+            anyhow::ensure!(!local_preview, "Stop the current stream before starting a local test; it will not be interrupted automatically");
             return Ok(());
         }
         if let Some(old) = running.take() {
@@ -158,24 +171,62 @@ impl App {
             !config::boolean(&self.binary_job.lock().unwrap(), "running", false),
             "Wait for the binary operation to finish before starting"
         );
-        let cfg = StreamConfig::new(&self.raw_settings(), &self.dir);
+        let mut cfg = StreamConfig::new(&self.raw_settings(), &self.dir);
+        if local_preview {
+            crate::debug::prepare_preview(self)?;
+            cfg.local_preview = true;
+            if let Some(source) = preview_source {
+                cfg.source = source.trim().to_owned();
+            }
+            cfg.base = "preview://local".into();
+            cfg.key.clear();
+        }
+        anyhow::ensure!(!cfg.source.is_empty(), "Select a source before starting");
         anyhow::ensure!(
-            !cfg.source.is_empty() && !cfg.base.is_empty() && !cfg.key.is_empty(),
-            "Set a source, RTMP URL and stream key before starting"
+            local_preview || !cfg.base.is_empty(),
+            "Set a streaming destination before starting"
         );
+        if !local_preview {
+            let destination =
+                reqwest::Url::parse(&cfg.base).context("Invalid streaming destination URL")?;
+            anyhow::ensure!(
+                matches!(destination.scheme(), "rtmp" | "rtmps")
+                    && destination.host_str().is_some(),
+                "Streaming destinations must use RTMP or RTMPS, including custom platforms"
+            );
+        }
+        if !local_preview && (cfg.twitch() || cfg.youtube()) {
+            anyhow::ensure!(
+                !cfg.key.is_empty(),
+                "Set a stream key for the selected destination"
+            );
+        }
         {
             let settings = self.settings();
             let mut state = self.state.lock().unwrap();
             state.files(&self.dir, &settings, true)?;
             state.streaming = true;
             state.status = "Starting".into();
-            state.meta = json!({"mode":"headless","source":cfg.source,"resolution":format!("{}p",cfg.height),"fps":cfg.fps.to_string()});
+            state.meta = json!({"mode":if local_preview{"local_preview"}else{"headless"},"source":cfg.source,"resolution":format!("{}p",cfg.height),"fps":cfg.fps.to_string()});
         }
-        let control = Arc::new(Control::default());
+        let control = Arc::new(Control {
+            local_preview,
+            preview_id: if local_preview {
+                crate::state::now().to_bits()
+            } else {
+                0
+            },
+            ..Control::default()
+        });
         let worker_control = Arc::clone(&control);
         let app = Arc::clone(self);
         self.log(&format!(
-            "[INFO] Starting stream (headless), app version {}...",
+            "[INFO] Starting {}: app version {}...",
+            if local_preview {
+                "local preview of the selected source (no publication to a destination)"
+            } else {
+                "stream (headless)"
+            },
             crate::VERSION
         ));
         let handle = thread::spawn(move || {
@@ -203,6 +254,79 @@ impl App {
             control,
             thread: handle,
         });
+        Ok(())
+    }
+    pub fn debug_status(&self) -> Value {
+        let running = self.worker.lock().unwrap();
+        let Some(worker) = running.as_ref().filter(|w| !w.thread.is_finished()) else {
+            return json!({"running":false,"local_preview":false,"source_ready":false});
+        };
+        let mut info = crate::debug::control_status(&worker.control);
+        info["running"] = json!(!worker.control.stopped());
+        info["local_preview"] = json!(worker.control.local_preview);
+        info["preview_id"] = json!(worker.control.preview_id.to_string());
+        info["preview_ready"] = json!(
+            worker.control.local_preview
+                && crate::debug::preview_dir(self).join("index.m3u8").is_file()
+        );
+        info["preview_url"] = if worker.control.local_preview {
+            json!("/api/debug/preview/index.m3u8")
+        } else {
+            Value::Null
+        };
+        info
+    }
+    pub fn inject_failure(&self, payload: &Value) -> Result<Value> {
+        let kind = crate::debug::FaultKind::parse(&config::text(payload, "kind", ""))?;
+        let running = self.worker.lock().unwrap();
+        let worker = running
+            .as_ref()
+            .filter(|w| !w.thread.is_finished())
+            .context("No stream is running")?;
+        let control = &worker.control;
+        let mut fault = control.fault.lock().unwrap();
+        let pid = control.source_pid.load(Ordering::Acquire);
+        anyhow::ensure!(
+            !control.stopped() && pid != 0 && control.source_ready.load(Ordering::Acquire),
+            "Wait for an active source using persistent output"
+        );
+        if let Some(value) = payload.get("source_pid") {
+            let expected = value
+                .as_u64()
+                .context("source_pid must be a positive integer")?;
+            anyhow::ensure!(
+                expected == pid as u64,
+                "Source changed; refresh debug status and retry"
+            );
+        }
+        anyhow::ensure!(
+            fault.pending.is_none() && !fault.active,
+            "A fault is already pending or active; wait for source recovery"
+        );
+        fault.pending = Some(crate::debug::FaultRequest { pid, kind });
+        self.log(&format!(
+            "[WARN] Debug source failure queued: kind={}, source_pid={pid}.",
+            kind.name()
+        ));
+        Ok(json!({"queued":true,"kind":kind.name(),"source_pid":pid}))
+    }
+    pub fn stop_preview(&self) -> Result<()> {
+        {
+            let running = self.worker.lock().unwrap();
+            anyhow::ensure!(
+                running
+                    .as_ref()
+                    .is_some_and(|w| !w.thread.is_finished() && w.control.local_preview),
+                "No local test stream is running"
+            );
+            running
+                .as_ref()
+                .unwrap()
+                .control
+                .stop
+                .store(true, Ordering::Release);
+        }
+        self.status("Stopping local preview");
         Ok(())
     }
     pub fn stop(&self) {

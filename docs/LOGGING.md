@@ -92,3 +92,9 @@ Twitch configuration debug summaries also report whether the optional status was
 present and the counts of returned video configurations, ingest endpoints, and
 live audio tracks. Missing/null status is logged as optional, not as a rejection;
 all required configuration and encoder validations still apply.
+
+Recovery supervision uses packet progress even when Debug logging or either file
+logging toggle is off. Normal app logs record fallback activation, source-only
+restart reasons, the last common A/V checkpoint, ready-source handoffs and retry
+exhaustion. Per-track summaries remain opt-in debug output. See
+[SOURCE_RECOVERY.md](SOURCE_RECOVERY.md) for thresholds and behavior.

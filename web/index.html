@@ -1,84 +1,111 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{APP_NAME} Dashboard</title>
   <link rel="icon" href="/favicon.ico" sizes="any">
-    <link rel="stylesheet" href="/assets/style.css">
+  <link rel="stylesheet" href="/assets/style.css">
 </head>
+
 <body>
   <div class="wrap">
-    <div class="card">
-      <h1>{APP_NAME} Web Dashboard</h1>
-      <div class="row">
-        <div>State: <span id="stateText" class="status">Unknown</span></div>
-        <div class="muted" id="metaText"></div>
-      </div>
-      <div class="tabs">
+    <header class="app-header">
+      <h1>Stream 24/7 <span class="app-version">v{APP_VERSION}</span></h1>
+      <nav class="tabs" aria-label="Main navigation">
         <button class="tab-btn active" data-tab="tab-stream">Stream</button>
-        <button class="tab-btn" data-tab="tab-settings">Settings</button>
         <button class="tab-btn" data-tab="tab-sources">Sources</button>
-        <button class="tab-btn" data-tab="tab-stream-platforms">Stream Platforms</button>
         <button class="tab-btn" data-tab="tab-stream-keys">Stream Keys</button>
+        <button class="tab-btn" data-tab="tab-stream-platforms">Platforms</button>
+        <button class="tab-btn" data-tab="tab-settings">Settings</button>
         <button class="tab-btn" data-tab="tab-console">Console</button>
+        <button class="tab-btn" data-tab="tab-debug" hidden>Debug</button>
         <button class="tab-btn" data-tab="tab-about">About</button>
-      </div>
-    </div>
+      </nav>
+    </header>
     <div class="tab-panel active" id="tab-stream">
       <div class="stream-layout">
-        <div class="card stream-settings-card">
-          <h2>Stream Settings</h2>
-          <div class="grid">
-            <div class="field wide">
-              <label for="playlist_url">Source</label>
-              <select id="playlist_url"></select>
-              <div id="sourceHint" class="statusline"></div>
+        <div class="stream-fields">
+          <div class="stream-column">
+            <div class="field">
+              <label for="playlist_url">Sources</label>
+              <select id="playlist_url" aria-describedby="sourceHint"></select>
+              <div id="sourceHint" class="statusline field-hint"></div>
             </div>
             <div class="field">
-              <label for="stream_url_preset">Stream Platform</label>
-              <select id="stream_url_preset"></select>
-              <div id="streamPlatformHint" class="statusline"></div>
+              <label for="stream_url_preset">Platform</label>
+              <select id="stream_url_preset" aria-describedby="streamPlatformHint"></select>
+              <div id="streamPlatformHint" class="statusline field-hint"></div>
             </div>
             <div class="field">
               <label for="stream_key">Stream Key</label>
-              <select id="stream_key"></select>
-              <div id="streamKeyHint" class="statusline"></div>
+              <select id="stream_key" aria-describedby="streamKeyHint"></select>
+              <div id="streamKeyHint" class="statusline field-hint"></div>
             </div>
-            <div class="field"><label for="resolution">Resolution</label><select id="resolution"><option>480p</option><option>720p</option><option>1080p</option><option>1440p</option><option>2160p</option></select></div>
-            <div class="field"><label for="framerate">Frame Rate</label><select id="framerate"><option value="30">30</option><option value="60">60</option></select></div>
-            <div class="field"><label for="video_bitrate">Video Bitrate (kbps)</label><input id="video_bitrate" type="text" placeholder="7500"></div>
           </div>
-          <div id="twitchEnhancedGroup" style="margin-top:12px;" hidden>
-            <label class="check"><input id="twitch_enhanced_broadcasting" type="checkbox">Twitch Enhanced Broadcasting</label>
-            <div id="twitchEnhancedOptions" style="margin-top:12px;" hidden>
-              <div class="grid">
-                <div class="field">
-                  <label for="twitch_enhanced_max_tracks">Maximum Video Tracks</label>
-                  <label class="check"><input id="twitch_enhanced_tracks_auto" type="checkbox" checked>Auto</label>
-                  <input id="twitch_enhanced_max_tracks" type="number" min="1" max="6" step="1" value="3" disabled>
-                </div>
-                <div class="field">
-                  <label for="twitch_enhanced_max_bitrate_kbps">Maximum Streaming Bandwidth (kbps)</label>
-                  <label class="check"><input id="twitch_enhanced_bitrate_auto" type="checkbox" checked>Auto</label>
-                  <input id="twitch_enhanced_max_bitrate_kbps" type="number" min="1000" max="100000" step="500" value="12000" disabled>
-                </div>
+          <div class="stream-column">
+            <div class="field"><label for="resolution">Resolution</label><select id="resolution">
+                <option>480p</option>
+                <option>720p</option>
+                <option>1080p</option>
+                <option>1440p</option>
+                <option>2160p</option>
+              </select></div>
+            <div class="field"><label for="video_bitrate">Bitrate (kbps)</label><input id="video_bitrate" type="text"
+                placeholder="7500"></div>
+            <div class="field"><label for="framerate">Frame Rate</label><select id="framerate">
+                <option value="30">30</option>
+                <option value="60">60</option>
+              </select></div>
+          </div>
+          <div id="twitchEnhancedGroup" class="enhanced-column" hidden>
+            <label class="check enhanced-toggle"><input id="twitch_enhanced_broadcasting" type="checkbox">Twitch
+              Enhanced Broadcasting</label>
+            <div id="twitchEnhancedOptions" class="enhanced-options" hidden>
+              <div class="enhanced-field">
+                <label class="check auto-option"><span>Auto</span><input id="twitch_enhanced_bitrate_auto"
+                    type="checkbox" checked></label>
+                <div class="field"><label for="twitch_enhanced_max_bitrate_kbps">Maximum Bandwidth (kbps)</label><input
+                    id="twitch_enhanced_max_bitrate_kbps" type="number" min="1000" max="100000" step="500" value="12000"
+                    disabled></div>
               </div>
-              <p class="muted">Twitch selects the video qualities and bitrates at stream start, within any limits you set. Your server encodes and uploads those qualities.</p>
+              <div class="enhanced-field">
+                <label class="check auto-option"><span>Auto</span><input id="twitch_enhanced_tracks_auto"
+                    type="checkbox" checked></label>
+                <div class="field"><label for="twitch_enhanced_max_tracks">Maximum Video Tracks</label><input
+                    id="twitch_enhanced_max_tracks" type="number" min="1" max="6" step="1" value="3" disabled></div>
+              </div>
             </div>
-          </div>
-          <div class="row" style="margin-top:12px;">
-            <button id="reloadSettingsBtn">Reload Settings</button>
-            <div id="settingsStatus" class="statusline"></div>
           </div>
         </div>
-        <div class="card stream-actions-card">
-          <h2>Controls</h2>
-          <div class="stream-actions">
-            <button class="primary" id="startBtn">Start Stream</button>
-            <button id="stopBtn">Stop Stream</button>
-            <button id="skipBtn">Skip Video</button>
-            <button id="refreshBtn">Refresh</button>
+        <dl class="stream-feedback" aria-label="Stream status">
+          <div class="stream-status-item">
+            <dt>Status</dt>
+            <dd><span id="stateText" class="status" role="status" aria-live="polite">Connecting…</span></dd>
+          </div>
+          <div class="stream-source-item">
+            <dt>Source</dt>
+            <dd id="metaText">No source selected</dd>
+          </div>
+        </dl>
+        <div class="stream-actions" aria-label="Stream controls">
+          <button class="primary" id="startBtn">Start</button>
+          <button id="restartBtn" disabled>Restart</button>
+          <button id="skipBtn" disabled>Skip</button>
+          <button id="stopBtn" disabled>Stop</button>
+        </div>
+        <div class="stream-utilities">
+          <div id="settingsStatus" class="statusline" role="status" aria-live="polite"></div>
+          <div class="stream-utility-actions">
+            <button id="reloadSettingsBtn" type="button" title="Reload saved settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></svg>
+              Reload settings
+            </button>
+            <button id="refreshBtn" type="button" title="Refresh stream status">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17"/></svg>
+              Refresh status
+            </button>
           </div>
         </div>
       </div>
@@ -87,22 +114,78 @@
       <div class="card">
         <h2>Settings</h2>
         <div class="grid">
-          <div class="field"><label for="theme_select">Theme</label><select id="theme_select"><option value="blue">Blue</option><option value="purple">Purple</option><option value="red">Red</option><option value="mono">Mono</option></select></div>
-          <div class="field"><label for="buffer_mode">Stream Buffer</label><select id="buffer_mode"><option>Low</option><option>Medium</option><option>High</option><option>Ultra</option></select></div>
-          <div class="field"><label for="encoder_preference">Encoder</label><select id="encoder_preference"><option value="auto">Auto</option><option value="libx264">CPU x264</option><option value="h264_nvenc">NVIDIA NVENC</option><option value="h264_qsv">Intel QSV</option><option value="h264_amf">AMD AMF</option><option value="h264_vaapi">VAAPI</option></select></div>
-          <div class="field"><label for="yt_auth_enabled">YouTube Auth</label><select id="yt_auth_enabled"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
-          <div class="field"><label for="yt_auth_browser">YouTube Browser</label><select id="yt_auth_browser"><option value="auto">Auto</option><option value="firefox">Firefox</option><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="chromium">Chromium</option><option value="brave">Brave</option><option value="vivaldi">Vivaldi</option><option value="opera">Opera</option></select></div>
-          <div class="field wide"><label for="yt_auth_profile">YouTube Profile Path</label><input id="yt_auth_profile" type="text"></div>
+          <div class="field"><label for="theme_select">Theme</label><select id="theme_select">
+              <option value="purple">Purple</option>
+              <option value="blue">Blue</option>
+              <option value="red">Red</option>
+              <option value="mono">Mono</option>
+            </select></div>
+          <div class="field"><label for="buffer_mode">Stream Buffer</label><select id="buffer_mode">
+              <option>Low</option>
+              <option>Medium</option>
+              <option>High</option>
+              <option>Ultra</option>
+            </select></div>
+          <div class="field"><label for="encoder_preference">Encoder</label><select id="encoder_preference">
+              <option value="auto">Auto</option>
+              <option value="libx264">CPU x264</option>
+              <option value="h264_nvenc">NVIDIA NVENC</option>
+              <option value="h264_qsv">Intel QSV</option>
+              <option value="h264_amf">AMD AMF</option>
+              <option value="h264_vaapi">VAAPI</option>
+            </select></div>
+
         </div>
-        <div class="checks" style="margin-top:12px;">
-          <label class="check"><input id="overlay_titles" type="checkbox">Overlay current title</label>
-          <label class="check"><input id="shuffle" type="checkbox">Shuffle playlist</label>
-          <label class="check"><input id="log_to_file" type="checkbox">App log</label>
-          <label class="check"><input id="ffmpeg_log_to_file" type="checkbox">Save FFmpeg log</label>
-          <label class="check"><input id="debug_logging" type="checkbox">Debug logging</label>
-          <label class="check"><input id="remember" type="checkbox">Remember playlist and key</label>
+        <div class="settings-toggle-groups">
+          <fieldset class="settings-toggle-group">
+            <legend>Playback</legend>
+            <div class="settings-toggle-grid">
+              <label class="check"><input id="shuffle" type="checkbox">Shuffle playlist</label>
+              <label class="check"><input id="overlay_titles" type="checkbox">Overlay current title</label>
+            </div>
+          </fieldset>
+          <fieldset class="settings-toggle-group">
+            <legend>Preferences</legend>
+            <div class="settings-toggle-grid">
+              <label class="check"><input id="remember" type="checkbox">Remember playlist and key</label>
+            </div>
+          </fieldset>
+          <fieldset class="settings-toggle-group">
+            <legend>Logging &amp; debugging</legend>
+            <div class="settings-toggle-grid">
+              <label class="check"><input id="log_to_file" type="checkbox">Save app log</label>
+              <label class="check"><input id="ffmpeg_log_to_file" type="checkbox">Save FFmpeg log</label>
+              <label class="check settings-debug-toggle"><input id="debug_logging" type="checkbox" aria-describedby="debug_logging_hint"><span>Debug logging<span id="debug_logging_hint" class="toggle-hint">Show the Debug tab and include extra diagnostics.</span></span></label>
+            </div>
+          </fieldset>
         </div>
       </div>
+      <section class="card recovery-settings" aria-labelledby="recovery_heading">
+        <div class="tool-heading">
+          <h2 id="recovery_heading">Recovery image</h2>
+          <p>Shown during interruptions after streaming starts. Audio stays silent until the source returns.</p>
+        </div>
+        <div class="recovery-layout">
+          <div class="media-frame recovery-frame">
+            <div id="fallback_image_empty" class="media-empty"><strong>No recovery image</strong><span>Fallback uses a black screen.</span></div>
+            <img id="fallback_image_preview" class="fallback-image-preview" alt="Saved recovery image" hidden>
+          </div>
+          <div class="recovery-controls">
+            <div class="recovery-requirements">
+              <strong>16:9 image required</strong>
+              <span class="tool-caption">Recommended: 1920 × 1080 px</span>
+              <span id="fallback_image_hint" class="tool-caption">PNG, JPG or WebP · Up to 20 MiB</span>
+            </div>
+            <input id="fallback_image_file" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Recovery image" hidden>
+            <div class="tool-actions">
+              <button id="fallback_image_upload" type="button" class="primary" aria-describedby="fallback_image_hint">Upload image</button>
+              <button id="fallback_image_remove" type="button" class="tool-secondary" disabled>Remove</button>
+            </div>
+            <div id="fallback_image_status" class="statusline" role="status" aria-live="polite">Loading recovery image…</div>
+            <p class="tool-caption">Fits without cropping. Changes apply without restarting the stream.</p>
+          </div>
+        </div>
+      </section>
     </div>
     <div class="tab-panel" id="tab-sources">
       <div class="card">
@@ -174,16 +257,68 @@
           <button class="subtab-btn" data-subtab="subtab-ffmpeg">FFmpeg Output</button>
         </div>
         <div class="statusline">Showing the last 100 console lines.</div>
-        <div class="subtab-panel active" id="subtab-other"><pre id="otherLogBox">Loading...</pre></div>
-        <div class="subtab-panel" id="subtab-ffmpeg"><pre id="ffmpegLogBox">Loading...</pre></div>
+        <div class="subtab-panel active" id="subtab-other">
+          <pre id="otherLogBox">Loading...</pre>
+        </div>
+        <div class="subtab-panel" id="subtab-ffmpeg">
+          <pre id="ffmpegLogBox">Loading...</pre>
+        </div>
       </div>
+    </div>
+    <div class="tab-panel" id="tab-debug" hidden>
+      <section class="card debug-workspace" aria-labelledby="debug_heading">
+        <div class="tool-heading">
+          <div class="tool-title"><h2 id="debug_heading">Local preview</h2><span class="tool-badge">Local only</span></div>
+          <p>Test the selected source and its recovery behavior without publishing to a streaming platform.</p>
+        </div>
+        <div class="media-frame debug-preview-frame">
+          <div id="debug_preview_empty" class="media-empty"><strong>Preview is stopped</strong><span>Select a source on the Stream tab, then start a local test.</span></div>
+          <video id="debug_preview_video" class="debug-preview-video" controls muted playsinline aria-label="Local test stream preview" hidden></video>
+        </div>
+        <div class="debug-preview-toolbar">
+          <div class="tool-actions">
+            <button id="debug_test_start" class="primary" type="button">Start local test</button>
+            <button id="debug_test_stop" class="tool-secondary" type="button" disabled>Stop test</button>
+          </div>
+          <div class="tool-actions debug-player-actions">
+            <button id="debug_preview_reconnect" class="tool-secondary" type="button" disabled>Reconnect player</button>
+            <a id="debug_preview_link" href="/api/debug/preview/index.m3u8" target="_blank" rel="noopener" hidden>Open playlist ↗</a>
+          </div>
+        </div>
+        <div id="debug_preview_status" class="statusline" role="status" aria-live="polite">Local preview is stopped.</div>
+        <p class="tool-caption">Unmute to hear the source. Preview playback has a few seconds of buffering. Stop an active broadcast before starting a local test.</p>
+        <section class="debug-failures" aria-labelledby="debug_failures_heading">
+          <div class="tool-heading">
+            <h2 id="debug_failures_heading">Source recovery</h2>
+            <p>Interrupt the active source and watch it recover. These controls also affect a running broadcast.</p>
+          </div>
+          <dl class="debug-metrics" aria-label="Recovery status">
+            <div><dt>Source PID</dt><dd id="debug_source_pid">—</dd></div>
+            <div><dt>Output PID</dt><dd id="debug_output_pid">—</dd></div>
+            <div><dt>Recoveries</dt><dd id="debug_recovery_count">0</dd></div>
+            <div><dt>Last failure</dt><dd id="debug_last_fault">None</dd></div>
+          </dl>
+          <div id="debug_source_status" class="statusline" role="status">Waiting for source status…</div>
+          <div class="debug-fault-list">
+            <div class="debug-fault-row"><div><strong>Audio loss</strong><span>Drop audio packets to trigger the stall watchdog.</span></div><button type="button" class="tool-secondary" data-debug-fault="audio_drop" disabled>Drop audio</button></div>
+            <div class="debug-fault-row"><div><strong>Video loss</strong><span>Drop video packets to trigger the stall watchdog.</span></div><button type="button" class="tool-secondary" data-debug-fault="video_drop" disabled>Drop video</button></div>
+            <div class="debug-fault-row"><div><strong>Read failure</strong><span>Simulate an input error for immediate recovery.</span></div><button type="button" class="tool-secondary" data-debug-fault="read_error" disabled>Simulate error</button></div>
+            <div class="debug-fault-row"><div><strong>Source stall</strong><span>Pause the source process until recovery takes over.</span></div><button type="button" class="tool-secondary" data-debug-fault="source_pause" disabled>Stall source</button></div>
+            <div class="debug-fault-row"><div><strong>Source exit</strong><span>Terminate the source process to test replacement.</span></div><button type="button" class="tool-secondary" data-debug-fault="source_exit" disabled>Terminate source</button></div>
+          </div>
+          <div id="debug_action_status" class="statusline debug-action-status" role="status" aria-live="polite"></div>
+          <p class="tool-caption">Audio and video stalls trigger recovery after eight seconds. The source PID should change while the output PID stays the same.</p>
+        </section>
+      </section>
     </div>
     <div class="tab-panel" id="tab-about">
       <div class="card">
         <h2>About</h2>
-        <p><strong>{APP_NAME}</strong> - YouTube 24/7 VOD Streamer<br>Version {APP_VERSION}</p>
+        <p><strong>{APP_NAME}</strong> v{APP_VERSION}</p>
         <div class="creator">
-          <img src="https://thetimevortex.net/media/creators/624961413500108830/c0483390-40d3-4d8c-b922-6997639b3d71.png" alt="TheDoctorTTV profile picture">
+          <img
+            src="https://thetimevortex.net/media/creators/624961413500108830/c0483390-40d3-4d8c-b922-6997639b3d71.png"
+            alt="TheDoctorTTV profile picture">
           <div>Created by <strong>TheDoctorTTV</strong></div>
         </div>
         <p><a href="https://github.com/{GITHUB_REPO}" target="_blank" rel="noreferrer">GitHub Repository</a></p>
@@ -198,19 +333,27 @@
               </div>
             </div>
             <div id="appUpdateStatus" class="statusline">App update status not loaded.</div>
-            <div class="progress-wrap"><div id="appUpdateProgressBar" class="progress-bar"></div></div>
+            <div class="progress-wrap">
+              <div id="appUpdateProgressBar" class="progress-bar"></div>
+            </div>
             <div id="appUpdateProgressText" class="statusline"></div>
             <div class="about-controls" style="margin-top: 8px;">
               <div class="field" style="min-width: 220px; margin: 0;">
                 <label for="app_update_channel">Channel</label>
-                <select id="app_update_channel"><option value="release">Releases</option><option value="prerelease">Pre-releases</option></select>
+                <select id="app_update_channel">
+                  <option value="release">Releases</option>
+                  <option value="prerelease">Pre-releases</option>
+                </select>
               </div>
               <div class="field" style="min-width: 220px; margin: 0;">
                 <label for="app_update_version">Version</label>
-                <select id="app_update_version"><option value="">Latest in selected channel</option></select>
+                <select id="app_update_version">
+                  <option value="">Latest in selected channel</option>
+                </select>
               </div>
               <label class="check" style="margin: 0;"><input id="auto_app_updates" type="checkbox">Auto install</label>
-              <label class="check" style="margin: 0;"><input id="check_updates_startup" type="checkbox">Check for updates automatically</label>
+              <label class="check" style="margin: 0;"><input id="check_updates_startup" type="checkbox">Check for
+                updates automatically</label>
             </div>
           </div>
           <div class="about-section">
@@ -221,7 +364,9 @@
               </div>
             </div>
             <div id="binariesStatus" class="statusline">Binary status not loaded.</div>
-            <div class="progress-wrap"><div id="binariesProgressBar" class="progress-bar"></div></div>
+            <div class="progress-wrap">
+              <div id="binariesProgressBar" class="progress-bar"></div>
+            </div>
             <div id="binariesProgressText" class="statusline"></div>
           </div>
         </div>
@@ -233,6 +378,7 @@
       </div>
     </div>
   </div>
-    <script src="/assets/app.js"></script>
+  <script src="/assets/app.js"></script>
 </body>
+
 </html>

@@ -7,8 +7,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -60,6 +60,23 @@ impl OwnedChild {
         if self.0.try_wait()?.is_some() {
             return Ok(true);
         }
+        self.request_ffmpeg_quit();
+        if self.drain(timeout)?.is_some() {
+            return Ok(true);
+        }
+        // Hung I/O must not prevent shutdown indefinitely. Escalation is reported by the caller.
+        self.stop();
+        Ok(false)
+    }
+    /// Request cleanup without waiting, so callers can continue draining media pipes.
+    pub fn request_ffmpeg_quit(&mut self) {
+        if self.0.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(self.0.id() as i32), libc::SIGCONT);
+        }
         let requested =
             self.0.stdin.take().is_some_and(|mut input| {
                 input.write_all(b"q\n").and_then(|_| input.flush()).is_ok()
@@ -70,12 +87,6 @@ impl OwnedChild {
                 libc::kill(-(self.0.id() as i32), libc::SIGINT);
             }
         }
-        if self.drain(timeout)?.is_some() {
-            return Ok(true);
-        }
-        // Hung I/O must not prevent shutdown indefinitely. Escalation is reported by the caller.
-        self.stop();
-        Ok(false)
     }
     pub fn drain(&mut self, timeout: Duration) -> Result<Option<ExitStatus>> {
         let until = Instant::now() + timeout;
@@ -123,6 +134,13 @@ impl Drop for OwnedChild {
 pub struct Control {
     pub stop: AtomicBool,
     pub skip: AtomicBool,
+    pub local_preview: bool,
+    pub preview_id: u64,
+    pub source_pid: AtomicU32,
+    pub output_pid: AtomicU32,
+    pub source_ready: AtomicBool,
+    pub recoveries: AtomicU64,
+    pub fault: Mutex<crate::debug::FaultState>,
 }
 impl Control {
     pub fn stopped(&self) -> bool {

@@ -174,3 +174,13 @@ stream247-linux-x86_64.tar.gz
 # Runtime logs and compressed archives
 /logs/
 /releases/logs/
+
+# Server-uploaded recovery image
+/fallback-image.png
+/fallback-image-*.upload
+/releases/fallback-image.png
+/releases/fallback-image-*.upload
+
+# Rolling local-only diagnostic preview
+/debug-preview/
+/releases/debug-preview/

@@ -94,3 +94,8 @@ parity. Before releasing, compilation and runtime checks are still required,
 including existing-config loading, dashboard operations, subprocess shutdown,
 updates, a playlist transition and a relay source ending. Audio continuity work
 should follow as a separately reviewable change after migration validation.
+
+Subsequent source-recovery changes are described separately in
+[SOURCE_RECOVERY.md](SOURCE_RECOVERY.md), including private producer sockets,
+fallback playout, HTTP retries, progress watchdogs and synchronized VOD resume.
+Those changes also await the user's build and runtime verification.

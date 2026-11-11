@@ -3,11 +3,21 @@
     const otherLogBox = document.getElementById("otherLogBox");
     const ffmpegLogBox = document.getElementById("ffmpegLogBox");
     const startBtn = document.getElementById("startBtn");
+    const restartBtn = document.getElementById("restartBtn");
+    let actionPending = false;
     const stopBtn = document.getElementById("stopBtn");
     const skipBtn = document.getElementById("skipBtn");
     const refreshBtn = document.getElementById("refreshBtn");
     const reloadSettingsBtn = document.getElementById("reloadSettingsBtn");
     const settingsStatus = document.getElementById("settingsStatus");
+    const fallbackFile = document.getElementById("fallback_image_file");
+    const fallbackUpload = document.getElementById("fallback_image_upload");
+    const fallbackRemove = document.getElementById("fallback_image_remove");
+    const fallbackStatus = document.getElementById("fallback_image_status");
+    const fallbackPreview = document.getElementById("fallback_image_preview");
+    const fallbackEmpty = document.getElementById("fallback_image_empty");
+    let fallbackBusy = false;
+    let fallbackConfigured = false;
     const checkAppUpdateBtn = document.getElementById("checkAppUpdateBtn");
     const downloadAppUpdateBtn = document.getElementById("downloadAppUpdateBtn");
     const reinstallAppBtn = document.getElementById("reinstallAppBtn");
@@ -69,7 +79,7 @@
     let appUpdateStatusLoading = false;
     const STORAGE_TAB_KEY = "stream247.active_tab";
     const STORAGE_SUBTAB_KEY = "stream247.active_subtab";
-    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "yt_auth_enabled", "yt_auth_browser", "yt_auth_profile", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
+    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
     const STREAM_URL_PRESETS = {
       youtube: { name: "YouTube", rtmp_base: "rtmp://a.rtmp.youtube.com/live2" },
       twitch: { name: "Twitch", rtmp_base: "rtmp://live.twitch.tv/app" },
@@ -232,7 +242,7 @@
       let twitch = false;
       try {
         const host = new URL(url).hostname.toLowerCase();
-        twitch = host === "twitch.tv" || host.endsWith(".twitch.tv") || host.endsWith(".contribute.live-video.net");
+        twitch = host === "twitch.tv" || host.endsWith(".twitch.tv");
       } catch (err) {}
       group.hidden = !twitch;
       enabled.disabled = streamActive || !twitch;
@@ -240,7 +250,7 @@
       const videoBitrate = document.getElementById("video_bitrate");
       videoBitrate.disabled = active;
       videoBitrate.title = active ? "Disable Enhanced Broadcasting to edit the video bitrate." : "";
-      document.getElementById("twitchEnhancedOptions").hidden = !active;
+      document.getElementById("twitchEnhancedOptions").hidden = !twitch;
       const tracksAuto = document.getElementById("twitch_enhanced_tracks_auto");
       const bitrateAuto = document.getElementById("twitch_enhanced_bitrate_auto");
       tracksAuto.disabled = streamActive || !active;
@@ -880,9 +890,59 @@
       return 0;
     }
 
+    async function postAction(path) {
+      const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const result = await response.json();
+      if (!response.ok || result.ok === false) throw new Error(result.error || "Stream action failed.");
+    }
+
+    function syncActionButtons() {
+      startBtn.disabled = actionPending || streamActive;
+      restartBtn.disabled = actionPending || !streamActive;
+      stopBtn.disabled = actionPending || !streamActive;
+      skipBtn.disabled = actionPending || !streamActive;
+    }
+
     async function api(path) {
-      await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      await refreshState(true);
+      if (actionPending) return;
+      actionPending = true;
+      syncActionButtons();
+      try {
+        await postAction(path);
+      } catch (err) {
+        setSettingsStatus(err.message || "Unable to reach the server.", "err");
+      } finally {
+        actionPending = false;
+        await refreshState(true);
+        syncActionButtons();
+      }
+    }
+
+    async function restartStream() {
+      if (actionPending || !streamActive) return;
+      actionPending = true;
+      syncActionButtons();
+      setSettingsStatus("Restarting stream…", "");
+      try {
+        await postAction("/api/stop");
+        const deadline = Date.now() + 60000;
+        while (true) {
+          const response = await fetch("/api/state?ts=" + Date.now(), { cache: "no-store" });
+          if (!response.ok) throw new Error("Unable to check stream shutdown.");
+          const state = await response.json();
+          if (!state.streaming) break;
+          if (Date.now() >= deadline) throw new Error("Stream is still stopping. Start it again once shutdown finishes.");
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        await postAction("/api/start");
+        setSettingsStatus("Stream restarted.", "ok");
+      } catch (err) {
+        setSettingsStatus(err.message || "Unable to restart the stream.", "err");
+      } finally {
+        actionPending = false;
+        await refreshState(true);
+        syncActionButtons();
+      }
     }
 
     function updateLogBox(el, arr, forceScroll) {
@@ -908,21 +968,14 @@
         stateText.textContent = s.status || "Unknown";
         stateText.className = "status" + (streaming ? " on" : "");
         const meta = s.meta || {};
-        const parts = [];
         const runtimeSourceUrl = String(meta.source || "").trim();
         const selectedSourceUrl = String(sourceSelect && sourceSelect.value || "").trim();
         const firstSourceUrl = String((sourcesState[0] && sourcesState[0].url) || "").trim();
         const sourceUrl = runtimeSourceUrl || selectedSourceUrl || firstSourceUrl;
-        if (sourceUrl) {
-          const sourceName = sourceNameForUrl(sourceUrl);
-          parts.push("source: " + (sourceName || sourceUrl));
-        }
-        metaText.textContent = parts.join(" | ");
+        metaText.textContent = sourceUrl ? (sourceNameForUrl(sourceUrl) || sourceUrl) : "No source selected";
         updateLogBox(otherLogBox, s.logs_other, forceScroll);
         updateLogBox(ffmpegLogBox, s.logs_ffmpeg, forceScroll);
-        startBtn.disabled = streaming;
-        stopBtn.disabled = !streaming;
-        skipBtn.disabled = !streaming;
+        syncActionButtons();
       } catch (err) {
         stateText.textContent = "Dashboard disconnected";
         stateText.className = "status";
@@ -949,8 +1002,6 @@
         if (!el || !(id in s)) continue;
         if (el.type === "checkbox") {
           el.checked = !!s[id];
-        } else if (id === "yt_auth_enabled") {
-          el.value = s[id] ? "true" : "false";
         } else if (id === "playlist_url") {
           el.value = selectedSource || String(s[id] ?? "");
         } else {
@@ -961,7 +1012,7 @@
         streamKeySelect.value = selectedStreamKey || String(s.stream_key ?? "");
       }
       if (s && Object.prototype.hasOwnProperty.call(s, "theme")) {
-        applyTheme(String(s.theme || "blue"));
+        applyTheme(String(s.theme || "purple"));
       }
       syncStreamPresetFromRtmpBase(currentRtmpBase);
       const tracks = Number(s.twitch_enhanced_max_tracks || 0);
@@ -971,6 +1022,7 @@
       document.getElementById("twitch_enhanced_max_tracks").value = tracks || 3;
       document.getElementById("twitch_enhanced_max_bitrate_kbps").value = bandwidth || 12000;
       syncEnhancedBroadcastingUI();
+      syncDebugVisibility();
     }
 
     function formToPayload() {
@@ -1011,7 +1063,7 @@
       } else {
         out.rtmp_base = presetUrlForKey("youtube");
       }
-      out.theme = String(themeSelect && themeSelect.value || "blue").trim().toLowerCase();
+      out.theme = String(themeSelect && themeSelect.value || "purple").trim().toLowerCase();
       out.stream_url_services = streamUrlServicesState.map((entry) => ({
         name: String(entry.name || "").trim(),
         rtmp_base: String(entry.rtmp_base || "").trim()
@@ -1038,7 +1090,6 @@
       }
       out.framerate = Number(out.framerate || 30);
       out.update_download_cap_mbps = 50;
-      out.yt_auth_enabled = (String(out.yt_auth_enabled).toLowerCase() === "true");
       return out;
     }
 
@@ -1088,29 +1139,265 @@
     }
 
     function applyTheme(themeName) {
-      let theme = String(themeName || "blue").trim().toLowerCase();
-      if (theme === "current") theme = "blue";
+      let theme = String(themeName || "purple").trim().toLowerCase();
+      if (theme === "current") theme = "purple";
       const allowed = new Set(["blue", "purple", "red", "mono"]);
-      const safeTheme = allowed.has(theme) ? theme : "blue";
+      const safeTheme = allowed.has(theme) ? theme : "purple";
       const root = document.documentElement;
-      if (safeTheme === "blue") {
-        root.removeAttribute("data-theme");
-        document.body.removeAttribute("data-theme");
-      } else {
-        root.setAttribute("data-theme", safeTheme);
-        document.body.setAttribute("data-theme", safeTheme);
-      }
+      root.setAttribute("data-theme", safeTheme);
+      document.body.setAttribute("data-theme", safeTheme);
       if (themeSelect) themeSelect.value = safeTheme;
     }
 
     function initThemeSelector() {
       if (!themeSelect) return;
-      applyTheme(String(themeSelect.value || "blue"));
+      applyTheme(String(themeSelect.value || "purple"));
       themeSelect.addEventListener("change", () => {
-        const selected = String(themeSelect.value || "blue").trim().toLowerCase();
+        const selected = String(themeSelect.value || "purple").trim().toLowerCase();
         applyTheme(selected);
         queueAutoSave(180);
       });
+    }
+
+    function updateFallbackButtons() {
+      fallbackFile.disabled = fallbackBusy;
+      fallbackUpload.disabled = fallbackBusy;
+      fallbackUpload.textContent = fallbackBusy ? "Uploading…" : "Upload image";
+      fallbackUpload.setAttribute("aria-busy", String(fallbackBusy));
+      fallbackRemove.disabled = fallbackBusy || !fallbackConfigured;
+    }
+    function setFallbackStatus(message, error = false) {
+      fallbackStatus.textContent = message;
+      fallbackStatus.className = "statusline " + (error ? "err" : "ok");
+    }
+    function renderFallbackImage(image) {
+      fallbackConfigured = !!image.configured;
+      fallbackEmpty.querySelector("strong").textContent = "No recovery image";
+      fallbackEmpty.querySelector("span").textContent = "Fallback uses a black screen.";
+      fallbackPreview.hidden = !fallbackConfigured;
+      fallbackEmpty.hidden = fallbackConfigured;
+      if (fallbackConfigured) fallbackPreview.src = "/api/fallback-image?ts=" + Date.now();
+      else fallbackPreview.removeAttribute("src");
+      updateFallbackButtons();
+    }
+    async function loadFallbackImage() {
+      try {
+        const res = await fetch("/api/fallback-image/info", { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || "Could not load recovery image.");
+        renderFallbackImage(data.image || {});
+        setFallbackStatus(fallbackConfigured ? "Recovery image saved on the server." : "No image set. Recovery uses a black screen.");
+      } catch (error) { setFallbackStatus(error.message, true); }
+    }
+    async function prepareFallbackImage(file) {
+      if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+        throw new Error("Choose a PNG, JPG or WebP image.");
+      }
+      if (file.size > 20 * 1024 * 1024) throw new Error("Choose an image no larger than 20 MiB.");
+      const bitmap = await createImageBitmap(file);
+      try {
+        if (bitmap.width * 9 !== bitmap.height * 16) {
+          throw new Error("Choose a 16:9 image. Recommended size: 1920 × 1080 px.");
+        }
+        let units = Math.min(bitmap.width / 16, 4096 / 16);
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const canvas = document.createElement("canvas");
+          // Whole 16×9 units preserve the required ratio during size reduction.
+          const size = Math.max(1, Math.floor(units));
+          canvas.width = size * 16;
+          canvas.height = size * 9;
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Could not prepare the image.");
+          context.fillStyle = "#000";
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise((resolve, reject) => canvas.toBlob(
+            value => value ? resolve(value) : reject(new Error("Could not prepare the image.")), "image/png"
+          ));
+          if (blob.size <= 8 * 1024 * 1024) return blob;
+          units *= 0.75;
+        }
+        throw new Error("The image is too large to upload. Choose a smaller image.");
+      } finally { bitmap.close(); }
+    }
+    async function uploadFallbackImage() {
+      const file = fallbackFile.files[0];
+      if (!file || fallbackBusy) return;
+      fallbackBusy = true;
+      updateFallbackButtons();
+      setFallbackStatus("Uploading recovery image...");
+      try {
+        const blob = await prepareFallbackImage(file);
+        const res = await fetch("/api/fallback-image", { method: "POST", headers: { "Content-Type": "image/png" }, body: blob });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || "Image upload failed.");
+        fallbackFile.value = "";
+        renderFallbackImage(data.image || {});
+        setFallbackStatus("Recovery image uploaded. It will be used whenever fallback is active.");
+      } catch (error) { setFallbackStatus(error.message || "Image upload failed.", true); }
+      finally { fallbackFile.value = ""; fallbackBusy = false; updateFallbackButtons(); }
+    }
+    async function removeFallbackImage() {
+      if (fallbackBusy || !fallbackConfigured) return;
+      fallbackBusy = true;
+      updateFallbackButtons();
+      try {
+        const res = await fetch("/api/fallback-image", { method: "DELETE" });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || "Could not remove recovery image.");
+        renderFallbackImage(data.image || {});
+        setFallbackStatus("Recovery image removed. Recovery uses a black screen.");
+      } catch (error) { setFallbackStatus(error.message, true); }
+      finally { fallbackBusy = false; updateFallbackButtons(); }
+    }
+
+    const debugTab = document.getElementById("tab-debug");
+    const debugTabButton = document.querySelector('[data-tab="tab-debug"]');
+    const debugToggle = document.getElementById("debug_logging");
+    const debugEmpty = document.getElementById("debug_preview_empty");
+    let debugVisibilityInitialized = false;
+    const debugFaultLabels = { audio_drop: "Audio loss", video_drop: "Video loss", read_error: "Read failure", source_pause: "Source stall", source_exit: "Source exit" };
+    function syncDebugVisibility() {
+      const enabled = debugToggle.checked;
+      debugTabButton.hidden = !enabled;
+      debugTab.hidden = !enabled;
+      if (!enabled) {
+        if (debugTab.classList.contains("active")) {
+          activateTab("tab-settings");
+          debugToggle.focus();
+        }
+        clearDebugPlayer();
+      } else {
+        if (!debugVisibilityInitialized) {
+          try { if (localStorage.getItem(STORAGE_TAB_KEY) === "tab-debug") activateTab("tab-debug", false); } catch (error) {}
+        }
+        loadDebugStatus();
+      }
+      debugVisibilityInitialized = true;
+      syncDebugButtons();
+    }
+    const debugStart = document.getElementById("debug_test_start");
+    const debugStop = document.getElementById("debug_test_stop");
+    const debugReconnect = document.getElementById("debug_preview_reconnect");
+    const debugVideo = document.getElementById("debug_preview_video");
+    const debugPreviewStatus = document.getElementById("debug_preview_status");
+    const debugSourceStatus = document.getElementById("debug_source_status");
+    const debugActionStatus = document.getElementById("debug_action_status");
+    const debugPreviewLink = document.getElementById("debug_preview_link");
+    const debugFaultButtons = Array.from(document.querySelectorAll("[data-debug-fault]"));
+    let debugInfo = {};
+    let debugPending = false;
+    let debugLoading = false;
+    let debugPlayer = null;
+    let debugPlayerKey = "";
+    let debugPlayerPreparing = "";
+    let debugPlayerLibrary = null;
+    let debugPlayerError = "";
+    function syncDebugButtons() {
+      debugStart.disabled = !debugToggle.checked || debugPending || !!debugInfo.running;
+      debugStop.disabled = debugPending || !debugInfo.running || !debugInfo.local_preview;
+      debugReconnect.disabled = !debugInfo.running || !debugInfo.local_preview || !debugInfo.preview_ready;
+      const ready = debugToggle.checked && debugInfo.running && debugInfo.source_ready && !debugInfo.fault_pending && !debugInfo.fault_active;
+      for (const button of debugFaultButtons) button.disabled = debugPending || !ready;
+    }
+    function clearDebugPlayer() {
+      debugPlayerKey = "";
+      debugPlayerPreparing = "";
+      debugPlayerError = "";
+      if (debugPlayer) { debugPlayer.destroy(); debugPlayer = null; }
+      debugVideo.pause();
+      debugVideo.removeAttribute("src");
+      debugVideo.load();
+      debugVideo.hidden = true;
+      debugEmpty.hidden = false;
+    }
+    function loadPreviewPlayerLibrary() {
+      if (window.Hls) return Promise.resolve();
+      if (!debugPlayerLibrary) {
+        debugPlayerLibrary = new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "/assets/vendor/hls.light.min.js";
+          script.onload = resolve;
+          script.onerror = () => { debugPlayerLibrary = null; script.remove(); reject(new Error("Could not load the local preview player.")); };
+          document.head.appendChild(script);
+        });
+      }
+      return debugPlayerLibrary;
+    }
+    async function attachDebugPlayer(info) {
+      if (!debugToggle.checked) return;
+      const key = String(info.preview_id) + String(info.preview_url);
+      if (debugPlayerKey === key || debugPlayerPreparing === key) return;
+      clearDebugPlayer();
+      debugPlayerPreparing = key;
+      const url = info.preview_url + "?session=" + encodeURIComponent(info.preview_id);
+      try {
+        if (debugVideo.canPlayType("application/vnd.apple.mpegurl")) {
+          if (debugPlayerPreparing !== key) return;
+          debugVideo.src = url;
+        } else {
+          await loadPreviewPlayerLibrary();
+          if (!debugToggle.checked || debugPlayerPreparing !== key || !debugInfo.running || !debugInfo.local_preview) return;
+          if (!window.Hls || !Hls.isSupported()) throw new Error("This browser cannot play the preview. Open the playlist in an HLS-compatible player.");
+          debugPlayer = new Hls({ enableWorker: false, backBufferLength: 10, liveSyncDurationCount: 2 });
+          debugPlayer.on(Hls.Events.ERROR, (_event, data) => {
+            if (data.fatal) {
+              debugPlayerError = "Preview player interrupted. Reconnect Player retries playback without restarting the test or output process.";
+              debugPreviewStatus.textContent = debugPlayerError;
+            }
+          });
+          debugPlayer.loadSource(url);
+          debugPlayer.attachMedia(debugVideo);
+        }
+        debugPlayerKey = key;
+        debugVideo.hidden = false;
+        debugEmpty.hidden = true;
+        debugVideo.play().catch(() => {});
+      } catch (error) { debugPlayerError = error.message; debugPreviewStatus.textContent = error.message; }
+      finally { if (debugPlayerPreparing === key) debugPlayerPreparing = ""; }
+    }
+    async function loadDebugStatus() {
+      if (debugLoading || !debugToggle.checked) return;
+      debugLoading = true;
+      try {
+        const response = await fetch("/api/debug/state", { cache: "no-store" });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "Could not load debug status.");
+        if (!debugToggle.checked) return;
+        debugInfo = payload.debug || {};
+        syncDebugButtons();
+        const local = debugInfo.running && debugInfo.local_preview;
+        debugPreviewLink.hidden = !local;
+        debugPreviewStatus.textContent = local ? (debugInfo.preview_ready ? (debugPlayerError || "Local preview running. Unmute to hear the selected source.") : "Preparing local preview...") : "Local preview is stopped.";
+        document.getElementById("debug_source_pid").textContent = debugInfo.source_pid || "—";
+        document.getElementById("debug_output_pid").textContent = debugInfo.output_pid || "—";
+        document.getElementById("debug_recovery_count").textContent = debugInfo.recoveries || 0;
+        document.getElementById("debug_last_fault").textContent = debugFaultLabels[debugInfo.last_fault] || "None";
+        debugSourceStatus.textContent = debugInfo.running ? (debugInfo.source_ready ? "Source active" : "Preparing or recovering source…") : "No stream is running.";
+        debugEmpty.querySelector("strong").textContent = local ? "Preparing preview…" : "Preview is stopped";
+        debugEmpty.querySelector("span").textContent = local ? "Waiting for source media and preview segments." : "Select a source on the Stream tab, then start a local test.";
+        if (local && debugInfo.preview_ready) await attachDebugPlayer(debugInfo);
+        else if (!local && (debugPlayerKey || debugPlayerPreparing)) clearDebugPlayer();
+      } catch (error) { debugActionStatus.textContent = error.message; }
+      finally { debugLoading = false; }
+    }
+    async function debugAction(path, body = {}) {
+      if (debugPending || !debugToggle.checked) return;
+      debugPending = true;
+      syncDebugButtons();
+      debugActionStatus.textContent = "Sending debug action...";
+      try {
+        const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "Debug action failed.");
+        debugActionStatus.textContent = payload.failure ? "Failure queued: " + payload.failure.kind + ". Watch the source/output PIDs and recovery count." : "Debug action accepted.";
+      } catch (error) { debugActionStatus.textContent = error.message; }
+      finally {
+        debugPending = false;
+        await loadDebugStatus();
+        await refreshState(false);
+        syncDebugButtons();
+      }
     }
 
     async function loadSettings() {
@@ -1417,8 +1704,9 @@
 
     function activateTab(tabId, persist = true) {
       const wanted = String(tabId || "");
-      const fallback = tabButtons.find((b) => b.classList.contains("active")) || tabButtons[0];
-      const targetBtn = tabButtons.find((b) => b.dataset.tab === wanted) || fallback;
+      const available = tabButtons.filter((b) => !b.hidden);
+      const fallback = available.find((b) => b.classList.contains("active")) || available[0];
+      const targetBtn = available.find((b) => b.dataset.tab === wanted) || fallback;
       if (!targetBtn) return;
       const targetId = String(targetBtn.dataset.tab || "");
       tabButtons.forEach((b) => b.classList.toggle("active", b === targetBtn));
@@ -1453,6 +1741,7 @@
     });
 
     startBtn.addEventListener("click", () => api("/api/start"));
+    restartBtn.addEventListener("click", restartStream);
     stopBtn.addEventListener("click", () => api("/api/stop"));
     skipBtn.addEventListener("click", () => api("/api/skip"));
     refreshBtn.addEventListener("click", () => refreshState(true));
@@ -1567,6 +1856,245 @@
       });
     }
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
+    debugStart.addEventListener("click", () => debugAction("/api/debug/test-stream/start", { source: String(sourceSelect.value || "").trim() }));
+    debugStop.addEventListener("click", () => debugAction("/api/debug/test-stream/stop"));
+    debugReconnect.addEventListener("click", () => { clearDebugPlayer(); if (debugInfo.running && debugInfo.local_preview && debugInfo.preview_ready) attachDebugPlayer(debugInfo); });
+    for (const button of debugFaultButtons) {
+      button.addEventListener("click", () => debugAction("/api/debug/failure", { kind: button.dataset.debugFault, source_pid: debugInfo.source_pid }));
+    }
+    debugTabButton.addEventListener("click", loadDebugStatus);
+    debugToggle.addEventListener("change", syncDebugVisibility);
+    fallbackFile.addEventListener("change", uploadFallbackImage);
+    fallbackUpload.addEventListener("click", () => {
+      if (fallbackBusy) return;
+      fallbackFile.value = "";
+      fallbackFile.click();
+    });
+    fallbackRemove.addEventListener("click", removeFallbackImage);
+    fallbackPreview.addEventListener("error", () => {
+      if (fallbackConfigured) {
+        fallbackPreview.hidden = true;
+        fallbackEmpty.hidden = false;
+        fallbackEmpty.querySelector("strong").textContent = "Preview unavailable";
+        fallbackEmpty.querySelector("span").textContent = "Try uploading the recovery image again.";
+        setFallbackStatus("The saved image preview is unavailable. Try uploading it again.", true);
+      }
+    });
+    // Keep the native fields as the settings interface; render their controls
+    // with the app palette rather than the operating system's menu/steppers.
+    function initStyledFields() {
+      let closeSelect = null;
+      for (const select of document.querySelectorAll("select")) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "styled-select";
+        select.before(wrapper);
+        wrapper.append(select);
+        const trigger = document.createElement("button");
+        trigger.type = "button";
+        trigger.id = select.id + "_control";
+        trigger.className = "select-trigger";
+        trigger.setAttribute("role", "combobox");
+        trigger.setAttribute("aria-haspopup", "listbox");
+        trigger.setAttribute("aria-expanded", "false");
+        const text = document.createElement("span");
+        trigger.append(text);
+        const menu = document.createElement("div");
+        menu.id = select.id + "_options";
+        menu.className = "select-menu";
+        menu.setAttribute("role", "listbox");
+        menu.hidden = true;
+        trigger.setAttribute("aria-controls", menu.id);
+        const labels = Array.from(select.labels || []);
+        for (const [index, label] of labels.entries()) {
+          if (!label.id) label.id = select.id + "_label_" + index;
+          label.htmlFor = trigger.id;
+        }
+        const labelIds = labels.map(label => label.id).join(" ");
+        if (labelIds) {
+          trigger.setAttribute("aria-labelledby", labelIds);
+          menu.setAttribute("aria-labelledby", labelIds);
+        } else {
+          trigger.setAttribute("aria-label", select.getAttribute("aria-label") || select.id.replaceAll("_", " "));
+        }
+        if (select.hasAttribute("aria-describedby")) trigger.setAttribute("aria-describedby", select.getAttribute("aria-describedby"));
+        wrapper.append(trigger);
+        document.body.append(menu);
+        select.hidden = true;
+        let active = -1;
+        let search = "";
+        let searchAt = 0;
+        const enabled = () => Array.from(select.options).map((option, index) => ({ option, index })).filter(({ option }) => !option.disabled && !option.hidden && !option.parentElement.disabled);
+        function position() {
+          const rect = trigger.getBoundingClientRect();
+          const roomBelow = window.innerHeight - rect.bottom - 10;
+          const roomAbove = rect.top - 10;
+          const above = roomBelow < 180 && roomAbove > roomBelow;
+          menu.style.width = Math.min(Math.max(rect.width, 180), window.innerWidth - 16) + "px";
+          menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8)) + "px";
+          menu.style.maxHeight = Math.max(60, Math.min(280, above ? roomAbove - 6 : roomBelow - 6)) + "px";
+          menu.style.top = (above ? Math.max(8, rect.top - menu.offsetHeight - 6) : rect.bottom + 6) + "px";
+        }
+        function highlight(index) {
+          active = index;
+          for (const item of menu.children) item.classList.toggle("is-active", Number(item.dataset.index) === active);
+          const item = Array.from(menu.children).find(item => Number(item.dataset.index) === active);
+          if (item) {
+            trigger.setAttribute("aria-activedescendant", item.id);
+            item.scrollIntoView({ block: "nearest" });
+          } else trigger.removeAttribute("aria-activedescendant");
+        }
+        function close() {
+          search = "";
+          searchAt = 0;
+          menu.hidden = true;
+          trigger.setAttribute("aria-expanded", "false");
+          trigger.removeAttribute("aria-activedescendant");
+          if (closeSelect === close) closeSelect = null;
+        }
+        function sync() {
+          const selected = select.selectedOptions[0];
+          text.textContent = selected ? selected.textContent : "Select…";
+          trigger.title = selected ? selected.textContent : "";
+          trigger.disabled = select.disabled || !select.options.length;
+          menu.replaceChildren();
+          for (const [index, option] of Array.from(select.options).entries()) {
+            if (option.hidden) continue;
+            const item = document.createElement("div");
+            item.id = menu.id + "_" + index;
+            item.dataset.index = index;
+            item.className = "select-option";
+            item.setAttribute("role", "option");
+            item.setAttribute("aria-selected", String(option.selected));
+            item.setAttribute("aria-disabled", String(option.disabled || !!option.parentElement.disabled));
+            item.textContent = option.textContent;
+            item.addEventListener("pointerdown", event => event.preventDefault());
+            item.addEventListener("click", () => {
+              if (select.disabled || option.disabled || option.parentElement.disabled) return;
+              select.selectedIndex = index;
+              select.dispatchEvent(new Event("input", { bubbles: true }));
+              select.dispatchEvent(new Event("change", { bubbles: true }));
+              close();
+              trigger.focus();
+            });
+            menu.append(item);
+          }
+          if (trigger.disabled) close();
+          else if (!menu.hidden) { position(); highlight(select.selectedIndex); }
+        }
+        function open() {
+          if (trigger.disabled) return;
+          if (closeSelect) closeSelect();
+          sync();
+          menu.hidden = false;
+          trigger.setAttribute("aria-expanded", "true");
+          closeSelect = close;
+          position();
+          const first = enabled()[0];
+          highlight(enabled().some(entry => entry.index === select.selectedIndex) ? select.selectedIndex : (first ? first.index : -1));
+        }
+        trigger.addEventListener("click", () => menu.hidden ? open() : close());
+        trigger.addEventListener("keydown", event => {
+          const entries = enabled();
+          if (event.altKey && event.key === "ArrowUp") { event.preventDefault(); close(); return; }
+          if (["ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
+            event.preventDefault();
+            const wasClosed = menu.hidden;
+            if (wasClosed) open();
+            let next = Math.max(0, entries.findIndex(entry => entry.index === active));
+            if (event.key === "Home") next = 0;
+            else if (event.key === "End") next = entries.length - 1;
+            else if (!wasClosed) next += (event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "PageDown" ? 5 : -5);
+            if (entries.length) highlight(entries[Math.max(0, Math.min(next, entries.length - 1))].index);
+          } else if (event.key === "Escape") {
+            if (!menu.hidden) { event.preventDefault(); event.stopPropagation(); close(); }
+          } else if (event.key === "Tab") close();
+          else if (event.key === "Enter" || (event.key === " " && !search)) {
+            event.preventDefault();
+            if (menu.hidden) open();
+            else {
+              const item = Array.from(menu.children).find(item => Number(item.dataset.index) === active);
+              if (item) item.click();
+            }
+          } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            event.preventDefault();
+            if (menu.hidden) open();
+            if (Date.now() - searchAt > 700) search = "";
+            searchAt = Date.now();
+            search += event.key.toLowerCase();
+            const match = entries.find(({ option }) => option.textContent.trim().toLowerCase().startsWith(search));
+            if (match) highlight(match.index);
+          }
+        });
+        trigger.addEventListener("blur", close);
+        // Existing settings code assigns .value/.selectedIndex directly. Mirror
+        // only this element's setters so programmatic updates stay visible too.
+        for (const key of ["value", "selectedIndex"]) {
+          const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, key);
+          Object.defineProperty(select, key, {
+            configurable: true,
+            get() { return descriptor.get.call(this); },
+            set(value) { descriptor.set.call(this, value); sync(); }
+          });
+        }
+        select.addEventListener("change", sync);
+        new MutationObserver(sync).observe(select, { childList: true, subtree: true, attributes: true, characterData: true });
+        sync();
+      }
+      document.addEventListener("pointerdown", event => {
+        if (!event.target.closest(".styled-select, .select-menu") && closeSelect) closeSelect();
+      });
+      window.addEventListener("resize", () => { if (closeSelect) closeSelect(); });
+      document.addEventListener("scroll", event => {
+        if (!event.target.closest || !event.target.closest(".select-menu")) { if (closeSelect) closeSelect(); }
+      }, true);
+      for (const input of document.querySelectorAll('input[type="number"]')) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "number-field";
+        input.before(wrapper);
+        wrapper.append(input);
+        const controls = document.createElement("div");
+        controls.className = "number-steppers";
+        const label = input.labels[0]?.textContent.trim() || "value";
+        const buttons = [];
+        function sync() {
+          const blocked = input.disabled || input.readOnly;
+          for (const [button, direction] of buttons) {
+            const limit = direction > 0 ? input.max : input.min;
+            const atLimit = input.value !== "" && limit !== "" && (direction > 0 ? input.valueAsNumber >= Number(limit) : input.valueAsNumber <= Number(limit));
+            button.disabled = blocked || atLimit;
+          }
+        }
+        for (const direction of [1, -1]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = direction > 0 ? "number-step step-up" : "number-step step-down";
+          button.setAttribute("aria-label", (direction > 0 ? "Increase " : "Decrease ") + label);
+          button.setAttribute("aria-controls", input.id);
+          button.addEventListener("click", () => {
+            if (input.disabled || input.readOnly) return;
+            if (direction > 0) input.stepUp(); else input.stepDown();
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+            sync();
+            input.focus();
+          });
+          buttons.push([button, direction]);
+          controls.append(button);
+        }
+        wrapper.append(controls);
+        input.addEventListener("input", sync);
+        input.addEventListener("change", sync);
+        const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+        Object.defineProperty(input, "value", {
+          configurable: true,
+          get() { return descriptor.get.call(this); },
+          set(value) { descriptor.set.call(this, value); sync(); }
+        });
+        new MutationObserver(sync).observe(input, { attributes: true });
+        sync();
+      }
+    }
+    initStyledFields();
     bindAutoSaveListeners();
     initThemeSelector();
     rebuildStreamPresetOptions("youtube");
@@ -1579,10 +2107,13 @@
       activateSubtab("", false);
     }
     loadSettings();
+    loadFallbackImage();
+    loadDebugStatus();
     loadBinariesStatus();
     refreshState(true);
     setInterval(() => {
       refreshState(false);
+      if (debugToggle.checked && (debugTab.classList.contains("active") || debugInfo.local_preview || debugPending)) loadDebugStatus();
       if (binariesUpdateRunning) loadBinariesStatus();
       if (appUpdateRunning || appInstallPending) loadAppUpdateStatus();
     }, 1200);

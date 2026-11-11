@@ -210,7 +210,7 @@ pub fn normalize(v: &Value) -> Value {
             &["release", "prerelease"][..],
             "release",
         ),
-        ("theme", &["blue", "purple", "red", "mono"][..], "blue"),
+        ("theme", &["blue", "purple", "red", "mono"][..], "purple"),
     ] {
         out[k] = choice(v, k, allowed, default);
     }
@@ -287,6 +287,7 @@ pub fn save(dir: &Path, v: &Value) -> Result<()> {
 }
 #[derive(Clone)]
 pub struct StreamConfig {
+    pub local_preview: bool,
     pub settings: Value,
     pub source: String,
     pub key: String,
@@ -337,6 +338,7 @@ impl StreamConfig {
             .parse()
             .unwrap_or(720);
         Self {
+            local_preview: false,
             source: text(&v, "playlist_url", ""),
             key: text(&v, "stream_key", ""),
             base: text(&v, "rtmp_base", ""),
@@ -351,30 +353,35 @@ impl StreamConfig {
         }
     }
     pub fn url(&self) -> String {
-        format!("{}/{}", self.base.trim_end_matches('/'), self.key)
+        if self.key.is_empty() {
+            self.base.clone()
+        } else {
+            format!("{}/{}", self.base.trim_end_matches('/'), self.key)
+        }
     }
     pub fn youtube(&self) -> bool {
         reqwest::Url::parse(&self.base)
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned))
-            .is_some_and(|h| h.contains("youtube"))
+            .is_some_and(|host| host == "youtube.com" || host.ends_with(".youtube.com"))
     }
     pub fn twitch(&self) -> bool {
         reqwest::Url::parse(&self.base)
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned))
-            .is_some_and(|host| {
-                host == "twitch.tv"
-                    || host.ends_with(".twitch.tv")
-                    || host.ends_with(".contribute.live-video.net")
-            })
+            .is_some_and(|host| host == "twitch.tv" || host.ends_with(".twitch.tv"))
     }
     pub fn enhanced(&self) -> bool {
-        self.twitch() && boolean(&self.settings, "twitch_enhanced_broadcasting", false)
+        !self.local_preview
+            && self.twitch()
+            && boolean(&self.settings, "twitch_enhanced_broadcasting", false)
     }
     pub fn bridge(&self) -> bool {
-        (self.base.starts_with("rtmp://") || self.base.starts_with("rtmps://"))
-            && (!self.youtube() || boolean(&self.settings, "youtube_persistent_output", true))
+        self.local_preview
+            || (reqwest::Url::parse(&self.base)
+                .ok()
+                .is_some_and(|url| matches!(url.scheme(), "rtmp" | "rtmps"))
+                && (!self.youtube() || boolean(&self.settings, "youtube_persistent_output", true)))
     }
     pub fn buffers(&self) -> [&'static str; 4] {
         match text(&self.settings, "buffer_mode", "Medium").as_str() {

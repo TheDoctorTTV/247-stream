@@ -1,6 +1,8 @@
 //! Stream247's native Rust entry point. FFmpeg and yt-dlp remain external tools.
 mod config;
+mod debug;
 mod diagnostics;
+mod fallback_image;
 mod logfiles;
 mod process;
 mod runtime;

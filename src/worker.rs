@@ -1,4 +1,4 @@
-//! Port of the existing FFmpeg/yt-dlp worker. Timeline redesign is intentionally separate.
+//! FFmpeg/yt-dlp worker with persistent output and supervised source recovery.
 use crate::{
     config::{boolean, text, StreamConfig},
     diagnostics::{self, FfmpegStats},
@@ -6,16 +6,19 @@ use crate::{
     runtime::App,
     state, twitch, updates,
 };
+mod playout;
+mod transport;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
+use playout::Producer;
 use rand::seq::SliceRandom;
 use serde_json::Value;
-use std::os::fd::AsFd;
 use std::{
     collections::BTreeMap,
     fs,
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    process::{ChildStdin, Stdio},
+    process::Stdio,
     sync::{
         atomic::Ordering,
         mpsc::{self, Receiver},
@@ -35,7 +38,10 @@ fn input_type(url: &str) -> &'static str {
         } else {
             "unknown"
         }
-    } else if u.trim().ends_with(".m3u8") {
+    } else if reqwest::Url::parse(url)
+        .ok()
+        .is_some_and(|u| u.path().to_ascii_lowercase().ends_with(".m3u8"))
+    {
         "hls"
     } else if u.contains("twitch.tv") {
         "twitch"
@@ -234,6 +240,11 @@ impl Resolver {
             .unwrap_or_default();
         let (video, audio) = self.urls(id)?;
         Ok(Media {
+            id: Some(id.to_owned()),
+            duration: metadata["duration"]
+                .as_f64()
+                .filter(|d| d.is_finite() && *d > 0.0),
+            audio_expected: text(&metadata, "acodec", "unknown") != "none",
             title: title.trim().to_owned(),
             date,
             video,
@@ -241,7 +252,11 @@ impl Resolver {
         })
     }
 }
+#[derive(Clone)]
 struct Media {
+    id: Option<String>,
+    duration: Option<f64>,
+    audio_expected: bool,
     title: String,
     date: String,
     video: String,
@@ -249,7 +264,8 @@ struct Media {
 }
 struct Bridge {
     process: OwnedChild,
-    input: ChildStdin,
+    input: UnixStream,
+    clock: transport::Clock,
 }
 pub struct Worker {
     app: Arc<App>,
@@ -259,6 +275,10 @@ pub struct Worker {
     resolver: Resolver,
     bridge: Option<Bridge>,
     enhanced: Option<twitch::Plan>,
+    filler: Option<Producer>,
+    filler_image: Option<crate::fallback_image::Stamp>,
+    filler_image_failed: Option<crate::fallback_image::Stamp>,
+    filler_image_checked: Instant,
     live_opts: bool,
     stats_supported: bool,
     telemetry: Mutex<BTreeMap<u32, Arc<FfmpegStats>>>,
@@ -285,6 +305,10 @@ impl Worker {
             working_cookies: Arc::new(Mutex::new(None)),
         };
         let stats_supported = diagnostics::stats_supported(&ffmpeg, &app.dir, &control);
+        if cfg.bridge() {
+            app.log("[INFO] Persistent playout recovery enabled: 8s per-track stall limit, 30s source startup limit, 3 source recovery attempts; fallback retains the output session.");
+            app.log("[INFO] Playout timestamp mode: shared A/V transport clock across source/fallback handoffs; bridge discontinuity correction disabled.");
+        }
         let mut worker = Self {
             app,
             cfg,
@@ -293,16 +317,24 @@ impl Worker {
             resolver,
             bridge: None,
             enhanced: None,
+            filler: None,
+            filler_image: None,
+            filler_image_failed: None,
+            filler_image_checked: Instant::now(),
             live_opts: true,
             stats_supported,
             telemetry: Mutex::new(BTreeMap::new()),
         };
         let result = worker.execute();
+        worker.stop_filler();
         worker.finish_bridge();
         result
     }
     fn finish_bridge(&mut self) {
-        if let Some(Bridge { mut process, input }) = self.bridge.take() {
+        if let Some(Bridge {
+            mut process, input, ..
+        }) = self.bridge.take()
+        {
             self.log("[INFO] Closing RTMP input and draining the output before unpublishing...");
             drop(input);
             match process.drain(Duration::from_secs(15)) {
@@ -318,6 +350,7 @@ impl Worker {
                 }
             }
             self.report_processes(Some(process.0.id()));
+            self.control.output_pid.store(0, Ordering::Release);
         }
     }
     fn log(&self, line: &str) {
@@ -556,6 +589,27 @@ impl Worker {
         Ok(())
     }
     fn output_options(&self, args: &mut Vec<String>) {
+        if self.cfg.local_preview {
+            let dir = crate::debug::preview_dir(&self.app);
+            args.extend(process::args(&[
+                "-f",
+                "hls",
+                "-hls_time",
+                "2",
+                "-hls_list_size",
+                "6",
+                "-hls_delete_threshold",
+                "2",
+                "-hls_start_number_source",
+                "epoch",
+                "-hls_flags",
+                "delete_segments+independent_segments+temp_file",
+                "-hls_segment_filename",
+                &dir.join("segment-%06d.ts").to_string_lossy(),
+                &dir.join("index.m3u8").to_string_lossy(),
+            ]));
+            return;
+        }
         let (url, tcurl) = self
             .enhanced
             .as_ref()
@@ -622,15 +676,25 @@ impl Worker {
         ]);
         if let Some(plan) = &self.enhanced {
             args = plan.encoder_args();
+        } else {
+            self.stabilize_bridge_encoder(&mut args);
         }
+        // The feeder owns the continuous program clock. Preserve it; FFmpeg's
+        // shared discontinuity correction must not fight audio/video at handoff.
+        // This also applies to the Enhanced Broadcasting encoder arguments.
+        args.splice(1..1, process::args(&["-copyts", "-start_at_zero"]));
         self.output_options(&mut args);
         let args = diagnostics::instrument(&args, self.stats_supported);
         self.log(&format!("[CMD] ffmpeg (bridge): {}", args.join(" ")));
         let mut cmd = process::command(&self.ffmpeg, &args, &self.app.dir);
-        cmd.stdin(Stdio::piped());
+        let (input, reader) = UnixStream::pair()?;
+        input.set_write_timeout(Some(Duration::from_millis(200)))?;
+        cmd.stdin(Stdio::from(std::os::fd::OwnedFd::from(reader)));
         let mut child = OwnedChild(cmd.spawn()?);
-        let input = child.0.stdin.take().context("Bridge input pipe missing")?;
         self.watch(&mut child, "bridge");
+        self.control
+            .output_pid
+            .store(child.0.id(), Ordering::Release);
         thread::sleep(Duration::from_millis(150));
         if let Some(status) = child.0.try_wait()? {
             self.report_processes(Some(child.0.id()));
@@ -644,74 +708,27 @@ impl Worker {
         self.bridge = Some(Bridge {
             process: child,
             input,
+            clock: transport::Clock::new(self.cfg.fps),
         });
-        self.log("[INFO] RTMP bridge started (persistent ingest session active).");
+        self.log(if self.cfg.local_preview {
+            "[INFO] Local preview bridge started; no publication to a streaming destination."
+        } else {
+            "[INFO] RTMP bridge started (persistent ingest session active)."
+        });
         Ok(())
     }
     fn slate(&mut self, duration: f64) -> Result<()> {
         if !self.cfg.bridge() || self.control.stopped() {
             return Ok(());
         }
-        self.start_bridge()?;
-        let h = self.cfg.height.max(360);
-        let mut w = (h * 16 / 9) + 1;
-        w -= w % 2;
-        let args = process::args(&[
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-nostdin",
-            "-re",
-            "-f",
-            "lavfi",
-            "-i",
-            &format!("color=black:s={w}x{h}:rate={}", self.cfg.fps),
-            "-f",
-            "lavfi",
-            "-i",
-            "anullsrc=cl=stereo:r=44100",
-            "-t",
-            &duration.to_string(),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
-            "-ar",
-            "44100",
-            "-ac",
-            "2",
-            "-muxdelay",
-            "0",
-            "-muxpreload",
-            "0",
-            "-mpegts_flags",
-            "+initial_discontinuity+resend_headers",
-            "-f",
-            "mpegts",
-            "pipe:1",
-        ]);
-        let fd = self
-            .bridge
-            .as_ref()
-            .unwrap()
-            .input
-            .as_fd()
-            .try_clone_to_owned()?;
-        let mut child = self.launch(&args, Stdio::from(fd), "keepalive")?;
-        self.wait(
-            &mut child,
-            Some(Duration::from_secs_f64(duration + 3.0)),
-            false,
-        )?;
+        let until = Instant::now() + Duration::from_secs_f64(duration);
+        while Instant::now() < until && !self.control.stopped() {
+            self.pump_filler()?;
+            thread::sleep(Duration::from_millis(10));
+        }
         Ok(())
     }
-    fn ffmpeg_args(&self, media: &Media, to_pipe: bool) -> Vec<String> {
+    fn ffmpeg_args(&self, media: &Media, to_pipe: bool, seek: f64) -> Vec<String> {
         let [probe, analyze, rtmp_buffer, max_delay] = self.cfg.buffers();
         let mut args = process::args(&[
             "-hide_banner",
@@ -732,29 +749,25 @@ impl Worker {
                 "qsv=hw:/dev/dri/renderD128",
             ]));
         }
-        if media.video.to_lowercase().contains(".m3u8") {
-            args.extend(process::args(&[
-                "-http_persistent",
-                "0",
-                "-reconnect",
-                "1",
-                "-reconnect_streamed",
-                "1",
-                "-reconnect_delay_max",
-                "5",
-                "-live_start_index",
-                "-3",
-            ]));
-        }
+        Self::input_options(&mut args, &media.video, seek);
         args.extend(process::args(&["-re", "-i", &media.video]));
         if let Some(audio) = &media.audio {
+            Self::input_options(&mut args, audio, seek);
             args.extend(process::args(&["-re", "-i", audio]));
+        } else if !media.audio_expected {
+            args.extend(process::args(&[
+                "-re",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=cl=stereo:r=44100",
+            ]));
         }
         args.extend(process::args(&[
             "-map",
             "0:v:0",
             "-map",
-            if media.audio.is_some() {
+            if media.audio.is_some() || !media.audio_expected {
                 "1:a:0"
             } else {
                 "0:a:0?"
@@ -765,7 +778,10 @@ impl Worker {
         if self.cfg.encoder == "libx264" {
             args.extend(process::args(&["-preset", "veryfast"]));
         }
-        let mut vf = format!("scale=-2:{}:flags=bicubic", self.cfg.height);
+        let mut vf = format!(
+            "setpts=PTS-STARTPTS,scale=-2:{}:flags=bicubic",
+            self.cfg.height
+        );
         if boolean(&self.cfg.settings, "overlay_titles", true) {
             let font = [
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -829,12 +845,28 @@ impl Worker {
                 args.extend(process::args(&["-x264-params", "nal-hrd=cbr:force-cfr=1"]));
             }
         }
+        args.extend(process::args(&["-af", "aresample=async=1:first_pts=0"]));
+        if let Some(duration) = media.duration {
+            args.extend(process::args(&[
+                "-t",
+                &format!("{:.3}", (duration - seek).max(0.01)),
+            ]));
+        }
+        if !media.audio_expected && media.audio.is_none() {
+            args.push("-shortest".into());
+        }
         if to_pipe {
             args.extend(process::args(&[
                 "-muxdelay",
                 "0",
                 "-muxpreload",
                 "0",
+                "-bf",
+                "0",
+                "-pes_payload_size",
+                "0",
+                "-mpegts_start_pid",
+                "256",
                 "-mpegts_flags",
                 "+initial_discontinuity+resend_headers",
                 "-f",
@@ -859,7 +891,7 @@ impl Worker {
             state.meta["source_transport"] = serde_json::json!(transport);
             state.meta["separate_audio"] = serde_json::json!(media.audio.is_some());
         }
-        self.app.debug(&format!("Source transport={transport}, separate_audio={}, output_encoder={}, audio_encoder=aac, output_fps={}, output_height={}, audio_rate=44100, channels=2, video_bitrate={}, audio_bitrate={}, buffer_mode={}, persistent_RTMP={persistent}",media.audio.is_some(),self.cfg.encoder,self.cfg.fps,self.cfg.height,self.cfg.bitrate,self.cfg.audio_bitrate,text(&self.cfg.settings,"buffer_mode","Medium")));
+        self.app.debug(&format!("Source transport={transport}, separate_audio={}, output_encoder={}, audio_encoder=aac, output_fps={}, output_height={}, audio_rate=44100, channels=2, video_bitrate={}, audio_bitrate={}, buffer_mode={}, persistent_output={persistent}",media.audio.is_some(),self.cfg.encoder,self.cfg.fps,self.cfg.height,self.cfg.bitrate,self.cfg.audio_bitrate,text(&self.cfg.settings,"buffer_mode","Medium")));
         if boolean(&self.cfg.settings, "overlay_titles", true) {
             let title = media.title.replace(['\r', '\n'], " ");
             let suffix = if media.date.is_empty() {
@@ -883,26 +915,15 @@ impl Worker {
         }
         self.control.skip.store(false, Ordering::Release);
         if persistent {
-            self.start_bridge()?;
+            // source_once opens the output only after real source A/V is buffered.
+            return self.play_resilient(media, skippable);
         }
         for attempt in 0..2 {
             if self.control.stopped() {
                 return Ok(());
             }
-            let args = self.ffmpeg_args(media, persistent);
-            let output = if persistent {
-                Stdio::from(
-                    self.bridge
-                        .as_ref()
-                        .unwrap()
-                        .input
-                        .as_fd()
-                        .try_clone_to_owned()?,
-                )
-            } else {
-                Stdio::null()
-            };
-            let mut child = self.launch(&args, output, "source")?;
+            let args = self.ffmpeg_args(media, persistent, 0.0);
+            let mut child = self.launch(&args, Stdio::null(), "source")?;
             let status = self.wait(&mut child, None, skippable)?;
             if self.control.stopped() || (skippable && self.control.skipped()) {
                 return Ok(());
@@ -914,13 +935,6 @@ impl Worker {
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| status.to_string())
             ));
-            if persistent {
-                if let Some(bridge) = &mut self.bridge {
-                    if let Some(status) = bridge.process.0.try_wait()? {
-                        bail!("RTMP bridge exited: {status}");
-                    }
-                }
-            }
             if status.success() {
                 break;
             }
@@ -1027,7 +1041,11 @@ impl Worker {
         self.app.status("Starting…");
         self.log(&format!("[INFO] Encoder: {}", self.cfg.encoder));
         self.log(&format!("[INFO] Source: {}", self.cfg.source));
-        self.log(&format!("[INFO] RTMP: {}", self.cfg.url()));
+        if self.cfg.local_preview {
+            self.log("[INFO] Output: local HLS preview only; configured streaming destination is unused.");
+        } else {
+            self.log(&format!("[INFO] RTMP: {}", self.cfg.url()));
+        }
         self.log(&format!(
             "[INFO] Output: {}p@{} ~{} video + {} audio",
             self.cfg.height, self.cfg.fps, self.cfg.bitrate, self.cfg.audio_bitrate
@@ -1071,12 +1089,15 @@ impl Worker {
             };
             self.play(
                 &Media {
+                    id: None,
+                    duration: None,
+                    audio_expected: true,
                     title,
                     date: String::new(),
                     video,
                     audio: None,
                 },
-                self.enhanced.is_some(),
+                self.cfg.bridge(),
                 false,
             )?;
             self.log("[INFO] Source ended. Stopping relay.");
@@ -1087,21 +1108,28 @@ impl Worker {
             "Unsupported source URL"
         );
         if self.cfg.bridge() {
-            self.start_bridge()?;
+            self.app.status("Preparing source…");
+            self.log("[INFO] Waiting for selected-source audio/video before opening the output; startup fallback is disabled.");
         }
         while !self.control.stopped() {
             let mut enhanced_output_failed = false;
             let result = (|| -> Result<()> {
-                let out = self.resolver.run(&[
-                    "--ignore-errors",
-                    if kind == "playlist" {
-                        "--flat-playlist"
-                    } else {
-                        "--no-playlist"
+                let source = self.cfg.source.clone();
+                let out = self.resolve_with_filler(
+                    move |resolver| {
+                        resolver.run(&[
+                            "--ignore-errors",
+                            if kind == "playlist" {
+                                "--flat-playlist"
+                            } else {
+                                "--no-playlist"
+                            },
+                            "--get-id",
+                            &source,
+                        ])
                     },
-                    "--get-id",
-                    &self.cfg.source,
-                ])?;
+                    false,
+                )?;
                 let mut ids: Vec<String> = out
                     .lines()
                     .map(str::trim)
@@ -1118,6 +1146,7 @@ impl Worker {
                     if self.control.stopped() {
                         break;
                     }
+                    self.control.skip.store(false, Ordering::Release);
                     self.log(&format!(
                         "[INFO] Item #{} - https://www.youtube.com/watch?v={id}",
                         idx + 1
@@ -1137,7 +1166,13 @@ impl Worker {
                     if let Some(next) = ids.get(idx + 1) {
                         prefetched = Some((next.clone(), self.prefetch(next.clone())));
                     }
-                    let media = cached.unwrap_or_else(|| self.resolver.media(id));
+                    let media = match cached {
+                        Some(media) => media,
+                        None => {
+                            let id = id.clone();
+                            self.resolve_with_filler(move |resolver| resolver.media(&id), true)
+                        }
+                    };
                     let attempted_play = media.is_ok();
                     let result = media.and_then(|m| self.play(&m, self.cfg.bridge(), true));
                     if let Err(e) = result {
@@ -1147,7 +1182,8 @@ impl Worker {
                         if attempted_play && self.enhanced.is_some() {
                             let dead = match self.bridge.as_mut() {
                                 Some(bridge) => bridge.process.0.try_wait()?.is_some(),
-                                None => true,
+                                // No output has been opened during initial source preparation.
+                                None => false,
                             };
                             if dead {
                                 enhanced_output_failed = true;
@@ -1158,12 +1194,11 @@ impl Worker {
                         if let Err(e) = self.slate(0.8) {
                             self.log(&format!("[WARN] Keepalive slate failed: {e}"));
                         }
-                        self.control
-                            .pause(Duration::from_millis(if self.cfg.youtube() {
-                                2000
-                            } else {
-                                250
-                            }));
+                        if self.cfg.bridge() {
+                            self.slate(0.25)?;
+                        } else {
+                            self.control.pause(Duration::from_secs(2));
+                        }
                     }
                 }
                 Ok(())
@@ -1176,7 +1211,11 @@ impl Worker {
                     self.log(&format!(
                         "[WARN] Loop error: {e:#}. Retrying in 30 seconds..."
                     ));
-                    self.control.pause(Duration::from_secs(30));
+                    if self.cfg.bridge() {
+                        self.slate(30.0)?;
+                    } else {
+                        self.control.pause(Duration::from_secs(30));
+                    }
                 }
             } else if !self.control.stopped() {
                 self.log("[INFO] End of playlist. Refreshing IDs and looping...");

@@ -1,5 +1,5 @@
 //! HTTP compatibility layer for the existing dashboard assets and JSON endpoints.
-use crate::{config, runtime::App, updates, APP_NAME, REPO, VERSION};
+use crate::{config, debug, fallback_image, runtime::App, updates, APP_NAME, REPO, VERSION};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -19,6 +19,43 @@ fn respond(request: Request, status: u16, kind: &str, bytes: Vec<u8>) {
 fn handle(mut request: Request, app: Arc<App>) {
     let path = request.url().split('?').next().unwrap_or("/").to_owned();
     let method = request.method().as_str().to_owned();
+    if method == "GET" && path.starts_with("/api/debug/preview/") {
+        let name = path.trim_start_matches("/api/debug/preview/");
+        match debug::preview_asset(&app, name) {
+            Ok(Some((kind, bytes))) => respond(request, 200, kind, bytes),
+            Ok(None) => respond(
+                request,
+                404,
+                "text/plain",
+                b"Local preview is not ready".to_vec(),
+            ),
+            Err(_) => respond(
+                request,
+                400,
+                "text/plain",
+                b"Local preview asset unavailable".to_vec(),
+            ),
+        }
+        return;
+    }
+    if method == "GET" && path == "/api/fallback-image" {
+        match fallback_image::preview(&app) {
+            Ok(Some(bytes)) => respond(request, 200, "image/png", bytes),
+            Ok(None) => respond(
+                request,
+                404,
+                "text/plain",
+                b"No recovery image configured".to_vec(),
+            ),
+            Err(_) => respond(
+                request,
+                400,
+                "text/plain",
+                b"Recovery image unavailable".to_vec(),
+            ),
+        }
+        return;
+    }
     if method == "GET" {
         let asset = match path.as_str() {
             "/" | "/index.html" => Some((
@@ -37,6 +74,19 @@ fn handle(mut request: Request, app: Arc<App>) {
                 "application/javascript; charset=utf-8",
                 include_bytes!("../web/app.js").to_vec(),
             )),
+            "/assets/vendor/hls.light.min.js" => Some((
+                "application/javascript; charset=utf-8",
+                include_bytes!("../web/vendor/hls.light.min.js").to_vec(),
+            )),
+            "/assets/vendor/hls-LICENSE.txt" => Some((
+                "text/plain; charset=utf-8",
+                [
+                    include_str!("../web/vendor/hls-LICENSE.txt"),
+                    include_str!("../web/vendor/Apache-2.0.txt"),
+                ]
+                .join("\n")
+                .into_bytes(),
+            )),
             "/favicon.ico" | "/icon.ico" => {
                 Some(("image/x-icon", include_bytes!("../icon.ico").to_vec()))
             }
@@ -48,6 +98,27 @@ fn handle(mut request: Request, app: Arc<App>) {
         }
     }
     let result = (|| -> Result<(u16, Value)> {
+        if path == "/api/fallback-image" && method == "POST" {
+            anyhow::ensure!(
+                request
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Content-Type")
+                        && h.value
+                            .as_str()
+                            .split(';')
+                            .next()
+                            .is_some_and(|v| v.trim().eq_ignore_ascii_case("image/png"))),
+                "Upload the recovery image as image/png"
+            );
+            let mut bytes = Vec::new();
+            request
+                .as_reader()
+                .take((fallback_image::MAX_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)?;
+            let image = fallback_image::store(&app, &bytes)?;
+            return Ok((200, json!({"ok":true,"image":image})));
+        }
         let body = if method == "POST" {
             let mut bytes = Vec::new();
             request
@@ -64,6 +135,33 @@ fn handle(mut request: Request, app: Arc<App>) {
             json!({})
         };
         let result = match (method.as_str(), path.as_str()) {
+            ("GET", "/api/debug/state") => json!({"ok":true,"debug":app.debug_status()}),
+            ("POST", "/api/debug/failure") => {
+                json!({"ok":true,"failure":app.inject_failure(&body)?})
+            }
+            ("POST", "/api/debug/test-stream/start") => {
+                let source = match body.get("source") {
+                    Some(value) => Some(
+                        value
+                            .as_str()
+                            .context("source must be a URL string")?
+                            .to_owned(),
+                    ),
+                    None => None,
+                };
+                app.start_preview(source)?;
+                json!({"ok":true,"preview_url":"/api/debug/preview/index.m3u8"})
+            }
+            ("POST", "/api/debug/test-stream/stop") => {
+                app.stop_preview()?;
+                json!({"ok":true})
+            }
+            ("GET", "/api/fallback-image/info") => {
+                json!({"ok":true,"image":fallback_image::info(&app)})
+            }
+            ("DELETE", "/api/fallback-image") => {
+                json!({"ok":true,"image":fallback_image::remove(&app)?})
+            }
             ("GET", "/api/state") => app.state.lock().unwrap().snapshot(),
             ("GET", "/api/settings") => json!({"ok":true,"settings":app.settings()}),
             ("POST", "/api/settings") => json!({"ok":true,"settings":app.save_settings(&body)?}),
