@@ -56,7 +56,7 @@ input:disabled { opacity: .5; cursor: not-allowed; }
 /* Keep useful setup hints without displacing the prototype's form rows. */
 .stream-column > .field { position: relative; }
 .enhanced-column { padding-top: 25px; min-width: 0; }
-.check { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer; }
+.check { justify-self: start; align-self: center; width: fit-content; max-width: 100%; padding: 3px; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer; }
 .check input { appearance: none; flex: 0 0 20px; width: 20px; height: 20px; margin: 0; border: 0; border-radius: 99px; background: var(--accent); box-shadow: 0 2px 3px #0004; cursor: pointer; display: grid; place-content: center; }
 .check input:checked { background: var(--primary); }
 .check input:checked::after { content: ""; width: 8px; height: 5px; border-left: 2px solid white; border-bottom: 2px solid white; transform: translateY(-1px) rotate(-45deg); }
@@ -258,3 +258,9 @@ button.number-step:hover:enabled { background: var(--accent-hover); box-shadow: 
 .step-up::after { transform: translateY(1px) rotate(-45deg); }
 .step-down::after { transform: translateY(-1px) rotate(135deg); }
 button.number-step:disabled { opacity: .3; }
+
+.console-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.console-toolbar .subtabs { margin-bottom: 0; }
+.console-copy { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.console-copy .statusline { max-width: 180px; }
+.console-copy button { flex-shrink: 0; }

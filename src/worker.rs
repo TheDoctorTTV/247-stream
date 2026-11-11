@@ -9,7 +9,7 @@ use crate::{
 mod playout;
 mod transport;
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use playout::Producer;
 use rand::seq::SliceRandom;
 use serde_json::Value;
@@ -227,17 +227,7 @@ impl Resolver {
         } else {
             text(&metadata, "title", &url)
         };
-        let date = text(&metadata, "upload_date", "");
-        let date = NaiveDate::parse_from_str(&date, "%Y%m%d")
-            .ok()
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .or_else(|| {
-                metadata["timestamp"]
-                    .as_i64()
-                    .and_then(|t| DateTime::<Utc>::from_timestamp(t, 0))
-                    .map(|d| d.format("%Y-%m-%d").to_string())
-            })
-            .unwrap_or_default();
+        let date = media_date(&metadata, &Local);
         let (video, audio) = self.urls(id)?;
         Ok(Media {
             id: Some(id.to_owned()),
@@ -252,6 +242,32 @@ impl Resolver {
         })
     }
 }
+// yt-dlp's date-only fields are UTC. Convert an actual timestamp before
+// taking its date so evening uploads keep their local calendar day.
+fn media_date<Tz: TimeZone>(metadata: &Value, timezone: &Tz) -> String {
+    ["timestamp", "release_timestamp"]
+        .iter()
+        .find_map(|key| {
+            metadata[*key]
+                .as_i64()
+                .and_then(|t| DateTime::<Utc>::from_timestamp(t, 0))
+        })
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(timezone)
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .or_else(|| {
+            // A date without a time cannot be reliably timezone-converted.
+            NaiveDate::parse_from_str(&text(metadata, "upload_date", ""), "%Y%m%d")
+                .ok()
+                .map(|date| date.format("%Y-%m-%d").to_string())
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Clone)]
 struct Media {
     id: Option<String>,
@@ -1222,5 +1238,69 @@ impl Worker {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::*;
+    use chrono::FixedOffset;
+    use serde_json::json;
+
+    #[test]
+    fn evening_upload_uses_local_day_instead_of_utc_upload_date() {
+        let timezone = FixedOffset::west_opt(4 * 3600).unwrap();
+        let timestamp = DateTime::parse_from_rfc3339("2026-10-02T01:30:00Z")
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            media_date(
+                &json!({"timestamp": timestamp, "upload_date": "20261002"}),
+                &timezone
+            ),
+            "2026-10-01"
+        );
+    }
+
+    #[test]
+    fn timezone_conversion_can_advance_the_day_and_year() {
+        let timezone = FixedOffset::east_opt(9 * 3600).unwrap();
+        let timestamp = DateTime::parse_from_rfc3339("2026-12-31T23:30:00Z")
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            media_date(
+                &json!({"timestamp": timestamp, "upload_date": "20261231"}),
+                &timezone
+            ),
+            "2027-01-01"
+        );
+    }
+
+    #[test]
+    fn release_timestamp_is_used_when_upload_timestamp_is_missing() {
+        let timestamp = DateTime::parse_from_rfc3339("2026-10-02T01:30:00Z")
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            media_date(&json!({"release_timestamp": timestamp}), &Utc),
+            "2026-10-02"
+        );
+    }
+
+    #[test]
+    fn missing_or_invalid_timestamps_fall_back_to_date_without_shifting() {
+        let timezone = FixedOffset::west_opt(5 * 3600).unwrap();
+        for metadata in [
+            json!({"upload_date": "20261001"}),
+            json!({"timestamp": i64::MAX, "upload_date": "20261001"}),
+        ] {
+            assert_eq!(media_date(&metadata, &timezone), "2026-10-01");
+        }
+        assert_eq!(
+            media_date(&json!({"upload_date": "invalid"}), &timezone),
+            ""
+        );
+        assert_eq!(media_date(&Value::Null, &timezone), "");
     }
 }

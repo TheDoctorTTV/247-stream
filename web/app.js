@@ -1740,6 +1740,21 @@
       });
     });
 
+    const copyConsoleBtn = document.getElementById("copyConsoleBtn");
+    const consoleCopyStatus = document.getElementById("consoleCopyStatus");
+    let consoleCopyStatusTimer;
+    copyConsoleBtn.addEventListener("click", async () => {
+      const logBox = document.querySelector("#tab-console .subtab-panel.active pre");
+      copyConsoleBtn.disabled = true;
+      clearTimeout(consoleCopyStatusTimer);
+      const ok = await copyTextToClipboard(logBox ? logBox.textContent : "");
+      copyConsoleBtn.disabled = false;
+      copyConsoleBtn.focus({ preventScroll: true });
+      consoleCopyStatus.textContent = ok ? "Copied!" : "Unable to copy console.";
+      consoleCopyStatus.className = "statusline " + (ok ? "ok" : "err");
+      consoleCopyStatusTimer = setTimeout(() => { consoleCopyStatus.textContent = ""; }, 3000);
+    });
+
     startBtn.addEventListener("click", () => api("/api/start"));
     restartBtn.addEventListener("click", restartStream);
     stopBtn.addEventListener("click", () => api("/api/stop"));

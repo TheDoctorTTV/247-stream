@@ -252,9 +252,15 @@
     </div>
     <div class="tab-panel" id="tab-console">
       <div class="card">
-        <div class="subtabs">
-          <button class="subtab-btn active" data-subtab="subtab-other">App / Other Output</button>
-          <button class="subtab-btn" data-subtab="subtab-ffmpeg">FFmpeg Output</button>
+        <div class="console-toolbar">
+          <div class="subtabs">
+            <button class="subtab-btn active" data-subtab="subtab-other">App / Other Output</button>
+            <button class="subtab-btn" data-subtab="subtab-ffmpeg">FFmpeg Output</button>
+          </div>
+          <div class="console-copy">
+            <span id="consoleCopyStatus" class="statusline" role="status" aria-live="polite"></span>
+            <button id="copyConsoleBtn" type="button" title="Copy the selected console output">Copy console</button>
+          </div>
         </div>
         <div class="statusline">Showing the last 100 console lines.</div>
         <div class="subtab-panel active" id="subtab-other">
