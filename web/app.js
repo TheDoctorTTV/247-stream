@@ -57,6 +57,7 @@
     const subtabPanels = Array.from(document.querySelectorAll(".subtab-panel"));
     let busy = false;
     let streamActive = false;
+    let streamStateKnown = false;
     let appUpdateRunning = false;
     let binariesUpdateRunning = false;
     let prevBinariesUpdateRunning = false;
@@ -68,6 +69,7 @@
     let saveInFlight = false;
     let pendingAutoSave = false;
     let lastSavedPayload = "";
+    let bitrateEditRevision = 0;
     let appVersionsBoundToChannel = "";
     const APP_UPDATE_AUTO_CHECK_MS = 10 * 60 * 1000;
     let appAutoCheckTimer = null;
@@ -206,6 +208,7 @@
 
         const removeBtn = document.createElement("button");
         removeBtn.className = "source-remove";
+        removeBtn.disabled = streamSettingsLocked();
         removeBtn.type = "button";
         removeBtn.textContent = "Remove";
         removeBtn.addEventListener("click", () => {
@@ -232,6 +235,30 @@
       });
     }
 
+    function streamSettingsLocked() {
+      return !streamStateKnown || streamActive || actionPending;
+    }
+
+    function syncStreamSettingsLock() {
+      const locked = streamSettingsLocked();
+      for (const id of ["resolution", "framerate", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "stream_url_preset"]) {
+        document.getElementById(id).disabled = locked;
+      }
+      sourceSelect.disabled = locked || sourceSelect.options.length <= 1;
+      streamKeySelect.disabled = locked || streamKeySelect.options.length <= 1;
+      // Adding/removing saved entries can also change the selected source or destination.
+      for (const el of document.querySelectorAll("#tab-sources input, #tab-sources .source-remove, #source_add_btn, #tab-stream-keys input, #tab-stream-keys .source-remove, #stream_key_add_btn, #tab-stream-platforms input, #tab-stream-platforms .source-remove, #stream_platform_add_btn")) {
+        el.disabled = locked;
+      }
+      document.querySelectorAll(".stream-settings-lock-note").forEach(note => {
+        note.hidden = !locked;
+        note.textContent = !streamStateKnown
+          ? "Stream settings are locked until stream status is available."
+          : "Stream settings are locked. Stop the stream to edit them.";
+      });
+      syncEnhancedBroadcastingUI();
+    }
+
     function syncEnhancedBroadcastingUI() {
       const group = document.getElementById("twitchEnhancedGroup");
       const enabled = document.getElementById("twitch_enhanced_broadcasting");
@@ -245,22 +272,23 @@
         twitch = host === "twitch.tv" || host.endsWith(".twitch.tv");
       } catch (err) {}
       group.hidden = !twitch;
-      enabled.disabled = streamActive || !twitch;
+      const locked = streamSettingsLocked();
+      enabled.disabled = locked || !twitch;
       const active = twitch && enabled.checked;
       const videoBitrate = document.getElementById("video_bitrate");
-      videoBitrate.disabled = active;
-      videoBitrate.title = active ? "Disable Enhanced Broadcasting to edit the video bitrate." : "";
+      videoBitrate.disabled = locked || active;
+      videoBitrate.title = locked ? "Stop the stream to edit the bitrate." : active ? "Disable Enhanced Broadcasting to edit the video bitrate." : "";
       document.getElementById("twitchEnhancedOptions").hidden = !twitch;
       const tracksAuto = document.getElementById("twitch_enhanced_tracks_auto");
       const bitrateAuto = document.getElementById("twitch_enhanced_bitrate_auto");
-      tracksAuto.disabled = streamActive || !active;
-      bitrateAuto.disabled = streamActive || !active;
-      document.getElementById("twitch_enhanced_max_tracks").disabled = streamActive || !active || tracksAuto.checked;
-      document.getElementById("twitch_enhanced_max_bitrate_kbps").disabled = streamActive || !active || bitrateAuto.checked;
+      tracksAuto.disabled = locked || !active;
+      bitrateAuto.disabled = locked || !active;
+      document.getElementById("twitch_enhanced_max_tracks").disabled = locked || !active || tracksAuto.checked;
+      document.getElementById("twitch_enhanced_max_bitrate_kbps").disabled = locked || !active || bitrateAuto.checked;
     }
 
     function syncStreamPlatformHint() {
-      syncEnhancedBroadcastingUI();
+      syncStreamSettingsLock();
       if (!streamPlatformHint || !streamUrlPreset) return;
       const selected = String(streamUrlPreset.value || "").trim();
       const saved = savedServiceForOption(selected);
@@ -498,6 +526,7 @@
 
         const removeBtn = document.createElement("button");
         removeBtn.className = "source-remove";
+        removeBtn.disabled = streamSettingsLocked();
         removeBtn.type = "button";
         removeBtn.textContent = "Remove";
         removeBtn.addEventListener("click", () => {
@@ -540,7 +569,7 @@
       const urls = safeEntries.map((entry) => entry.url);
       const wanted = urls.includes(preferred) ? preferred : urls[0];
       sourceSelect.value = wanted;
-      sourceSelect.disabled = (safeEntries.length <= 1);
+      sourceSelect.disabled = streamSettingsLocked() || safeEntries.length <= 1;
       sourceHint.textContent = (safeEntries.length <= 1)
         ? "Only one source is configured. It will be used automatically."
         : "Choose which source to stream.";
@@ -618,6 +647,7 @@
 
         const removeBtn = document.createElement("button");
         removeBtn.className = "source-remove";
+        removeBtn.disabled = streamSettingsLocked();
         removeBtn.type = "button";
         removeBtn.textContent = "Remove";
         removeBtn.addEventListener("click", () => {
@@ -659,7 +689,7 @@
       const keys = safeEntries.map((entry) => entry.key);
       const wanted = keys.includes(preferred) ? preferred : keys[0];
       streamKeySelect.value = wanted;
-      streamKeySelect.disabled = (safeEntries.length <= 1);
+      streamKeySelect.disabled = streamSettingsLocked() || safeEntries.length <= 1;
       streamKeyHint.textContent = (safeEntries.length <= 1)
         ? "Only one stream key is configured. It will be used automatically."
         : "Choose which stream key to use.";
@@ -897,10 +927,11 @@
     }
 
     function syncActionButtons() {
-      startBtn.disabled = actionPending || streamActive;
-      restartBtn.disabled = actionPending || !streamActive;
-      stopBtn.disabled = actionPending || !streamActive;
-      skipBtn.disabled = actionPending || !streamActive;
+      syncStreamSettingsLock();
+      startBtn.disabled = !streamStateKnown || actionPending || streamActive;
+      restartBtn.disabled = !streamStateKnown || actionPending || !streamActive;
+      stopBtn.disabled = !streamStateKnown || actionPending || !streamActive;
+      skipBtn.disabled = !streamStateKnown || actionPending || !streamActive;
     }
 
     async function api(path) {
@@ -963,8 +994,9 @@
         if (!res.ok) throw new Error("state fetch failed");
         const s = await res.json();
         const streaming = !!s.streaming;
+        streamStateKnown = true;
         streamActive = streaming;
-        syncEnhancedBroadcastingUI();
+        syncStreamSettingsLock();
         stateText.textContent = s.status || "Unknown";
         stateText.className = "status" + (streaming ? " on" : "");
         const meta = s.meta || {};
@@ -977,6 +1009,8 @@
         updateLogBox(ffmpegLogBox, s.logs_ffmpeg, forceScroll);
         syncActionButtons();
       } catch (err) {
+        streamStateKnown = false;
+        syncActionButtons();
         stateText.textContent = "Dashboard disconnected";
         stateText.className = "status";
       } finally {
@@ -984,7 +1018,7 @@
       }
     }
 
-    function applySettingsToForm(s) {
+    function applySettingsToForm(s, preserveBitrate = false) {
       const selectedSource = syncSourcesUIFromSettings(s || {});
       const selectedStreamKey = syncStreamKeysUIFromSettings(s || {});
       setStreamUrlServicesState((s && s.stream_url_services) || []);
@@ -1000,6 +1034,7 @@
       for (const id of fieldIds) {
         const el = document.getElementById(id);
         if (!el || !(id in s)) continue;
+        if (id === "video_bitrate" && (preserveBitrate || document.activeElement === el)) continue;
         if (el.type === "checkbox") {
           el.checked = !!s[id];
         } else if (id === "playlist_url") {
@@ -1021,7 +1056,7 @@
       document.getElementById("twitch_enhanced_bitrate_auto").checked = bandwidth === 0;
       document.getElementById("twitch_enhanced_max_tracks").value = tracks || 3;
       document.getElementById("twitch_enhanced_max_bitrate_kbps").value = bandwidth || 12000;
-      syncEnhancedBroadcastingUI();
+      syncStreamSettingsLock();
       syncDebugVisibility();
     }
 
@@ -1116,7 +1151,17 @@
       for (const id of fieldIds) {
         const el = document.getElementById(id);
         if (!el) continue;
-        if (el.type === "checkbox" || el.tagName === "SELECT") {
+        if (id === "video_bitrate") {
+          // A pause in typing is not a completed bitrate. Commit on blur/Enter.
+          el.addEventListener("input", () => { bitrateEditRevision += 1; });
+          el.addEventListener("blur", () => queueAutoSave(180));
+          el.addEventListener("keydown", event => {
+            if (event.key === "Enter" && !event.isComposing) {
+              event.preventDefault();
+              el.blur();
+            }
+          });
+        } else if (el.type === "checkbox" || el.tagName === "SELECT") {
           el.addEventListener("change", () => queueAutoSave(180));
         } else {
           el.addEventListener("input", () => queueAutoSave(650));
@@ -1125,7 +1170,7 @@
       }
       for (const id of ["twitch_enhanced_broadcasting", "twitch_enhanced_tracks_auto", "twitch_enhanced_bitrate_auto", "twitch_enhanced_max_tracks", "twitch_enhanced_max_bitrate_kbps"]) {
         const el = document.getElementById(id);
-        el.addEventListener("change", () => { syncEnhancedBroadcastingUI(); queueAutoSave(180); });
+        el.addEventListener("change", () => { syncStreamSettingsLock(); queueAutoSave(180); });
       }
       if (streamKeySelect) {
         streamKeySelect.addEventListener("change", () => queueAutoSave(180));
@@ -1401,6 +1446,7 @@
     }
 
     async function loadSettings() {
+      const bitrateRevisionAtLoad = bitrateEditRevision;
       setSettingsStatus("Loading settings...", "");
       try {
         const res = await fetch("/api/settings?ts=" + Date.now(), { cache: "no-store" });
@@ -1408,10 +1454,10 @@
         const payload = await res.json();
         if (!payload.ok || !payload.settings) throw new Error(payload.error || "invalid response");
         suppressAutoSave = true;
-        applySettingsToForm(payload.settings);
+        applySettingsToForm(payload.settings, bitrateEditRevision !== bitrateRevisionAtLoad);
         appRequestedVersion = String(payload.settings.app_update_selected_version || "");
         savedAutoInstallEnabled = !!payload.settings.auto_app_updates;
-        lastSavedPayload = payloadSignature(formToPayload());
+        lastSavedPayload = payloadSignature({ ...formToPayload(), video_bitrate: payload.settings.video_bitrate });
         setSettingsStatus("Settings loaded.", "ok");
         resetAppAutoCheckTimer(true);
       } catch (err) {
@@ -1423,6 +1469,12 @@
     }
 
     async function saveSettings(mode) {
+      // A previously queued save (including another field's) must not submit
+      // the bitrate draft while its editor still has focus.
+      if (document.activeElement === document.getElementById("video_bitrate")) {
+        pendingAutoSave = true;
+        return;
+      }
       if (saveInFlight) {
         pendingAutoSave = true;
         return;
@@ -1434,6 +1486,7 @@
         setSettingsStatus("Settings saved.", "ok");
         return;
       }
+      const bitrateRevisionAtSave = bitrateEditRevision;
       saveInFlight = true;
       setSettingsStatus(reason === "auto" ? "Saving changes..." : "Saving settings...", "");
       try {
@@ -1441,8 +1494,12 @@
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "save failed");
         suppressAutoSave = true;
-        applySettingsToForm(payload.settings || {});
-        lastSavedPayload = payloadSignature(formToPayload());
+        applySettingsToForm(payload.settings || {}, bitrateEditRevision !== bitrateRevisionAtSave);
+        // Record the server's saved value, even if a newer draft was preserved.
+        lastSavedPayload = payloadSignature({
+          ...formToPayload(),
+          video_bitrate: (payload.settings || {}).video_bitrate ?? currentPayload.video_bitrate
+        });
         const enabledNow = !!(payload.settings || {}).auto_app_updates;
         const justEnabled = enabledNow && !savedAutoInstallEnabled;
         savedAutoInstallEnabled = enabledNow;
@@ -2121,6 +2178,7 @@
       activateTab("", false);
       activateSubtab("", false);
     }
+    syncActionButtons();
     loadSettings();
     loadFallbackImage();
     loadDebugStatus();

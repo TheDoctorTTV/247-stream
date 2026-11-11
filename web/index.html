@@ -26,6 +26,7 @@
     </header>
     <div class="tab-panel active" id="tab-stream">
       <div class="stream-layout">
+        <p class="statusline stream-settings-lock-note" role="status" hidden></p>
         <div class="stream-fields">
           <div class="stream-column">
             <div class="field">
@@ -53,7 +54,8 @@
                 <option>2160p</option>
               </select></div>
             <div class="field"><label for="video_bitrate">Bitrate (kbps)</label><input id="video_bitrate" type="text"
-                placeholder="7500"></div>
+                placeholder="7500" aria-describedby="bitrate_edit_hint">
+              <div id="bitrate_edit_hint" class="statusline field-hint">Press Enter or leave the field to save. Range: 1500–25000 kbps, in steps of 500.</div></div>
             <div class="field"><label for="framerate">Frame Rate</label><select id="framerate">
                 <option value="30">30</option>
                 <option value="60">60</option>
@@ -113,6 +115,7 @@
     <div class="tab-panel" id="tab-settings">
       <div class="card">
         <h2>Settings</h2>
+        <p class="statusline stream-settings-lock-note" role="status" hidden></p>
         <div class="grid">
           <div class="field"><label for="theme_select">Theme</label><select id="theme_select">
               <option value="purple">Purple</option>
