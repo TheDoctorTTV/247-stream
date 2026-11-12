@@ -12,9 +12,20 @@ const AUDIO: usize = 257;
 pub(super) struct Epoch {
     offset: Option<i64>,
     reference: i64,
+    first_pts: [Option<i64>; 2],
+    end_pts: [Option<i64>; 2],
 }
 
 impl Epoch {
+    /// Media duration actually forwarded for both tracks, independent of stalls
+    /// in resolver work or how far ahead FFmpeg has encoded into its socket.
+    pub(super) fn elapsed(&self) -> f64 {
+        let duration = |i: usize| -> Option<i64> { Some(self.end_pts[i]? - self.first_pts[i]?) };
+        duration(0)
+            .zip(duration(1))
+            .map_or(0.0, |(v, a)| v.min(a).max(0) as f64 / 90_000.0)
+    }
+
     pub(super) fn started(&self) -> bool {
         self.offset.is_some()
     }
@@ -61,6 +72,16 @@ impl Clock {
         epoch.offset = Some(offset);
         Ok(Some(offset))
     }
+    /// Compare incoming presentation times with the outgoing track ends before
+    /// forwarding anything, to distinguish a feeder gap from downstream repeats.
+    pub(super) fn handoff_gaps(&self, epoch: &Epoch, data: &[u8]) -> Result<[f64; 2]> {
+        let (video, audio, _) = first_timestamps(data)?.context("Handoff timestamps missing")?;
+        let offset = epoch.offset.context("Handoff offset missing")?;
+        let first = [video, audio].map(|(pts, _)| unwrap(pts, epoch.reference) + offset);
+        Ok(std::array::from_fn(|track| {
+            (first[track] - self.next_pts[track]) as f64 / 90_000.0
+        }))
+    }
     pub(super) fn rewrite(&mut self, epoch: &mut Epoch, data: &mut [u8]) -> Result<()> {
         let offset = epoch
             .offset
@@ -80,6 +101,9 @@ impl Clock {
                     } else {
                         (1024 * 90_000 + 44_099) / 44_100
                     };
+                    epoch.first_pts[track].get_or_insert(pts);
+                    epoch.end_pts[track] =
+                        Some(epoch.end_pts[track].map_or(pts + step, |end| end.max(pts + step)));
                     self.next_pts[track] = self.next_pts[track].max(shifted_pts + step);
                     self.last_dts[track] =
                         Some(self.last_dts[track].map_or(shifted_dts, |v| v.max(shifted_dts)));

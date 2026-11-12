@@ -10,14 +10,6 @@
     const refreshBtn = document.getElementById("refreshBtn");
     const reloadSettingsBtn = document.getElementById("reloadSettingsBtn");
     const settingsStatus = document.getElementById("settingsStatus");
-    const fallbackFile = document.getElementById("fallback_image_file");
-    const fallbackUpload = document.getElementById("fallback_image_upload");
-    const fallbackRemove = document.getElementById("fallback_image_remove");
-    const fallbackStatus = document.getElementById("fallback_image_status");
-    const fallbackPreview = document.getElementById("fallback_image_preview");
-    const fallbackEmpty = document.getElementById("fallback_image_empty");
-    let fallbackBusy = false;
-    let fallbackConfigured = false;
     const checkAppUpdateBtn = document.getElementById("checkAppUpdateBtn");
     const downloadAppUpdateBtn = document.getElementById("downloadAppUpdateBtn");
     const reinstallAppBtn = document.getElementById("reinstallAppBtn");
@@ -1204,97 +1196,133 @@
       });
     }
 
-    function updateFallbackButtons() {
-      fallbackFile.disabled = fallbackBusy;
-      fallbackUpload.disabled = fallbackBusy;
-      fallbackUpload.textContent = fallbackBusy ? "Uploading…" : "Upload image";
-      fallbackUpload.setAttribute("aria-busy", String(fallbackBusy));
-      fallbackRemove.disabled = fallbackBusy || !fallbackConfigured;
-    }
-    function setFallbackStatus(message, error = false) {
-      fallbackStatus.textContent = message;
-      fallbackStatus.className = "statusline " + (error ? "err" : "ok");
-    }
-    function renderFallbackImage(image) {
-      fallbackConfigured = !!image.configured;
-      fallbackEmpty.querySelector("strong").textContent = "No recovery image";
-      fallbackEmpty.querySelector("span").textContent = "Fallback uses a black screen.";
-      fallbackPreview.hidden = !fallbackConfigured;
-      fallbackEmpty.hidden = fallbackConfigured;
-      if (fallbackConfigured) fallbackPreview.src = "/api/fallback-image?ts=" + Date.now();
-      else fallbackPreview.removeAttribute("src");
-      updateFallbackButtons();
-    }
-    async function loadFallbackImage() {
-      try {
-        const res = await fetch("/api/fallback-image/info", { cache: "no-store" });
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(data.error || "Could not load recovery image.");
-        renderFallbackImage(data.image || {});
-        setFallbackStatus(fallbackConfigured ? "Recovery image saved on the server." : "No image set. Recovery uses a black screen.");
-      } catch (error) { setFallbackStatus(error.message, true); }
-    }
-    async function prepareFallbackImage(file) {
-      if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-        throw new Error("Choose a PNG, JPG or WebP image.");
+    function setupMediaUpload(prefix, endpoint, label, emptyMessage) {
+      const fileInput = document.getElementById(prefix + "_file");
+      const upload = document.getElementById(prefix + "_upload");
+      const remove = document.getElementById(prefix + "_remove");
+      const status = document.getElementById(prefix + "_status");
+      const image = document.getElementById(prefix + "_preview");
+      const video = document.getElementById(prefix + "_video");
+      const empty = document.getElementById(prefix + "_empty");
+      let busy = false;
+      let configured = false;
+      function setStatus(message, error = false) {
+        status.textContent = message;
+        status.className = "statusline " + (error ? "err" : "ok");
       }
-      if (file.size > 20 * 1024 * 1024) throw new Error("Choose an image no larger than 20 MiB.");
-      const bitmap = await createImageBitmap(file);
-      try {
-        if (bitmap.width * 9 !== bitmap.height * 16) {
-          throw new Error("Choose a 16:9 image. Recommended size: 1920 × 1080 px.");
+      function buttons() {
+        fileInput.disabled = busy;
+        upload.disabled = busy;
+        upload.textContent = busy ? "Uploading…" : "Upload media";
+        upload.setAttribute("aria-busy", String(busy));
+        remove.disabled = busy || !configured;
+      }
+      function render(media) {
+        configured = !!media.configured;
+        video.pause();
+        image.removeAttribute("src");
+        video.removeAttribute("src");
+        video.load();
+        image.hidden = true;
+        video.hidden = true;
+        empty.hidden = configured;
+        empty.querySelector("strong").textContent = "No " + label.toLowerCase();
+        empty.querySelector("span").textContent = emptyMessage;
+        if (configured) {
+          const preview = String(media.kind || "").startsWith("video/") ? video : image;
+          preview.hidden = false;
+          preview.src = endpoint + "?ts=" + Date.now();
         }
-        let units = Math.min(bitmap.width / 16, 4096 / 16);
-        for (let attempt = 0; attempt < 8; attempt++) {
-          const canvas = document.createElement("canvas");
-          // Whole 16×9 units preserve the required ratio during size reduction.
-          const size = Math.max(1, Math.floor(units));
-          canvas.width = size * 16;
-          canvas.height = size * 9;
-          const context = canvas.getContext("2d");
-          if (!context) throw new Error("Could not prepare the image.");
-          context.fillStyle = "#000";
-          context.fillRect(0, 0, canvas.width, canvas.height);
-          context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-          const blob = await new Promise((resolve, reject) => canvas.toBlob(
-            value => value ? resolve(value) : reject(new Error("Could not prepare the image.")), "image/png"
-          ));
-          if (blob.size <= 8 * 1024 * 1024) return blob;
-          units *= 0.75;
+        buttons();
+      }
+      async function load() {
+        try {
+          const res = await fetch(endpoint + "/info", { cache: "no-store" });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || "Could not load media.");
+          render(data.image || {});
+          setStatus(configured ? label + " saved on the server." : emptyMessage);
+        } catch (error) { setStatus(error.message, true); }
+      }
+      async function prepare(file) {
+        if (file.size > 10 * 1024 * 1024) throw new Error("Choose a file no larger than 10 MiB.");
+        // Preserve GIF animation and video/audio instead of flattening to a canvas.
+        const extension = file.name.split(".").pop().toLowerCase();
+        if (["image/gif", "video/mp4", "video/webm"].includes(file.type)
+            || ["gif", "mp4", "webm"].includes(extension)) return file;
+        if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)
+            && !["png", "jpg", "jpeg", "webp"].includes(extension)) {
+          throw new Error("Choose a PNG, JPG, WebP, GIF, MP4 or WebM file.");
         }
-        throw new Error("The image is too large to upload. Choose a smaller image.");
-      } finally { bitmap.close(); }
+        const bitmap = await createImageBitmap(file);
+        try {
+          let scale = Math.min(1, 4096 / bitmap.width, 4096 / bitmap.height);
+          for (let attempt = 0; attempt < 8; attempt++) {
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, Math.floor(bitmap.width * scale));
+            canvas.height = Math.max(1, Math.floor(bitmap.height * scale));
+            const context = canvas.getContext("2d");
+            if (!context) throw new Error("Could not prepare the image.");
+            context.fillStyle = "#000";
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            const blob = await new Promise((resolve, reject) => canvas.toBlob(
+              value => value ? resolve(value) : reject(new Error("Could not prepare the image.")), "image/png"
+            ));
+            if (blob.size <= 10 * 1024 * 1024) return blob;
+            scale *= 0.75;
+          }
+          throw new Error("Choose a smaller image.");
+        } finally { bitmap.close(); }
+      }
+      fileInput.addEventListener("change", async () => {
+        const file = fileInput.files[0];
+        if (!file || busy) return;
+        busy = true;
+        buttons();
+        setStatus("Uploading and checking media…");
+        try {
+          const blob = await prepare(file);
+          const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": blob.type || "application/octet-stream" }, body: blob });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || "Media upload failed.");
+          render(data.image || {});
+          setStatus(label + " uploaded.");
+        } catch (error) { setStatus(error.message || "Media upload failed.", true); }
+        finally { fileInput.value = ""; busy = false; buttons(); }
+      });
+      upload.addEventListener("click", () => {
+        if (busy) return;
+        fileInput.value = "";
+        fileInput.click();
+      });
+      remove.addEventListener("click", async () => {
+        if (busy || !configured) return;
+        busy = true;
+        buttons();
+        try {
+          const res = await fetch(endpoint, { method: "DELETE" });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || "Could not remove media.");
+          render(data.image || {});
+          setStatus(emptyMessage);
+        } catch (error) { setStatus(error.message, true); }
+        finally { busy = false; buttons(); }
+      });
+      for (const preview of [image, video]) {
+        preview.addEventListener("error", () => {
+          if (!configured || !preview.getAttribute("src") || preview.hidden) return;
+          preview.hidden = true;
+          empty.hidden = false;
+          empty.querySelector("strong").textContent = "Preview unavailable";
+          empty.querySelector("span").textContent = "The saved file could not be previewed in this browser.";
+          setStatus("Media saved, but the browser preview is unavailable.", true);
+        });
+      }
+      return load;
     }
-    async function uploadFallbackImage() {
-      const file = fallbackFile.files[0];
-      if (!file || fallbackBusy) return;
-      fallbackBusy = true;
-      updateFallbackButtons();
-      setFallbackStatus("Uploading recovery image...");
-      try {
-        const blob = await prepareFallbackImage(file);
-        const res = await fetch("/api/fallback-image", { method: "POST", headers: { "Content-Type": "image/png" }, body: blob });
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(data.error || "Image upload failed.");
-        fallbackFile.value = "";
-        renderFallbackImage(data.image || {});
-        setFallbackStatus("Recovery image uploaded. It will be used whenever fallback is active.");
-      } catch (error) { setFallbackStatus(error.message || "Image upload failed.", true); }
-      finally { fallbackFile.value = ""; fallbackBusy = false; updateFallbackButtons(); }
-    }
-    async function removeFallbackImage() {
-      if (fallbackBusy || !fallbackConfigured) return;
-      fallbackBusy = true;
-      updateFallbackButtons();
-      try {
-        const res = await fetch("/api/fallback-image", { method: "DELETE" });
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(data.error || "Could not remove recovery image.");
-        renderFallbackImage(data.image || {});
-        setFallbackStatus("Recovery image removed. Recovery uses a black screen.");
-      } catch (error) { setFallbackStatus(error.message, true); }
-      finally { fallbackBusy = false; updateFallbackButtons(); }
-    }
+    const loadRecoveryMedia = setupMediaUpload("fallback_image", "/api/fallback-image", "Recovery media", "Recovery uses a black screen.");
+    const loadTransitionMedia = setupMediaUpload("transition_media", "/api/transition-media", "Transition media", "Track changes use the recovery fallback.");
 
     const debugTab = document.getElementById("tab-debug");
     const debugTabButton = document.querySelector('[data-tab="tab-debug"]');
@@ -1322,6 +1350,7 @@
       syncDebugButtons();
     }
     const debugStart = document.getElementById("debug_test_start");
+    const debugSkip = document.getElementById("debug_test_skip");
     const debugStop = document.getElementById("debug_test_stop");
     const debugReconnect = document.getElementById("debug_preview_reconnect");
     const debugVideo = document.getElementById("debug_preview_video");
@@ -1340,6 +1369,7 @@
     let debugPlayerError = "";
     function syncDebugButtons() {
       debugStart.disabled = !debugToggle.checked || debugPending || !!debugInfo.running;
+      debugSkip.disabled = !debugToggle.checked || debugPending || !debugInfo.running || !debugInfo.local_preview || !debugInfo.can_skip;
       debugStop.disabled = debugPending || !debugInfo.running || !debugInfo.local_preview;
       debugReconnect.disabled = !debugInfo.running || !debugInfo.local_preview || !debugInfo.preview_ready;
       const ready = debugToggle.checked && debugInfo.running && debugInfo.source_ready && !debugInfo.fault_pending && !debugInfo.fault_active;
@@ -1435,7 +1465,7 @@
         const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const payload = await response.json();
         if (!response.ok || !payload.ok) throw new Error(payload.error || "Debug action failed.");
-        debugActionStatus.textContent = payload.failure ? "Failure queued: " + payload.failure.kind + ". Watch the source/output PIDs and recovery count." : "Debug action accepted.";
+        debugActionStatus.textContent = payload.transition_skip ? "Skip queued. The transition will play before the next item; the preview has a few seconds of buffering." : payload.failure ? "Failure queued: " + payload.failure.kind + ". Watch the source/output PIDs and recovery count." : "Debug action accepted.";
       } catch (error) { debugActionStatus.textContent = error.message; }
       finally {
         debugPending = false;
@@ -1929,6 +1959,7 @@
     }
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
     debugStart.addEventListener("click", () => debugAction("/api/debug/test-stream/start", { source: String(sourceSelect.value || "").trim() }));
+    debugSkip.addEventListener("click", () => debugAction("/api/debug/test-stream/skip", { source_pid: debugInfo.source_pid }));
     debugStop.addEventListener("click", () => debugAction("/api/debug/test-stream/stop"));
     debugReconnect.addEventListener("click", () => { clearDebugPlayer(); if (debugInfo.running && debugInfo.local_preview && debugInfo.preview_ready) attachDebugPlayer(debugInfo); });
     for (const button of debugFaultButtons) {
@@ -1936,22 +1967,6 @@
     }
     debugTabButton.addEventListener("click", loadDebugStatus);
     debugToggle.addEventListener("change", syncDebugVisibility);
-    fallbackFile.addEventListener("change", uploadFallbackImage);
-    fallbackUpload.addEventListener("click", () => {
-      if (fallbackBusy) return;
-      fallbackFile.value = "";
-      fallbackFile.click();
-    });
-    fallbackRemove.addEventListener("click", removeFallbackImage);
-    fallbackPreview.addEventListener("error", () => {
-      if (fallbackConfigured) {
-        fallbackPreview.hidden = true;
-        fallbackEmpty.hidden = false;
-        fallbackEmpty.querySelector("strong").textContent = "Preview unavailable";
-        fallbackEmpty.querySelector("span").textContent = "Try uploading the recovery image again.";
-        setFallbackStatus("The saved image preview is unavailable. Try uploading it again.", true);
-      }
-    });
     // Keep the native fields as the settings interface; render their controls
     // with the app palette rather than the operating system's menu/steppers.
     function initStyledFields() {
@@ -2180,7 +2195,8 @@
     }
     syncActionButtons();
     loadSettings();
-    loadFallbackImage();
+    loadRecoveryMedia();
+    loadTransitionMedia();
     loadDebugStatus();
     loadBinariesStatus();
     refreshState(true);

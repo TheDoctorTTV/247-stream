@@ -295,6 +295,9 @@ pub struct Worker {
     filler_image: Option<crate::fallback_image::Stamp>,
     filler_image_failed: Option<crate::fallback_image::Stamp>,
     filler_image_checked: Instant,
+    transition_asset: Option<crate::fallback_image::Asset>,
+    transition_duration: Option<f64>,
+    transition_started: Option<Instant>,
     live_opts: bool,
     stats_supported: bool,
     telemetry: Mutex<BTreeMap<u32, Arc<FfmpegStats>>>,
@@ -337,6 +340,9 @@ impl Worker {
             filler_image: None,
             filler_image_failed: None,
             filler_image_checked: Instant::now(),
+            transition_asset: None,
+            transition_duration: None,
+            transition_started: None,
             live_opts: true,
             stats_supported,
             telemetry: Mutex::new(BTreeMap::new()),
@@ -852,8 +858,11 @@ impl Worker {
             "44100",
             "-ac",
             "2",
+            // Private MPEG-TS must match the transition/recovery mux delay.
+            // A buffer-mode delay here moves PTS/DTS ahead of PCR; preserving
+            // PCR continuity at the next handoff then inserts seconds of dead air.
             "-max_delay",
-            max_delay,
+            if to_pipe { "0" } else { max_delay },
         ]));
         if self.cfg.youtube() {
             args.extend(process::args(&["-minrate", &self.cfg.bitrate]));
@@ -1167,18 +1176,22 @@ impl Worker {
                         "[INFO] Item #{} - https://www.youtube.com/watch?v={id}",
                         idx + 1
                     ));
-                    let cached = prefetched.take().and_then(|(cached, rx)| {
+                    let cached = if let Some((cached, rx)) = prefetched.take() {
                         if cached == *id {
-                            rx.recv_timeout(Duration::from_millis(if self.cfg.youtube() {
-                                1200
-                            } else {
-                                250
-                            }))
-                            .ok()
+                            let timeout =
+                                Duration::from_millis(if self.cfg.youtube() { 1200 } else { 250 });
+                            // Keep forwarding transition/fallback packets while
+                            // waiting on the prefetch worker, including at loop wrap.
+                            self.resolve_with_filler(
+                                move |_| Ok(rx.recv_timeout(timeout).ok()),
+                                false,
+                            )?
                         } else {
                             None
                         }
-                    });
+                    } else {
+                        None
+                    };
                     if let Some(next) = ids.get(idx + 1) {
                         prefetched = Some((next.clone(), self.prefetch(next.clone())));
                     }
@@ -1206,6 +1219,7 @@ impl Worker {
                                 return Err(e.context("Enhanced Broadcasting output stopped"));
                             }
                         }
+                        self.stop_filler();
                         self.log(&format!("[WARN] Stream error for video {id}: {e:#}"));
                         if let Err(e) = self.slate(0.8) {
                             self.log(&format!("[WARN] Keepalive slate failed: {e}"));
@@ -1224,6 +1238,7 @@ impl Worker {
                     return Err(e);
                 }
                 if !self.control.stopped() {
+                    self.stop_filler();
                     self.log(&format!(
                         "[WARN] Loop error: {e:#}. Retrying in 30 seconds..."
                     ));

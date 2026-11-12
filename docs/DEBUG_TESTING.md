@@ -27,6 +27,15 @@ the preview output; the first picture is source media, not the recovery image.
 The preview playlist may return 404 while preparation is in progress. Fallback
 is used only for interruptions or transitions after source playback has started.
 
+**Skip to transition** ends the current local playlist item early, plays the
+configured transition, then advances to the next item (or loops a single video).
+The button is enabled only while a local playlist item is active, and waits while
+a transition, startup or recovery is in progress. Configure Transition media in
+Settings first; without it, the existing recovery fallback fills the handoff.
+This action cannot skip a normal broadcast or a live relay. Allow a few seconds
+for the buffered HLS preview to show the change. The ordinary Stream-tab Skip
+retains its existing behavior.
+
 The player is muted initially; unmute it to hear the selected source. HLS adds
 several seconds of playback buffering. Reconnect Player restarts only browser playback,
 not the producer or output process. An external HLS player can use the playlist

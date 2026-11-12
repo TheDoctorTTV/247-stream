@@ -184,3 +184,11 @@ stream247-linux-x86_64.tar.gz
 # Rolling local-only diagnostic preview
 /debug-preview/
 /releases/debug-preview/
+
+# Managed recovery/transition uploads and active playout snapshots
+/recovery-media*
+/transition-media*
+/playout-media-*
+/releases/recovery-media*
+/releases/transition-media*
+/releases/playout-media-*

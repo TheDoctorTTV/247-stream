@@ -33,6 +33,7 @@ pub(super) struct Producer {
     last_data: Instant,
     drop_pid: Option<u16>,
     epoch: Epoch,
+    asset: Option<crate::fallback_image::Asset>,
 }
 impl Producer {
     fn read(&mut self) -> Result<()> {
@@ -78,6 +79,7 @@ impl Producer {
 }
 enum SourceEnd {
     Complete,
+    Advance,
     Cancelled,
     Retry { reason: String, position: f64 },
 }
@@ -142,8 +144,10 @@ impl Worker {
         args.extend(process::args(&[
             "-vf",
             &filter,
-            "-r",
-            &self.cfg.fps.to_string(),
+            // Producers already normalize cadence. Preserve their timestamps;
+            // FFmpeg rejects output -r/-fpsmax with passthrough synchronization.
+            "-fps_mode:v",
+            "passthrough",
             "-g",
             &(self.cfg.fps * 2).to_string(),
             "-keyint_min",
@@ -181,6 +185,7 @@ impl Worker {
             last_data: Instant::now(),
             drop_pid: None,
             epoch: Epoch::default(),
+            asset: None,
         })
     }
     fn progress(&self, producer: &Producer) -> Option<MediaProgress> {
@@ -231,7 +236,13 @@ impl Worker {
             let Some(offset) = bridge.clock.begin(&mut producer.epoch, &producer.pending)? else {
                 return Ok(());
             };
-            self.app.debug(&format!("Playout clock handoff: producer_pid={}, shared A/V offset={:.6}s; output session retained.", producer.process.0.id(), offset as f64 / 90_000.0));
+            let gaps = bridge
+                .clock
+                .handoff_gaps(&producer.epoch, &producer.pending)?;
+            self.app.debug(&format!("Playout clock handoff: producer_pid={}, shared A/V offset={:.6}s, video_gap_s={:.6}, audio_gap_s={:.6}; output session retained.", producer.process.0.id(), offset as f64 / 90_000.0, gaps[0], gaps[1]));
+            if gaps[0] > 0.1 || gaps[1] > 0.1 {
+                self.log(&format!("[WARN] Playout handoff has a timestamp gap: video={:.3}s, audio={:.3}s; preserving the incoming source A/V relationship.", gaps[0], gaps[1]));
+            }
         }
         // Keep bursts bounded so cancellation and the watchdog remain responsive.
         for _ in 0..8 {
@@ -248,57 +259,99 @@ impl Worker {
         }
         Ok(())
     }
+    fn begin_transition(&mut self) {
+        if self.control.stopped() || !self.cfg.bridge() || self.bridge.is_none() {
+            return;
+        }
+        match crate::fallback_image::snapshot(&self.app, crate::fallback_image::Role::Transition) {
+            Ok(Some(asset)) => {
+                self.stop_filler();
+                self.transition_duration = Some(asset.duration);
+                self.transition_started = None;
+                self.transition_asset = Some(asset);
+                self.app.status("Playing transition");
+            }
+            Ok(None) => {}
+            Err(e) => self.log(&format!(
+                "[WARN] Transition media unavailable: {e:#}; using recovery fallback."
+            )),
+        }
+    }
+    fn transition_ready(&self) -> bool {
+        match self.transition_duration {
+            None => true,
+            Some(duration) => {
+                self.transition_started
+                    .is_some_and(|start| start.elapsed().as_secs_f64() >= duration)
+                    && self
+                        .filler
+                        .as_ref()
+                        .is_some_and(|filler| filler.epoch.elapsed() >= duration)
+            }
+        }
+    }
     fn start_filler(&mut self) -> Result<()> {
-        // Fallback may preserve an existing output, but must never start one.
+        // Filler preserves an existing output; it never starts a broadcast.
         if self.filler.is_some() || self.control.stopped() || self.bridge.is_none() {
             return Ok(());
         }
         self.start_bridge()?;
         let h = self.cfg.height;
         let w = ((h * 16 / 9) + 1) / 2 * 2;
-        // CPU filler avoids consuming another hardware encoding session during
-        // replacement-source startup. The EB bridge keeps its encoders unchanged.
+        let transition = self.transition_duration.is_some();
         self.filler_image = crate::fallback_image::revision(&self.app);
         self.filler_image_checked = Instant::now();
-        let use_image =
-            self.filler_image.is_some() && self.filler_image_failed != self.filler_image;
-        let mut args = process::args(&[
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-stats",
-            "-nostdin",
-            "-re",
-        ]);
-        if use_image {
-            args.extend(process::args(&[
-                "-f",
-                "image2",
-                "-loop",
-                "1",
-                "-framerate",
-                &self.cfg.fps.to_string(),
-                "-i",
-                &crate::fallback_image::path(&self.app).to_string_lossy(),
-            ]));
+        let asset = if transition {
+            self.transition_asset.take()
+        } else if self.filler_image.is_some() && self.filler_image_failed != self.filler_image {
+            match crate::fallback_image::snapshot(&self.app, crate::fallback_image::Role::Recovery)
+            {
+                Ok(asset) => asset,
+                Err(e) => {
+                    self.log(&format!(
+                        "[WARN] Recovery media unavailable: {e:#}; using black video."
+                    ));
+                    self.filler_image_failed = self.filler_image;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut args =
+            process::args(&["-hide_banner", "-loglevel", "warning", "-stats", "-nostdin"]);
+        if let Some(asset) = &asset {
+            asset.input(&mut args, true, self.cfg.fps);
         } else {
             args.extend(process::args(&[
+                "-re",
                 "-f",
                 "lavfi",
                 "-i",
                 &format!("color=black:s={w}x{h}:rate={}", self.cfg.fps),
             ]));
         }
+        // Keep a paced silent input for audio-less media and mix it with
+        // transition audio while the video loops awaiting source readiness.
         args.extend(process::args(&[
             "-re",
             "-f",
             "lavfi",
             "-i",
             "anullsrc=cl=stereo:r=44100",
+        ]));
+        let clip_audio = transition && asset.as_ref().is_some_and(|a| a.video() && a.audio);
+        if clip_audio {
+            args.extend(process::args(&["-filter_complex", "[0:a:0]asetpts=PTS-STARTPTS,apad[clip];[clip][1:a:0]amix=inputs=2:duration=longest:normalize=0[audio]"]));
+        }
+        let filter = format!("setpts=PTS-STARTPTS,scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={}", self.cfg.fps);
+        args.extend(process::args(&[
             "-map",
             "0:v:0",
             "-map",
-            "1:a:0",
+            if clip_audio { "[audio]" } else { "1:a:0" },
+            "-vf",
+            &filter,
             "-c:v",
             "libx264",
             "-preset",
@@ -317,6 +370,10 @@ impl Worker {
             "44100",
             "-ac",
             "2",
+            // Match source producers explicitly; differing PTS/PCR delays
+            // would turn clock continuity into a visible gap at handoff.
+            "-max_delay",
+            "0",
             "-muxdelay",
             "0",
             "-muxpreload",
@@ -335,56 +392,85 @@ impl Worker {
             "mpegts",
             "pipe:1",
         ]));
-        if use_image {
-            let filter = format!("scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1");
-            let index = args.len() - 1;
-            args.splice(index..index, process::args(&["-vf", &filter]));
-        }
-        self.filler = Some(self.producer(&args, "keepalive")?);
-        self.log(if use_image {
-            "[INFO] Playout fallback active: recovery image and silent audio; persistent output retained."
+        let mut producer = self.producer(
+            &args,
+            if transition {
+                "transition"
+            } else {
+                "keepalive"
+            },
+        )?;
+        self.log(if transition {
+            "[INFO] Transition active; preparing the next source within the existing output session."
+        } else if asset.is_some() {
+            "[INFO] Playout fallback active: recovery media and silent audio; persistent output retained."
         } else {
             "[INFO] Playout fallback active: black video and silent audio; persistent output retained."
         });
+        producer.asset = asset;
+        self.filler = Some(producer);
         Ok(())
     }
     pub(super) fn pump_filler(&mut self) -> Result<()> {
         if self.control.stopped() || !self.cfg.bridge() || self.bridge.is_none() {
             return Ok(());
         }
-        if self.filler.is_some() && self.filler_image_checked.elapsed() >= Duration::from_secs(1) {
+        let transition = self.transition_duration.is_some();
+        if !transition
+            && self.filler.is_some()
+            && self.filler_image_checked.elapsed() >= Duration::from_secs(1)
+        {
             self.filler_image_checked = Instant::now();
             if crate::fallback_image::revision(&self.app) != self.filler_image {
                 self.stop_filler();
                 self.filler_image_failed = None;
             }
         }
-        self.start_filler()?;
+        if let Err(e) = self.start_filler() {
+            if !transition {
+                return Err(e);
+            }
+            self.log(&format!(
+                "[WARN] Transition could not start: {e:#}; using recovery fallback."
+            ));
+            self.stop_filler();
+            return self.pump_filler();
+        }
         let mut filler = self.filler.take().context("Fallback producer missing")?;
         let result = (|| -> Result<()> {
             filler.read()?;
             self.forward(&mut filler)?;
+            if transition && filler.epoch.started() && self.transition_started.is_none() {
+                self.transition_started = Some(Instant::now());
+            }
             if let Some(status) = filler.process.0.try_wait()? {
-                bail!("Fallback FFmpeg exited: {status}");
+                bail!("Fallback/transition FFmpeg exited: {status}");
             }
             if filler.eof {
-                bail!("Fallback FFmpeg closed its media output");
+                bail!("Fallback/transition FFmpeg closed its media output");
             }
             if filler.last_data.elapsed() > STARTUP_TIMEOUT {
-                bail!("Fallback FFmpeg stopped producing media");
+                bail!("Fallback/transition stopped producing media");
+            }
+            if !filler.epoch.started() && filler.started.elapsed() > STARTUP_TIMEOUT {
+                bail!("Fallback/transition did not produce both audio and video");
             }
             Ok(())
         })();
-        let image_failed = result.is_err()
-            && self.filler_image.is_some()
-            && self.filler_image_failed != self.filler_image
+        let media_failed = result.is_err()
+            && filler.asset.is_some()
             && (filler.process.0.try_wait().ok().flatten().is_some()
                 || filler.eof
-                || filler.last_data.elapsed() > STARTUP_TIMEOUT);
+                || filler.last_data.elapsed() > STARTUP_TIMEOUT
+                || (!filler.epoch.started() && filler.started.elapsed() > STARTUP_TIMEOUT));
         self.filler = Some(filler);
-        if image_failed {
-            self.filler_image_failed = self.filler_image;
-            self.log("[WARN] Recovery image could not be played; using black video and silent audio until the image changes.");
+        if media_failed {
+            if transition {
+                self.log("[WARN] Transition decoder failed; continuing with recovery fallback.");
+            } else {
+                self.filler_image_failed = self.filler_image;
+                self.log("[WARN] Recovery media decoder failed; using black video until the media changes.");
+            }
             self.stop_filler();
             return self.pump_filler();
         }
@@ -424,6 +510,9 @@ impl Worker {
         self.report_processes(Some(producer.process.0.id()));
     }
     pub(super) fn stop_filler(&mut self) {
+        self.transition_asset = None;
+        self.transition_duration = None;
+        self.transition_started = None;
         if let Some(filler) = self.filler.take() {
             self.stop_producer(filler, true);
         }
@@ -527,19 +616,37 @@ impl Worker {
         Ok(())
     }
     fn source_once(&mut self, media: &Media, seek: f64, skippable: bool) -> Result<SourceEnd> {
+        // Resolve the next URL during the transition, but do not let its paced
+        // decoder run far ahead while transition media still owns the output.
+        // After at least one full transition, keep it looping while source A/V
+        // warms up; the normal readiness handoff below then switches producers.
+        while !self.transition_ready()
+            && !self.control.stopped()
+            && !(skippable && self.control.skipped())
+        {
+            self.pump_filler()?;
+            self.report_processes(None);
+            thread::sleep(Duration::from_millis(10));
+        }
+        if self.control.stopped() || (skippable && self.control.skipped()) {
+            self.stop_filler();
+            self.pump_filler()?;
+            return Ok(SourceEnd::Cancelled);
+        }
         self.pump_filler()?;
         let args = self.ffmpeg_args(media, true, seek);
         let mut source = match self.producer(&args, "source") {
             Ok(source) => source,
             Err(e) => {
+                self.stop_filler();
                 return Ok(SourceEnd::Retry {
                     reason: format!("Source launch failed: {e:#}"),
                     position: seek,
-                })
+                });
             }
         };
         let _debug_scope =
-            crate::debug::SourceScope::new(self.control.clone(), source.process.0.id());
+            crate::debug::SourceScope::new(self.control.clone(), source.process.0.id(), skippable);
         let mut active = false;
         let mut checkpoint = seek;
         let outcome = loop {
@@ -547,6 +654,11 @@ impl Worker {
                 break SourceEnd::Cancelled;
             }
             if active {
+                let advance = self.control.fault.lock().unwrap().advance.take();
+                if skippable && self.control.local_preview && advance == Some(source.process.0.id())
+                {
+                    break SourceEnd::Advance;
+                }
                 self.apply_debug_fault(&mut source)?;
             }
             source.read()?;
@@ -568,7 +680,7 @@ impl Worker {
                 && source.pending.len() >= PACKET
                 && (progress.is_some_and(|p| p.video_packets > 0 && p.audio_packets > 0)
                     || (!self.stats_supported && source.pending.len() >= PACKET * 128));
-            if !active && ready {
+            if !active && ready && self.transition_ready() {
                 self.stop_filler();
                 if self.control.stopped() || (skippable && self.control.skipped()) {
                     break SourceEnd::Cancelled;
@@ -604,14 +716,14 @@ impl Worker {
                 }
                 // A failed startup may have only one stream; do not wait forever
                 // for readiness when its remaining bytes cannot be used.
-                if !active {
+                if !active && !ready {
                     break SourceEnd::Retry {
                         reason: format!("Source exited before A/V readiness: {status}"),
                         position: checkpoint,
                     };
                 }
             }
-            if !active && source.started.elapsed() > STARTUP_TIMEOUT {
+            if !active && !ready && source.started.elapsed() > STARTUP_TIMEOUT {
                 break SourceEnd::Retry {
                     reason: "Source did not produce both audio and video within 30 seconds".into(),
                     position: checkpoint,
@@ -648,6 +760,11 @@ impl Worker {
         self.control
             .source_ready
             .store(false, std::sync::atomic::Ordering::Release);
+        if matches!(outcome, SourceEnd::Complete | SourceEnd::Advance) && skippable {
+            self.begin_transition();
+        } else if self.transition_duration.is_some() {
+            self.stop_filler();
+        }
         if !self.control.stopped() {
             // Preserve an already-open output during cleanup/recovery. Before
             // initial source readiness this deliberately does not create fallback.
@@ -671,7 +788,7 @@ impl Worker {
                     );
                     return Ok(());
                 }
-                SourceEnd::Cancelled => return Ok(()),
+                SourceEnd::Cancelled | SourceEnd::Advance => return Ok(()),
                 SourceEnd::Retry {
                     reason,
                     position: checkpoint,

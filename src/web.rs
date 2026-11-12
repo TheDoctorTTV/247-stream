@@ -1,6 +1,7 @@
 //! HTTP compatibility layer for the existing dashboard assets and JSON endpoints.
 use crate::{config, debug, fallback_image, runtime::App, updates, APP_NAME, REPO, VERSION};
 use anyhow::{Context, Result};
+use fallback_image::Role;
 use serde_json::{json, Value};
 use std::{
     io::Read,
@@ -38,21 +39,16 @@ fn handle(mut request: Request, app: Arc<App>) {
         }
         return;
     }
-    if method == "GET" && path == "/api/fallback-image" {
-        match fallback_image::preview(&app) {
-            Ok(Some(bytes)) => respond(request, 200, "image/png", bytes),
-            Ok(None) => respond(
-                request,
-                404,
-                "text/plain",
-                b"No recovery image configured".to_vec(),
-            ),
-            Err(_) => respond(
-                request,
-                400,
-                "text/plain",
-                b"Recovery image unavailable".to_vec(),
-            ),
+    let media_role = match path.strip_suffix("/info").unwrap_or(&path) {
+        "/api/fallback-image" => Some(Role::Recovery),
+        "/api/transition-media" => Some(Role::Transition),
+        _ => None,
+    };
+    if method == "GET" && media_role.is_some() && !path.ends_with("/info") {
+        match fallback_image::preview(&app, media_role.unwrap()) {
+            Ok(Some((kind, bytes))) => respond(request, 200, &kind, bytes),
+            Ok(None) => respond(request, 404, "text/plain", b"No media configured".to_vec()),
+            Err(_) => respond(request, 400, "text/plain", b"Media unavailable".to_vec()),
         }
         return;
     }
@@ -98,25 +94,27 @@ fn handle(mut request: Request, app: Arc<App>) {
         }
     }
     let result = (|| -> Result<(u16, Value)> {
-        if path == "/api/fallback-image" && method == "POST" {
-            anyhow::ensure!(
-                request
-                    .headers()
-                    .iter()
-                    .any(|h| h.field.equiv("Content-Type")
-                        && h.value
-                            .as_str()
-                            .split(';')
-                            .next()
-                            .is_some_and(|v| v.trim().eq_ignore_ascii_case("image/png"))),
-                "Upload the recovery image as image/png"
-            );
+        if let Some(role) = media_role {
+            if method == "GET" && path.ends_with("/info") {
+                return Ok((
+                    200,
+                    json!({"ok":true,"image":fallback_image::info(&app, role)}),
+                ));
+            }
+            if method == "DELETE" && !path.ends_with("/info") {
+                return Ok((
+                    200,
+                    json!({"ok":true,"image":fallback_image::remove(&app, role)?}),
+                ));
+            }
+        }
+        if method == "POST" && media_role.is_some() && !path.ends_with("/info") {
             let mut bytes = Vec::new();
             request
                 .as_reader()
                 .take((fallback_image::MAX_BYTES + 1) as u64)
                 .read_to_end(&mut bytes)?;
-            let image = fallback_image::store(&app, &bytes)?;
+            let image = fallback_image::store(&app, media_role.unwrap(), &bytes)?;
             return Ok((200, json!({"ok":true,"image":image})));
         }
         let body = if method == "POST" {
@@ -152,15 +150,13 @@ fn handle(mut request: Request, app: Arc<App>) {
                 app.start_preview(source)?;
                 json!({"ok":true,"preview_url":"/api/debug/preview/index.m3u8"})
             }
+            ("POST", "/api/debug/test-stream/skip") => {
+                app.skip_preview(&body)?;
+                json!({"ok":true,"transition_skip":true})
+            }
             ("POST", "/api/debug/test-stream/stop") => {
                 app.stop_preview()?;
                 json!({"ok":true})
-            }
-            ("GET", "/api/fallback-image/info") => {
-                json!({"ok":true,"image":fallback_image::info(&app)})
-            }
-            ("DELETE", "/api/fallback-image") => {
-                json!({"ok":true,"image":fallback_image::remove(&app)?})
             }
             ("GET", "/api/state") => app.state.lock().unwrap().snapshot(),
             ("GET", "/api/settings") => json!({"ok":true,"settings":app.settings()}),

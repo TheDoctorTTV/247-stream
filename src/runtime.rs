@@ -300,7 +300,7 @@ impl App {
             );
         }
         anyhow::ensure!(
-            fault.pending.is_none() && !fault.active,
+            fault.pending.is_none() && !fault.active && fault.advance.is_none(),
             "A fault is already pending or active; wait for source recovery"
         );
         fault.pending = Some(crate::debug::FaultRequest { pid, kind });
@@ -309,6 +309,37 @@ impl App {
             kind.name()
         ));
         Ok(json!({"queued":true,"kind":kind.name(),"source_pid":pid}))
+    }
+    pub fn skip_preview(&self, payload: &Value) -> Result<()> {
+        let expected = payload["source_pid"]
+            .as_u64()
+            .context("source_pid is required")?;
+        let running = self.worker.lock().unwrap();
+        let worker = running
+            .as_ref()
+            .filter(|w| !w.thread.is_finished())
+            .context("No local test stream is running")?;
+        let control = &worker.control;
+        let mut fault = control.fault.lock().unwrap();
+        anyhow::ensure!(
+            control.local_preview && !control.stopped(),
+            "No local test stream is running"
+        );
+        let pid = control.source_pid.load(Ordering::Acquire);
+        anyhow::ensure!(
+            pid != 0
+                && pid as u64 == expected
+                && control.source_ready.load(Ordering::Acquire)
+                && fault.skippable,
+            "Wait for an active playlist item in the local test stream"
+        );
+        anyhow::ensure!(
+            fault.advance.is_none() && fault.pending.is_none() && !fault.active,
+            "A debug action is already pending; wait for the source to advance or recover"
+        );
+        fault.advance = Some(pid);
+        self.log("[INFO] Local test skip requested; playing the transition before the next item.");
+        Ok(())
     }
     pub fn stop_preview(&self) -> Result<()> {
         {

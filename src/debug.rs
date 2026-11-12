@@ -43,6 +43,8 @@ pub struct FaultRequest {
 }
 #[derive(Default)]
 pub struct FaultState {
+    pub advance: Option<u32>,
+    pub skippable: bool,
     pub pending: Option<FaultRequest>,
     pub active: bool,
     pub last: Option<FaultKind>,
@@ -53,9 +55,11 @@ pub struct SourceScope {
     pid: u32,
 }
 impl SourceScope {
-    pub fn new(control: Arc<Control>, pid: u32) -> Self {
+    pub fn new(control: Arc<Control>, pid: u32, skippable: bool) -> Self {
         {
             let mut state = control.fault.lock().unwrap();
+            state.advance = None;
+            state.skippable = skippable;
             state.pending = None;
             state.active = false;
             control.source_ready.store(false, Ordering::Release);
@@ -70,6 +74,8 @@ impl Drop for SourceScope {
         if self.control.source_pid.load(Ordering::Acquire) == self.pid {
             self.control.source_ready.store(false, Ordering::Release);
             self.control.source_pid.store(0, Ordering::Release);
+            state.advance = None;
+            state.skippable = false;
             state.pending = None;
             state.active = false;
         }
@@ -81,6 +87,9 @@ pub fn control_status(control: &Control) -> Value {
         "output_pid":control.output_pid.load(Ordering::Acquire),
         "source_ready":control.source_ready.load(Ordering::Acquire),
         "fault_pending":fault.pending.is_some(), "fault_active":fault.active,
+        "can_skip":control.local_preview && !control.stopped() && fault.skippable
+            && control.source_ready.load(Ordering::Acquire) && fault.advance.is_none()
+            && fault.pending.is_none() && !fault.active,
         "last_fault":fault.last.map(FaultKind::name),
         "recoveries":control.recoveries.load(Ordering::Acquire)})
 }

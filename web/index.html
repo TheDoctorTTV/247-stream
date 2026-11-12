@@ -165,27 +165,55 @@
       </div>
       <section class="card recovery-settings" aria-labelledby="recovery_heading">
         <div class="tool-heading">
-          <h2 id="recovery_heading">Recovery image</h2>
-          <p>Shown during interruptions after streaming starts. Audio stays silent until the source returns.</p>
+          <h2 id="recovery_heading">Recovery media</h2>
+          <p>Shown during interruptions after streaming starts. Images, GIFs and videos loop with silent audio.</p>
         </div>
         <div class="recovery-layout">
           <div class="media-frame recovery-frame">
-            <div id="fallback_image_empty" class="media-empty"><strong>No recovery image</strong><span>Fallback uses a black screen.</span></div>
-            <img id="fallback_image_preview" class="fallback-image-preview" alt="Saved recovery image" hidden>
+            <div id="fallback_image_empty" class="media-empty"><strong>No recovery media</strong><span>Recovery uses a black screen.</span></div>
+            <img id="fallback_image_preview" class="fallback-image-preview" alt="Saved recovery media" hidden>
+            <video id="fallback_image_video" class="fallback-image-preview" controls playsinline preload="metadata" aria-label="Saved recovery media video" hidden></video>
           </div>
           <div class="recovery-controls">
             <div class="recovery-requirements">
-              <strong>16:9 image required</strong>
-              <span class="tool-caption">Recommended: 1920 × 1080 px</span>
-              <span id="fallback_image_hint" class="tool-caption">PNG, JPG or WebP · Up to 20 MiB</span>
+              <strong>Images, GIFs or videos</strong>
+              <span class="tool-caption">Recommended: 1920 × 1080 px · Fits any aspect ratio</span>
+              <span id="fallback_image_hint" class="tool-caption">PNG, JPG, WebP, GIF, MP4 or WebM · Up to 10 MiB</span>
             </div>
-            <input id="fallback_image_file" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Recovery image" hidden>
+            <input id="fallback_image_file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,.mp4,.webm,.gif" aria-label="Recovery media" hidden>
             <div class="tool-actions">
-              <button id="fallback_image_upload" type="button" class="primary" aria-describedby="fallback_image_hint">Upload image</button>
+              <button id="fallback_image_upload" type="button" class="primary" aria-describedby="fallback_image_hint">Upload media</button>
               <button id="fallback_image_remove" type="button" class="tool-secondary" disabled>Remove</button>
             </div>
-            <div id="fallback_image_status" class="statusline" role="status" aria-live="polite">Loading recovery image…</div>
-            <p class="tool-caption">Fits without cropping. Changes apply without restarting the stream.</p>
+            <div id="fallback_image_status" class="statusline" role="status" aria-live="polite">Loading recovery media…</div>
+            <p class="tool-caption">Fits without cropping. Changes apply during active recovery without restarting the stream.</p>
+          </div>
+        </div>
+      </section>
+      <section class="card recovery-settings" aria-labelledby="transition_heading">
+        <div class="tool-heading">
+          <h2 id="transition_heading">Transition media</h2>
+          <p>Played between completed playlist items. Videos play at least once with their audio; images and GIFs play for at least five seconds.</p>
+        </div>
+        <div class="recovery-layout">
+          <div class="media-frame recovery-frame">
+            <div id="transition_media_empty" class="media-empty"><strong>No transition media</strong><span>Track changes use the recovery fallback.</span></div>
+            <img id="transition_media_preview" class="fallback-image-preview" alt="Saved transition media" hidden>
+            <video id="transition_media_video" class="fallback-image-preview" controls playsinline preload="metadata" aria-label="Saved transition media video" hidden></video>
+          </div>
+          <div class="recovery-controls">
+            <div class="recovery-requirements">
+              <strong>Images, GIFs or videos</strong>
+              <span class="tool-caption">Recommended: 1920 × 1080 px · Fits any aspect ratio</span>
+              <span id="transition_media_hint" class="tool-caption">PNG, JPG, WebP, GIF, MP4 or WebM · Up to 10 MiB</span>
+            </div>
+            <input id="transition_media_file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,.mp4,.webm,.gif" aria-label="Transition media" hidden>
+            <div class="tool-actions">
+              <button id="transition_media_upload" type="button" class="primary" aria-describedby="transition_media_hint">Upload media</button>
+              <button id="transition_media_remove" type="button" class="tool-secondary" disabled>Remove</button>
+            </div>
+            <div id="transition_media_status" class="statusline" role="status" aria-live="polite">Loading transition media…</div>
+            <p class="tool-caption">The next track loads during the transition. If it needs longer, videos and GIFs keep looping, or the image stays visible. Replacements apply at the next transition.</p>
           </div>
         </div>
       </section>
@@ -287,6 +315,7 @@
         <div class="debug-preview-toolbar">
           <div class="tool-actions">
             <button id="debug_test_start" class="primary" type="button">Start local test</button>
+            <button id="debug_test_skip" class="tool-secondary" type="button" title="End the current playlist item and play the transition" disabled>Skip to transition</button>
             <button id="debug_test_stop" class="tool-secondary" type="button" disabled>Stop test</button>
           </div>
           <div class="tool-actions debug-player-actions">
