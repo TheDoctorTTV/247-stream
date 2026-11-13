@@ -1794,6 +1794,14 @@
         const result = info.last_result || {};
         const y = result["yt-dlp"] || {};
         const f = result["ffmpeg"] || {};
+        const installedVersion = tool => {
+          const version = String(tool.current_version || "").trim();
+          if (version) return version;
+          if (tool.path) return "Unknown";
+          return Object.keys(tool).length ? "Not installed" : "—";
+        };
+        document.getElementById("ffmpegInstalledVersion").textContent = installedVersion(f);
+        document.getElementById("ytdlpInstalledVersion").textContent = installedVersion(y);
         const hasUnknown = (String(y.status || "unknown") === "unknown") || (String(f.status || "unknown") === "unknown");
         const updateAvailable = !!result.any_update_available;
         const nowMs = Date.now();

@@ -286,3 +286,8 @@ button.number-step:disabled { opacity: .3; }
 #youtube_browser_code { font-family: monospace; }
 .browser-install-guide { margin-top: 18px; }
 .browser-install-guide summary { cursor: pointer; color: var(--muted); }
+
+.installed-tool-versions { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 0 0 16px; }
+.installed-tool-versions > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; }
+.installed-tool-versions dt { color: var(--muted); font-size: 12px; }
+.installed-tool-versions dd { margin: 0; font-family: monospace; overflow-wrap: anywhere; }
