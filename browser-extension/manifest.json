@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Stream247 YouTube Connect",
+  "version": "0.1.0",
+  "description": "Send YouTube cookies to your explicitly paired Stream247 server.",
+  "permissions": [
+    "cookies",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://*.youtube.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open Stream247 YouTube Connect"
+  },
+  "minimum_chrome_version": "121"
+}

@@ -192,3 +192,6 @@ stream247-linux-x86_64.tar.gz
 /releases/recovery-media*
 /releases/transition-media*
 /releases/playout-media-*
+
+# Uploaded YouTube credentials and private resolver copies
+**/youtube-auth/

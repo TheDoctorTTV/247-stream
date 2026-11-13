@@ -210,7 +210,11 @@ pub fn normalize(v: &Value) -> Value {
             &["release", "prerelease"][..],
             "release",
         ),
-        ("theme", &["blue", "purple", "red", "mono"][..], "purple"),
+        (
+            "theme",
+            &["blue", "purple", "red", "mono", "emerald", "teal", "amber", "rose", "orange"][..],
+            "purple",
+        ),
     ] {
         out[k] = choice(v, k, allowed, default);
     }
@@ -222,6 +226,19 @@ pub fn normalize(v: &Value) -> Value {
     } else {
         bandwidth.clamp(1000, 100000)
     });
+    // Migrate the old checkbox to timed checks without an immediate startup check.
+    let default_interval = if boolean(v, "check_updates_startup", true) {
+        60
+    } else {
+        0
+    };
+    let interval = integer(v, "app_update_check_minutes", default_interval);
+    out["app_update_check_minutes"] =
+        json!(if [0, 30, 60, 360, 720, 1440, 2880].contains(&interval) {
+            interval
+        } else {
+            default_interval
+        });
     out["app_update_selected_version"] = json!(text(v, "app_update_selected_version", ""));
     let fps = integer(v, "framerate", 30);
     out["framerate"] = json!(if [30, 60].contains(&fps) { fps } else { 30 });
@@ -390,5 +407,39 @@ impl StreamConfig {
             "Ultra" => ["50M", "30000000", "8192k", "25000000"],
             _ => ["25M", "10000000", "4096k", "7000000"],
         }
+    }
+}
+
+#[cfg(test)]
+mod update_schedule_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_check_preference_migrates_to_an_interval() {
+        assert_eq!(normalize(&json!({}))["app_update_check_minutes"], 60);
+        assert_eq!(
+            normalize(&json!({"check_updates_startup": true}))["app_update_check_minutes"],
+            60
+        );
+        assert_eq!(
+            normalize(&json!({"check_updates_startup": false}))["app_update_check_minutes"],
+            0
+        );
+    }
+
+    #[test]
+    fn check_intervals_survive_dashboard_save_and_reload() {
+        for minutes in [0, 30, 60, 360, 720, 1440, 2880] {
+            let settings = merge(
+                &json!({"check_updates_startup": false}),
+                &json!({"app_update_check_minutes": minutes.to_string()}),
+            )
+            .unwrap();
+            assert_eq!(normalize(&settings)["app_update_check_minutes"], minutes);
+        }
+        assert_eq!(
+            normalize(&json!({"app_update_check_minutes": -1}))["app_update_check_minutes"],
+            60
+        );
     }
 }

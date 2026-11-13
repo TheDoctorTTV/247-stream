@@ -670,11 +670,11 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     let message = if !supported {
                         "The selected release has no self-installable asset for this platform."
                     } else if downgrade {
-                        "An older release is selected. Use Install to downgrade; automatic checks do not downgrade."
+                        "Downgrade available"
                     } else if reinstall {
-                        "Already on the selected version. Use Reinstall to install it again."
+                        "Up to date"
                     } else {
-                        "Update available. Use Install Update to install the selected version."
+                        "Update available"
                     };
                     cloned.progress(true, message, 100);
                     cloned.log(&format!("[INFO] {message}"));
@@ -757,11 +757,23 @@ pub fn initial_status(app: &Arc<App>, is_app: bool) -> Value {
 }
 
 pub fn startup(app: Arc<App>) {
-    let settings = app.settings();
-    if !boolean(&settings, "check_updates_startup", true) {
-        app.log("[INFO] Startup update check is disabled.");
-        return;
+    // One timer per app, independent of dashboard refreshes or open browser tabs.
+    let mut interval = config_interval(&app);
+    let mut due = Instant::now() + Duration::from_secs(interval.max(1) * 60);
+    while !app.shutdown.load(std::sync::atomic::Ordering::Acquire) {
+        std::thread::sleep(Duration::from_secs(1));
+        let configured = config_interval(&app);
+        if configured != interval {
+            interval = configured;
+            due = Instant::now() + Duration::from_secs(interval.max(1) * 60);
+        }
+        if interval > 0 && Instant::now() >= due {
+            trigger(&app, true, false, &json!({}));
+            due = Instant::now() + Duration::from_secs(interval * 60);
+        }
     }
-    // Checking is independent of automatic installation; trigger applies that policy.
-    trigger(&app, true, false, &json!({}));
+}
+
+fn config_interval(app: &App) -> u64 {
+    crate::config::integer(&app.settings(), "app_update_check_minutes", 60) as u64
 }

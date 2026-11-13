@@ -91,6 +91,11 @@
             <dd id="metaText">No source selected</dd>
           </div>
         </dl>
+        <dl class="playback-items" aria-label="Playback items">
+          <div><dt>Previous</dt><dd id="previousItem">—</dd></div>
+          <div class="playback-current"><dt>Current</dt><dd id="currentItem">—</dd></div>
+          <div><dt>Next</dt><dd id="nextItem">—</dd></div>
+        </dl>
         <div class="stream-actions" aria-label="Stream controls">
           <button class="primary" id="startBtn">Start</button>
           <button id="restartBtn" disabled>Restart</button>
@@ -118,10 +123,15 @@
         <p class="statusline stream-settings-lock-note" role="status" hidden></p>
         <div class="grid">
           <div class="field"><label for="theme_select">Theme</label><select id="theme_select">
-              <option value="purple">Purple</option>
-              <option value="blue">Blue</option>
-              <option value="red">Red</option>
-              <option value="mono">Mono</option>
+              <option value="amber">Amber</option>
+              <option value="purple" selected>Amethyst</option>
+              <option value="blue">Cobalt</option>
+              <option value="orange">Ember</option>
+              <option value="emerald">Evergreen</option>
+              <option value="mono">Graphite</option>
+              <option value="teal">Lagoon</option>
+              <option value="rose">Rose Quartz</option>
+              <option value="red">Ruby</option>
             </select></div>
           <div class="field"><label for="buffer_mode">Stream Buffer</label><select id="buffer_mode">
               <option>Low</option>
@@ -216,6 +226,29 @@
             <p class="tool-caption">The next track loads during the transition. If it needs longer, videos and GIFs keep looping, or the image stays visible. Replacements apply at the next transition.</p>
           </div>
         </div>
+      </section>
+      <section class="card youtube-auth-settings" aria-labelledby="youtube_cookie_heading">
+        <div class="tool-heading">
+          <h2 id="youtube_cookie_heading">YouTube authentication</h2>
+          <p>Connect your signed-in browser to sync YouTube cookies.</p>
+        </div>
+        <div class="tool-actions">
+          <button id="youtube_browser_connect" type="button" class="primary">Connect browser</button>
+          <button id="youtube_browser_disconnect" type="button" class="tool-secondary" disabled>Disconnect</button>
+          <a href="/downloads/stream247-youtube-connect.tar.gz" download>Download extension</a>
+        </div>
+        <div id="youtube_browser_status" class="statusline" role="status" aria-live="polite">Loading browser status…</div>
+        <div id="youtube_browser_pairing" class="browser-pairing" hidden>
+          <label for="youtube_browser_code">Pairing code</label>
+          <div class="row"><input id="youtube_browser_code" type="text" readonly autocomplete="off" spellcheck="false"><button id="youtube_browser_copy" type="button">Copy</button></div>
+          <p class="tool-caption">In the extension, enter this code and server address: <strong id="youtube_browser_address"></strong>. The code expires after 10 minutes. Automatic sync is off unless you enable it.</p>
+        </div>
+        <details class="browser-install-guide"><summary>Install the extension</summary>
+          <p class="tool-caption">Extract the download (7-Zip or WinRAR on Windows). In Chrome, open the Extensions page, enable Developer mode, and use Load unpacked to select the extracted folder. Click the extension's toolbar icon to open its connection page.</p>
+          <p class="tool-caption">For another device, open Stream247 through an HTTPS address before pairing.</p>
+        </details>
+        <p class="tool-caption">Cookies may help access restricted or private content available to your account. Playback is not guaranteed.</p>
+        <p id="youtube_cookie_warning" class="tool-caption">Cookies can grant access to your account. Store them only on a server you trust and restrict dashboard access.</p>
       </section>
     </div>
     <div class="tab-panel" id="tab-sources">
@@ -352,14 +385,12 @@
     <div class="tab-panel" id="tab-about">
       <div class="card">
         <h2>About</h2>
-        <p><strong>{APP_NAME}</strong> v{APP_VERSION}</p>
         <div class="creator">
           <img
             src="https://github.com/TheDoctorTTV.png?size=96"
             alt="TheDoctorTTV GitHub avatar" width="48" height="48" loading="lazy" referrerpolicy="no-referrer">
-          <div>Created by <strong>TheDoctorTTV</strong></div>
+          <div>Created by <a class="creator-link" href="https://github.com/{GITHUB_REPO}" target="_blank" rel="noreferrer"><strong>TheDoctorTTV</strong><img src="https://github.githubassets.com/favicons/favicon.svg" alt="GitHub" width="18" height="18" loading="lazy"></a></div>
         </div>
-        <p><a href="https://github.com/{GITHUB_REPO}" target="_blank" rel="noreferrer">GitHub Repository</a></p>
         <div class="about-stack">
           <div class="about-section">
             <div class="about-header">
@@ -386,12 +417,22 @@
               <div class="field" style="min-width: 220px; margin: 0;">
                 <label for="app_update_version">Version</label>
                 <select id="app_update_version">
-                  <option value="">Latest in selected channel</option>
+                  <option value="" disabled>Check to load versions</option>
                 </select>
               </div>
               <label class="check" style="margin: 0;"><input id="auto_app_updates" type="checkbox">Auto install</label>
-              <label class="check" style="margin: 0;"><input id="check_updates_startup" type="checkbox">Check for
-                updates automatically</label>
+              <div class="field" style="min-width: 200px; margin: 0;">
+                <label for="app_update_check_minutes">Automatic checks</label>
+                <select id="app_update_check_minutes">
+                  <option value="0">Never</option>
+                  <option value="30">Every 30 minutes</option>
+                  <option value="60">Every hour</option>
+                  <option value="360">Every six hours</option>
+                  <option value="720">Every 12 hours</option>
+                  <option value="1440">Every 24 hours</option>
+                  <option value="2880">Every 48 hours</option>
+                </select>
+              </div>
             </div>
           </div>
           <div class="about-section">

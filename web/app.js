@@ -54,7 +54,6 @@
     let binariesUpdateRunning = false;
     let prevBinariesUpdateRunning = false;
     let binariesJustUpdatedUntil = 0;
-    let lastAppCheckAt = "";
     let lastBinariesCheckAt = "";
     let suppressAutoSave = false;
     let autoSaveTimer = null;
@@ -63,17 +62,15 @@
     let lastSavedPayload = "";
     let bitrateEditRevision = 0;
     let appVersionsBoundToChannel = "";
-    const APP_UPDATE_AUTO_CHECK_MS = 10 * 60 * 1000;
-    let appAutoCheckTimer = null;
+    let appVersionListSignature = "";
     let appUpdateRefreshScheduled = false;
     let appRequestedVersion = "";
-    let savedAutoInstallEnabled = false;
     let appInstallPending = false;
     let appInstallInstance = "";
     let appUpdateStatusLoading = false;
     const STORAGE_TAB_KEY = "stream247.active_tab";
     const STORAGE_SUBTAB_KEY = "stream247.active_subtab";
-    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "remember", "check_updates_startup", "auto_app_updates", "app_update_channel"];
+    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "remember", "app_update_check_minutes", "auto_app_updates", "app_update_channel"];
     const STREAM_URL_PRESETS = {
       youtube: { name: "YouTube", rtmp_base: "rtmp://a.rtmp.youtube.com/live2" },
       twitch: { name: "Twitch", rtmp_base: "rtmp://live.twitch.tv/app" },
@@ -827,30 +824,6 @@
       binariesProgressText.textContent = text || (p > 0 ? ("Progress: " + p + "%") : "");
     }
 
-    function isAutoUpdateCheckEnabled() {
-      const el = document.getElementById("check_updates_startup");
-      return !!(el && el.checked);
-    }
-
-    function resetAppAutoCheckTimer(runNow) {
-      if (appAutoCheckTimer) {
-        clearInterval(appAutoCheckTimer);
-        appAutoCheckTimer = null;
-      }
-      if (!isAutoUpdateCheckEnabled()) {
-        if (!appUpdateRunning) {
-          setAppUpdateStatus("Automatic update checks are disabled. Use Check to run manually.", "unknown");
-        }
-        return;
-      }
-      const runCheck = () => {
-        if (appUpdateRunning) return;
-        triggerAppUpdateCheck(appRequestedVersion);
-      };
-      if (runNow) runCheck();
-      appAutoCheckTimer = setInterval(runCheck, APP_UPDATE_AUTO_CHECK_MS);
-    }
-
     function normalizeSuffix(suffix) {
       const parts = String(suffix || "").toLowerCase().match(/[a-z]+|\d+/g) || [];
       if (!parts.length) return [];
@@ -997,6 +970,9 @@
         const firstSourceUrl = String((sourcesState[0] && sourcesState[0].url) || "").trim();
         const sourceUrl = runtimeSourceUrl || selectedSourceUrl || firstSourceUrl;
         metaText.textContent = sourceUrl ? (sourceNameForUrl(sourceUrl) || sourceUrl) : "No source selected";
+        document.getElementById("previousItem").textContent = meta.previous_item?.title || "—";
+        document.getElementById("currentItem").textContent = streaming ? (meta.current_item?.title || "Preparing…") : "—";
+        document.getElementById("nextItem").textContent = streaming ? (meta.next_item?.title || (meta.next_item?.id ? "Loading…" : "—")) : "—";
         updateLogBox(otherLogBox, s.logs_other, forceScroll);
         updateLogBox(ffmpegLogBox, s.logs_ffmpeg, forceScroll);
         syncActionButtons();
@@ -1178,7 +1154,7 @@
     function applyTheme(themeName) {
       let theme = String(themeName || "purple").trim().toLowerCase();
       if (theme === "current") theme = "purple";
-      const allowed = new Set(["blue", "purple", "red", "mono"]);
+      const allowed = new Set(["blue", "purple", "red", "mono", "emerald", "teal", "amber", "rose", "orange"]);
       const safeTheme = allowed.has(theme) ? theme : "purple";
       const root = document.documentElement;
       root.setAttribute("data-theme", safeTheme);
@@ -1323,6 +1299,88 @@
     }
     const loadRecoveryMedia = setupMediaUpload("fallback_image", "/api/fallback-image", "Recovery media", "Recovery uses a black screen.");
     const loadTransitionMedia = setupMediaUpload("transition_media", "/api/transition-media", "Transition media", "Track changes use the recovery fallback.");
+
+    const youtubeBrowserConnect = document.getElementById("youtube_browser_connect");
+    const youtubeBrowserDisconnect = document.getElementById("youtube_browser_disconnect");
+    const youtubeBrowserStatus = document.getElementById("youtube_browser_status");
+    const youtubeBrowserPairing = document.getElementById("youtube_browser_pairing");
+    const youtubeBrowserCode = document.getElementById("youtube_browser_code");
+    let youtubeBrowserBusy = false;
+    let youtubeBrowserLoading = false;
+    let youtubeBrowserConnected = false;
+    let youtubePairingExpires = 0;
+    function renderYoutubeBrowser(browser) {
+      youtubeBrowserConnected = !!browser.connected;
+      youtubeBrowserConnect.hidden = youtubeBrowserConnected;
+      youtubeBrowserConnect.disabled = youtubeBrowserBusy;
+      youtubeBrowserDisconnect.disabled = youtubeBrowserBusy || !youtubeBrowserConnected;
+      if (youtubeBrowserConnected || Date.now() >= youtubePairingExpires * 1000) {
+        youtubeBrowserPairing.hidden = true;
+        youtubeBrowserCode.value = "";
+      }
+      let text = youtubeBrowserPairing.hidden ? "No browser connected" : "Waiting for browser pairing…";
+      if (youtubeBrowserConnected) {
+        text = (browser.device || "Browser") + " connected · Auto sync " + (browser.auto_sync ? "on" : "off");
+        text += browser.last_sync ? " · Last sync " + new Date(browser.last_sync * 1000).toLocaleString() : " · Not synced yet";
+      }
+      youtubeBrowserStatus.textContent = text;
+      youtubeBrowserStatus.className = "statusline";
+    }
+    async function loadYoutubeBrowser() {
+      if (youtubeBrowserBusy || youtubeBrowserLoading) return;
+      youtubeBrowserLoading = true;
+      try {
+        const response = await fetch("/api/youtube-browser/info", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error();
+        if (!youtubeBrowserBusy) renderYoutubeBrowser(data.browser || {});
+      } catch (_) {
+        youtubeBrowserStatus.textContent = "Could not load browser status.";
+        youtubeBrowserStatus.className = "statusline err";
+      } finally { youtubeBrowserLoading = false; }
+    }
+    async function youtubeBrowserAction(action) {
+      if (youtubeBrowserBusy) return;
+      if (action === "pairing" && location.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) {
+        youtubeBrowserStatus.textContent = "Open Stream247 through HTTPS to pair a browser on another device.";
+        youtubeBrowserStatus.className = "statusline err";
+        return;
+      }
+      youtubeBrowserBusy = true;
+      youtubeBrowserConnect.disabled = true;
+      youtubeBrowserDisconnect.disabled = true;
+      try {
+        const response = await fetch("/api/youtube-browser/" + action, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || "Could not update browser connection.");
+        if (data.pairing) {
+          youtubePairingExpires = data.pairing.expires_at;
+          youtubeBrowserCode.value = data.pairing.code;
+          document.getElementById("youtube_browser_address").textContent = location.origin;
+          youtubeBrowserPairing.hidden = false;
+          youtubeBrowserStatus.textContent = "Enter this code in the extension to connect.";
+          youtubeBrowserStatus.className = "statusline";
+        } else {
+          youtubePairingExpires = 0;
+          youtubeBrowserPairing.hidden = true;
+          youtubeBrowserCode.value = "";
+          renderYoutubeBrowser(data.browser || {});
+        }
+      } catch (error) {
+        youtubeBrowserStatus.textContent = error.message;
+        youtubeBrowserStatus.className = "statusline err";
+      } finally {
+        youtubeBrowserBusy = false;
+        youtubeBrowserConnect.disabled = false;
+        youtubeBrowserDisconnect.disabled = !youtubeBrowserConnected;
+      }
+    }
+    youtubeBrowserConnect.addEventListener("click", () => youtubeBrowserAction("pairing"));
+    youtubeBrowserDisconnect.addEventListener("click", () => youtubeBrowserAction("disconnect"));
+    document.getElementById("youtube_browser_copy").addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(youtubeBrowserCode.value); }
+      catch (_) { youtubeBrowserCode.focus(); youtubeBrowserCode.select(); }
+    });
 
     const debugTab = document.getElementById("tab-debug");
     const debugTabButton = document.querySelector('[data-tab="tab-debug"]');
@@ -1486,13 +1544,11 @@
         suppressAutoSave = true;
         applySettingsToForm(payload.settings, bitrateEditRevision !== bitrateRevisionAtLoad);
         appRequestedVersion = String(payload.settings.app_update_selected_version || "");
-        savedAutoInstallEnabled = !!payload.settings.auto_app_updates;
         lastSavedPayload = payloadSignature({ ...formToPayload(), video_bitrate: payload.settings.video_bitrate });
         setSettingsStatus("Settings loaded.", "ok");
-        resetAppAutoCheckTimer(true);
+        loadAppUpdateStatus();
       } catch (err) {
         setSettingsStatus("Failed to load settings.", "err");
-        resetAppAutoCheckTimer(false);
       } finally {
         suppressAutoSave = false;
       }
@@ -1530,11 +1586,7 @@
           ...formToPayload(),
           video_bitrate: (payload.settings || {}).video_bitrate ?? currentPayload.video_bitrate
         });
-        const enabledNow = !!(payload.settings || {}).auto_app_updates;
-        const justEnabled = enabledNow && !savedAutoInstallEnabled;
-        savedAutoInstallEnabled = enabledNow;
         setSettingsStatus(reason === "auto" ? "Changes saved automatically." : "Settings saved.", "ok");
-        if (justEnabled && !appUpdateRunning) await triggerAppUpdateCheck(appRequestedVersion);
       } catch (err) {
         setSettingsStatus("Failed to save settings.", "err");
       } finally {
@@ -1553,7 +1605,7 @@
       if (a.last_error) return "App update error: " + a.last_error;
       if (a.phase === "downloaded") return a.progress_message;
       const r = a.last_result;
-      if (!r) return "No app update check has completed yet.";
+      if (!r) return "Not checked yet";
       if (r.updater_enabled === false) return String(r.disabled_reason || "App updater disabled.");
       const current = String(r.current_version || "unknown");
       const selected = String(r.selected_version || "unknown");
@@ -1563,22 +1615,20 @@
       else if (comparison === -1) {
         state = r.asset_supported ? "Update available" : "Update available (unsupported asset)";
       }
-      let text = state + " | current " + current + " | selected " + selected;
-      if (lastAppCheckAt) text += " | checked " + lastAppCheckAt;
-      return text;
+      return state;
     }
 
     function updateAppVersionDropdown(info) {
       if (!info || !info.last_result) return;
       const result = info.last_result;
       const channel = String(result.channel || document.getElementById("app_update_channel").value || "release");
-      const versions = Array.isArray(result.available_versions) ? result.available_versions : [];
+      const versions = (Array.isArray(result.available_versions) ? result.available_versions : []).filter(Boolean).sort((a, b) => compareVersions(b, a));
       const selected = String(result.requested_version || "");
+      // Status polling should leave an unchanged version menu intact.
+      const signature = JSON.stringify([channel, versions, selected]);
+      if (appVersionsBoundToChannel === channel && appVersionListSignature === signature) return;
+      appVersionListSignature = signature;
       appUpdateVersion.innerHTML = "";
-      const fallback = document.createElement("option");
-      fallback.value = "";
-      fallback.textContent = "Latest in selected channel";
-      appUpdateVersion.appendChild(fallback);
       for (const version of versions) {
         const v = String(version || "").trim();
         if (!v) continue;
@@ -1595,7 +1645,7 @@
         }
         return "";
       };
-      appUpdateVersion.value = canonicalMatch(selected);
+      appUpdateVersion.value = canonicalMatch(selected) || versions[0] || "";
       appRequestedVersion = selected;
       appVersionsBoundToChannel = channel;
     }
@@ -1630,11 +1680,10 @@
       else if (info.running) level = "running";
       else if (updateAvailable) level = "outdated";
       else if (!info.last_result || !enabled) level = "unknown";
-      if (info.finished_at) lastAppCheckAt = new Date(Number(info.finished_at) * 1000).toLocaleTimeString();
       setAppUpdateStatus(formatAppUpdateSummary(info), level);
       const pct = Number(info.progress_percent || 0);
       const message = String(info.progress_message || "");
-      setAppUpdateProgress(pct, message ? message + " (" + pct + "%)" : "");
+      setAppUpdateProgress(info.running ? pct : 0, info.running && message ? message + " (" + pct + "%)" : "");
       checkAppUpdateBtn.disabled = !!info.running;
       checkAppUpdateBtn.title = info.running ? "An update operation is running" : "Check GitHub for the selected version";
       appUpdateVersion.disabled = !!info.running;
@@ -1947,14 +1996,8 @@
       appUpdateChannel.addEventListener("change", () => {
         appVersionsBoundToChannel = "";
         appRequestedVersion = "";
-        appUpdateVersion.innerHTML = '<option value="">Latest in selected channel</option>';
+        appUpdateVersion.innerHTML = '<option value="" disabled>Loading versions…</option>';
         triggerAppUpdateCheck("");
-      });
-    }
-    const checkUpdatesToggle = document.getElementById("check_updates_startup");
-    if (checkUpdatesToggle) {
-      checkUpdatesToggle.addEventListener("change", () => {
-        resetAppAutoCheckTimer(true);
       });
     }
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());
@@ -1988,6 +2031,10 @@
         const menu = document.createElement("div");
         menu.id = select.id + "_options";
         menu.className = "select-menu";
+        const menuItems = document.createElement("div");
+        menuItems.className = "select-menu-items";
+        menuItems.setAttribute("role", "presentation");
+        menu.append(menuItems);
         menu.setAttribute("role", "listbox");
         menu.hidden = true;
         trigger.setAttribute("aria-controls", menu.id);
@@ -2018,13 +2065,15 @@
           const above = roomBelow < 180 && roomAbove > roomBelow;
           menu.style.width = Math.min(Math.max(rect.width, 180), window.innerWidth - 16) + "px";
           menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8)) + "px";
-          menu.style.maxHeight = Math.max(60, Math.min(280, above ? roomAbove - 6 : roomBelow - 6)) + "px";
+          const maxHeight = Math.max(60, Math.min(280, above ? roomAbove - 6 : roomBelow - 6));
+          // Scroll inside the padded shell so the bar clears the rounded corners.
+          menuItems.style.maxHeight = (maxHeight - 12) + "px";
           menu.style.top = (above ? Math.max(8, rect.top - menu.offsetHeight - 6) : rect.bottom + 6) + "px";
         }
         function highlight(index) {
           active = index;
-          for (const item of menu.children) item.classList.toggle("is-active", Number(item.dataset.index) === active);
-          const item = Array.from(menu.children).find(item => Number(item.dataset.index) === active);
+          for (const item of menuItems.children) item.classList.toggle("is-active", Number(item.dataset.index) === active);
+          const item = Array.from(menuItems.children).find(item => Number(item.dataset.index) === active);
           if (item) {
             trigger.setAttribute("aria-activedescendant", item.id);
             item.scrollIntoView({ block: "nearest" });
@@ -2038,12 +2087,20 @@
           trigger.removeAttribute("aria-activedescendant");
           if (closeSelect === close) closeSelect = null;
         }
+        let renderedSelectState = "";
         function sync() {
+          // Repeated assignments (for example disabled=false during polling)
+          // fire mutation observers even when the visible control is unchanged.
+          const state = JSON.stringify([select.disabled, select.selectedIndex,
+            Array.from(select.options, option => [option.value, option.textContent,
+              option.hidden, option.disabled, !!option.parentElement.disabled])]);
+          if (state === renderedSelectState) return;
+          renderedSelectState = state;
           const selected = select.selectedOptions[0];
           text.textContent = selected ? selected.textContent : "Select…";
           trigger.title = selected ? selected.textContent : "";
           trigger.disabled = select.disabled || !select.options.length;
-          menu.replaceChildren();
+          menuItems.replaceChildren();
           for (const [index, option] of Array.from(select.options).entries()) {
             if (option.hidden) continue;
             const item = document.createElement("div");
@@ -2063,7 +2120,7 @@
               close();
               trigger.focus();
             });
-            menu.append(item);
+            menuItems.append(item);
           }
           if (trigger.disabled) close();
           else if (!menu.hidden) { position(); highlight(select.selectedIndex); }
@@ -2099,7 +2156,7 @@
             event.preventDefault();
             if (menu.hidden) open();
             else {
-              const item = Array.from(menu.children).find(item => Number(item.dataset.index) === active);
+              const item = Array.from(menuItems.children).find(item => Number(item.dataset.index) === active);
               if (item) item.click();
             }
           } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -2197,6 +2254,10 @@
     loadSettings();
     loadRecoveryMedia();
     loadTransitionMedia();
+    loadYoutubeBrowser();
+    setInterval(() => {
+      if (document.getElementById("tab-settings").classList.contains("active")) loadYoutubeBrowser();
+    }, 4000);
     loadDebugStatus();
     loadBinariesStatus();
     refreshState(true);
@@ -2204,7 +2265,7 @@
       refreshState(false);
       if (debugToggle.checked && (debugTab.classList.contains("active") || debugInfo.local_preview || debugPending)) loadDebugStatus();
       if (binariesUpdateRunning) loadBinariesStatus();
-      if (appUpdateRunning || appInstallPending) loadAppUpdateStatus();
+      loadAppUpdateStatus();
     }, 1200);
     setInterval(() => {
       loadBinariesStatus();

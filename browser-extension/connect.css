@@ -1,0 +1,18 @@
+:root { color-scheme: dark; font: 13px/1.5 system-ui, sans-serif; background: #211b29; color: #fff; }
+* { box-sizing: border-box; }
+body { width: min(100%, 640px); margin: 6vh auto; padding: 32px 24px; }
+h1 { font-size: 28px; margin: 0 0 20px; }
+h1 span { display: block; color: #cbbfd0; font-size: 15px; font-weight: 400; }
+label { display: block; margin-top: 12px; }
+input:not([type="checkbox"]) { width: 100%; padding: 9px 12px; margin-top: 5px; border: 1px solid #73667b; border-radius: 8px; background: #302439; color: #fff; }
+.check { display: flex; align-items: center; gap: 8px; }
+button { background: #7924c5; color: white; border: 1px solid transparent; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+button:hover { background: #8a35d6; }
+button:disabled { opacity: .5; cursor: default; }
+.secondary { background: transparent; border-color: #73667b; }
+.actions { display: flex; gap: 8px; }
+.hint { color: #cbbfd0; font-size: 12px; }
+#status, #destination { overflow-wrap: anywhere; }
+#status.error { color: #ffb3c3; }
+:focus-visible { outline: 2px solid #d69dff; outline-offset: 3px; }
+[hidden] { display: none !important; }

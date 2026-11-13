@@ -32,6 +32,8 @@ pub struct App {
     worker: Mutex<Option<Running>>,
     pub provision_lock: Mutex<()>,
     pub fallback_image_lock: Mutex<()>,
+    pub youtube_cookie_lock: Mutex<()>,
+    pub youtube_browser: Mutex<crate::youtube_browser::BrowserState>,
     pub app_job: Mutex<Value>,
     pub binary_job: Mutex<Value>,
     pub shutdown: AtomicBool,
@@ -43,7 +45,7 @@ impl App {
         let cfg = config::load(&dir)?;
         let mut state = State::default();
         state.files(&dir, &cfg, true)?;
-        Ok(Arc::new(Self {
+        let app = Arc::new(Self {
             dir,
             started: Instant::now(),
             shutdown_reason: Mutex::new("shutdown requested"),
@@ -53,11 +55,16 @@ impl App {
             worker: Mutex::new(None),
             provision_lock: Mutex::new(()),
             fallback_image_lock: Mutex::new(()),
+            youtube_cookie_lock: Mutex::new(()),
+            youtube_browser: Mutex::new(crate::youtube_browser::BrowserState::default()),
             app_job: Mutex::new(updates::empty_job()),
             binary_job: Mutex::new(updates::empty_job()),
             shutdown: AtomicBool::new(false),
             restart: AtomicBool::new(false),
-        }))
+        });
+        crate::youtube_cookie::initialize(&app)?;
+        crate::youtube_browser::initialize(&app)?;
+        Ok(app)
     }
     pub fn settings(&self) -> Value {
         config::normalize(&self.config.lock().unwrap())

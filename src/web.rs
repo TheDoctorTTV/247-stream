@@ -20,6 +20,18 @@ fn respond(request: Request, status: u16, kind: &str, bytes: Vec<u8>) {
 fn handle(mut request: Request, app: Arc<App>) {
     let path = request.url().split('?').next().unwrap_or("/").to_owned();
     let method = request.method().as_str().to_owned();
+    if method == "GET" && path == "/downloads/stream247-youtube-connect.tar.gz" {
+        match crate::youtube_browser::extension_archive() {
+            Ok(bytes) => respond(request, 200, "application/gzip", bytes),
+            Err(_) => respond(
+                request,
+                500,
+                "text/plain",
+                b"Extension download unavailable".to_vec(),
+            ),
+        }
+        return;
+    }
     if method == "GET" && path.starts_with("/api/debug/preview/") {
         let name = path.trim_start_matches("/api/debug/preview/");
         match debug::preview_asset(&app, name) {
@@ -94,6 +106,47 @@ fn handle(mut request: Request, app: Arc<App>) {
         }
     }
     let result = (|| -> Result<(u16, Value)> {
+        let browser_route = path.starts_with("/api/youtube-browser/");
+        if browser_route && method != "GET" {
+            anyhow::ensure!(
+                request
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Content-Type")
+                        && h.value.as_str().split(';').next().unwrap_or("").trim()
+                            == "application/json"),
+                "Browser pairing requests require JSON"
+            );
+        }
+        if browser_route && path != "/api/youtube-browser/info" {
+            // The browser requires HTTPS for other devices. A local HTTPS proxy
+            // reaches this HTTP backend over loopback; direct LAN pairing is refused.
+            anyhow::ensure!(
+                request
+                    .remote_addr()
+                    .is_some_and(|addr| addr.ip().is_loopback()),
+                "Use HTTPS through a local reverse proxy to connect a browser on another device"
+            );
+        }
+        if path == "/api/youtube-browser/pairing" || path == "/api/youtube-browser/disconnect" {
+            if let Some(origin) = request.headers().iter().find(|h| h.field.equiv("Origin")) {
+                let origin = reqwest::Url::parse(origin.value.as_str())
+                    .context("Invalid dashboard origin")?;
+                let host = request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("Host"))
+                    .map(|h| h.value.as_str())
+                    .unwrap_or("");
+                let expected = reqwest::Url::parse(&format!("{}://{host}", origin.scheme()))
+                    .context("Invalid dashboard host")?;
+                anyhow::ensure!(
+                    matches!(origin.scheme(), "http" | "https")
+                        && origin.origin() == expected.origin(),
+                    "Open pairing from the Stream247 dashboard"
+                );
+            }
+        }
         if let Some(role) = media_role {
             if method == "GET" && path.ends_with("/info") {
                 return Ok((
@@ -132,7 +185,41 @@ fn handle(mut request: Request, app: Arc<App>) {
         } else {
             json!({})
         };
+        let browser_token = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Authorization"))
+            .and_then(|h| h.value.as_str().strip_prefix("Bearer "))
+            .unwrap_or("");
         let result = match (method.as_str(), path.as_str()) {
+            ("GET", "/api/youtube-browser/info") => {
+                json!({"ok":true,"browser":crate::youtube_browser::info(&app)})
+            }
+            ("POST", "/api/youtube-browser/pairing") => {
+                json!({"ok":true,"pairing":crate::youtube_browser::begin(&app)?})
+            }
+            ("POST", "/api/youtube-browser/pair") => {
+                let paired = crate::youtube_browser::pair(&app, &body)?;
+                json!({"ok":true,"token":paired["token"],"browser":paired["browser"]})
+            }
+            ("GET", "/api/youtube-browser/client") => {
+                json!({"ok":true,"browser":crate::youtube_browser::client_status(&app,browser_token)?})
+            }
+            ("POST", "/api/youtube-browser/config") => {
+                json!({"ok":true,"browser":crate::youtube_browser::configure(&app,browser_token,&body)?})
+            }
+            ("POST", "/api/youtube-browser/sync") => {
+                let synced = crate::youtube_browser::sync(&app, browser_token, &body)?;
+                json!({"ok":true,"browser":synced["browser"],"cookie":synced["cookie"]})
+            }
+            ("POST", "/api/youtube-browser/disconnect") => {
+                let disconnected = crate::youtube_browser::disconnect(&app, None)?;
+                json!({"ok":true,"browser":disconnected["browser"],"cookie":disconnected["cookie"]})
+            }
+            ("POST", "/api/youtube-browser/client-disconnect") => {
+                let disconnected = crate::youtube_browser::disconnect(&app, Some(browser_token))?;
+                json!({"ok":true,"browser":disconnected["browser"],"cookie":disconnected["cookie"]})
+            }
             ("GET", "/api/debug/state") => json!({"ok":true,"debug":app.debug_status()}),
             ("POST", "/api/debug/failure") => {
                 json!({"ok":true,"failure":app.inject_failure(&body)?})

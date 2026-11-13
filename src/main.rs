@@ -11,6 +11,8 @@ mod twitch;
 mod updates;
 mod web;
 mod worker;
+mod youtube_browser;
+mod youtube_cookie;
 
 use anyhow::{Context, Result};
 use std::{

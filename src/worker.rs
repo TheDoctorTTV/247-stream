@@ -128,8 +128,29 @@ impl Resolver {
         sets
     }
     fn run(&self, args: &[&str]) -> Result<String> {
+        let youtube = args.iter().any(|arg| {
+            reqwest::Url::parse(arg)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .is_some_and(|host| {
+                    host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be"
+                })
+        });
+        let uploaded = if youtube {
+            crate::youtube_cookie::snapshot(&self.app)?
+        } else {
+            None
+        };
+        let cookie_sets = if let Some(file) = &uploaded {
+            vec![vec![
+                "--cookies".to_owned(),
+                file.0.to_string_lossy().into_owned(),
+            ]]
+        } else {
+            self.cookie_sets()
+        };
         let mut last = String::new();
-        for cookies in self.cookie_sets() {
+        for cookies in cookie_sets {
             if self.control.stopped() {
                 bail!("Stopped");
             }
@@ -143,8 +164,15 @@ impl Resolver {
                 Some(&self.control),
             )?;
             if status.success() {
-                *self.working_cookies.lock().unwrap() = Some(cookies);
+                if uploaded.is_none() {
+                    *self.working_cookies.lock().unwrap() = Some(cookies);
+                }
                 return Ok(out);
+            }
+            if uploaded.is_some() {
+                // Cookie jars may gain new credentials inside yt-dlp. Never echo
+                // authenticated subprocess errors, including those unknown values.
+                bail!("YouTube request failed using uploaded cookies; check or replace the cookie file");
             }
             last = err;
             let lower = last.to_lowercase();
@@ -912,6 +940,8 @@ impl Worker {
         };
         {
             let mut state = self.app.state.lock().unwrap();
+            state.meta["previous_item"] = state.meta["current_item"].clone();
+            state.meta["current_item"] = serde_json::json!({"id": media.id, "title": media.title});
             state.meta["source_type"] = serde_json::json!(input_type(&self.cfg.source));
             state.meta["source_transport"] = serde_json::json!(transport);
             state.meta["separate_audio"] = serde_json::json!(media.audio.is_some());
@@ -1017,6 +1047,12 @@ impl Worker {
                 resolver
                     .app
                     .log(&format!("[PREFETCH] Ready: {}", media.title));
+                let mut state = resolver.app.state.lock().unwrap();
+                if !resolver.control.stopped()
+                    && state.meta["next_item"]["id"].as_str() == Some(id.as_str())
+                {
+                    state.meta["next_item"] = serde_json::json!({"id": id, "title": media.title});
+                }
             }
             let _ = tx.send(result);
         });
@@ -1077,7 +1113,9 @@ impl Worker {
         ));
         self.log(&format!(
             "[INFO] yt-dlp auth: {}",
-            if boolean(&self.cfg.settings, "yt_auth_enabled", false) {
+            if crate::youtube_cookie::info(&self.app)["configured"].as_bool() == Some(true) {
+                "uploaded cookies".into()
+            } else if boolean(&self.cfg.settings, "yt_auth_enabled", false) {
                 text(&self.cfg.settings, "yt_auth_browser", "auto")
             } else {
                 "none".into()
@@ -1192,6 +1230,13 @@ impl Worker {
                     } else {
                         None
                     };
+                    {
+                        let mut state = self.app.state.lock().unwrap();
+                        state.meta["next_item"] = ids
+                            .get(idx + 1)
+                            .map(|id| serde_json::json!({"id": id}))
+                            .unwrap_or(Value::Null);
+                    }
                     if let Some(next) = ids.get(idx + 1) {
                         prefetched = Some((next.clone(), self.prefetch(next.clone())));
                     }
