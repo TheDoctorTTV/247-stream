@@ -158,14 +158,8 @@ config.json
 stream247-linux-x86_64.tar.gz
 
 # Native Rust build and release runtime artifacts
+/releases/
 /target/
-/releases/stream247-server
-/releases/config.json
-/releases/current_title.txt
-/releases/*.log
-/releases/ffmpeg
-/releases/yt-dlp
-/releases/updates/
 /current_title.txt
 /latest*.log
 *.download-part
@@ -173,25 +167,18 @@ stream247-linux-x86_64.tar.gz
 
 # Runtime logs and compressed archives
 /logs/
-/releases/logs/
 
 # Server-uploaded recovery image
 /fallback-image.png
 /fallback-image-*.upload
-/releases/fallback-image.png
-/releases/fallback-image-*.upload
 
 # Rolling local-only diagnostic preview
 /debug-preview/
-/releases/debug-preview/
 
 # Managed recovery/transition uploads and active playout snapshots
 /recovery-media*
 /transition-media*
 /playout-media-*
-/releases/recovery-media*
-/releases/transition-media*
-/releases/playout-media-*
 
 # Uploaded YouTube credentials and private resolver copies
 **/youtube-auth/
