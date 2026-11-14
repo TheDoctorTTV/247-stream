@@ -49,21 +49,21 @@ again reuses the last saved video for that source. No playback timestamp is save
 | `app_update_channel` | `release` or `prerelease` |
 | `app_update_selected_version` | Concrete version selected by the last successful check |
 | `app_update_check_minutes` | Check interval after startup: `0` (Never), `30`, `60`, `360`, `720`, `1440`, or `2880` |
-| `auto_app_updates` | Automatically install newer app versions; disabled by default |
 
 The app checks for updates once on every startup, including when **Checks after
 startup** is set to **Never**. Later checks follow the selected interval; Never
 disables recurring checks. Refreshing the dashboard does not start a check.
-Checks only install a newer version when **Auto install** is enabled, which is
-off on a fresh install. App installs, reinstalls, and downgrades are blocked while
-streaming or running a local preview. Automatic checks still report available
-updates; automatic installation waits for a later check while stopped. The old
-`check_updates_startup` preference maps to hourly recurring checks when enabled,
-or no recurring checks when disabled. App and tool downloads have no application-imposed speed cap.
+Checks report available updates and never install them. Use **Install**,
+**Reinstall** or **Downgrade** to explicitly install the version selected in the
+menu. These actions are blocked while streaming or running a local preview.
+The update status always compares the running version with the highest supported
+version in the selected channel, regardless of the version selected for installation.
 
-Local Cargo builds and unpublished versions can check for updates and manually
-install a supported published release. Automatic installation is disabled for
-these builds, even if Auto install was previously enabled.
+The old `check_updates_startup` preference maps to hourly recurring checks when
+enabled, or no recurring checks when disabled. App and tool downloads have no
+application-imposed speed cap. Local Cargo builds and unpublished versions can
+check for updates and manually install a supported published release. The removed
+`auto_app_updates` setting is ignored even if it remains in an older config.
 
 | Theme | Identifier |
 | --- | --- |

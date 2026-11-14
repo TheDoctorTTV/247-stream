@@ -43,6 +43,8 @@ button.primary:hover, .tab-btn.active:hover, .subtab-btn.active:hover { backgrou
 button:disabled { opacity: .48; cursor: not-allowed; transform: none; }
 button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; }
 .tab-btn { flex: 0 1 111px; min-width: 0; padding: 10px 12px; white-space: nowrap; font-size: 12px; }
+[data-tab="tab-about"] { position: relative; }
+[data-tab="tab-about"].has-app-update::after { content: ""; position: absolute; top: -2px; right: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--err); box-shadow: 0 0 0 2px var(--bg); pointer-events: none; }
 .tab-panel, .subtab-panel { display: none; }
 .tab-panel.active, .subtab-panel.active { display: block; animation: reveal 160ms ease-out; }
 .stream-layout { min-height: calc(100svh - 162px); padding: 57px 49px 20px 80px; display: flex; flex-direction: column; }

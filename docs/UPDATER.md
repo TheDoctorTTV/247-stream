@@ -1,75 +1,66 @@
 # Application updater behavior
 
-The application compares its embedded Cargo package version to the selected
-GitHub release tag. Release and prerelease channels are filtered separately.
-Startup, recurring checks, the Check button and channel changes select the
-highest supported version number in that channel. The version menu lists concrete
-release numbers; choosing one checks that specific release. There is no separate
-Latest choice or saved follow-latest mode.
+Release and prerelease channels are filtered separately. Startup, recurring
+checks, the Check button and channel changes select the highest supported
+version number in that channel. The version menu lists concrete release numbers;
+choosing one checks that specific release. The selected channel and concrete
+version from each successful check are saved in `config.json`.
 
-The selected channel and concrete version from each successful check are saved
-in config.json. Saved versions record the last selection; startup and recurring
-checks discover the highest version again. Manual installation requires a concrete
-version from the menu and revalidates that release on the server.
+The update status compares the running version with the highest supported version
+in the selected channel, independently of the installation selection. Selecting
+an older release does not hide a newer available update or label an outdated
+installation as up to date. A running version above the channel's highest version
+is reported as newer than that channel.
 
-Before allowing automatic installation, the updater verifies that the running
-version has an exact matching published release tag, ignoring a leading `v` or
-`V`. This lookup includes both release channels and paginates the GitHub release
-list; draft releases do not count. Unpublished versions can still check for
-updates and manually install a supported published release. A failed GitHub
-lookup never authorizes installation.
+## Manual installation only
 
-| Installed vs selected | Automatic checks | Manual installation |
-| --- | --- | --- |
-| Installed is older | Install when automatic installation is enabled | Install the selected version |
-| Equal | No installation | Reinstall the selected version |
-| Installed is newer | No installation | Downgrade to the selected version |
-| Running version has no published tag | Check only; no automatic installation | Install the selected version |
-| Cargo development build | Check only; no automatic installation | Install the selected version |
-| Selected release lacks a supported executable asset | No installation | Explain the limitation; disabled |
-| GitHub check fails | Display/log the error; no installation | Display/log the error; no installation |
+Application updates are never installed automatically. Startup, scheduled and
+manual checks only refresh version information. Older `auto_app_updates` values
+are ignored and removed when dashboard settings are saved.
 
-Manual installation supports the existing minimum target `2.0-pre-release-2` and
-requires the selected version to exist in the selected channel. The Install
-button changes its label to Downgrade or Reinstall as appropriate. Manual requests
-recheck eligibility on the server; disabling dashboard
-buttons is not the only enforcement.
+| Installed vs selected | Manual installation |
+| --- | --- |
+| Installed is older | Install the selected version |
+| Equal | Reinstall the selected version |
+| Installed is newer | Downgrade to the selected version |
+| Unpublished or Cargo development build | Install a supported published release |
+| Selected release lacks a supported executable asset | Installation disabled |
+| GitHub check fails | Display/log the error; no installation |
 
-The app always checks once at startup. After that, app_update_check_minutes
-controls recurring checks on an app timer; 0 (Never) disables recurring checks
-without suppressing the startup check. Dashboard refreshes do not start checks.
-The legacy check_updates_startup preference only supplies the recurring interval
-when no explicit interval is saved: hourly when enabled, Never when disabled.
-A successful check, including a startup, manual, or timed check, installs only a
-newer target when auto_app_updates is enabled. Auto install is disabled by default
-on a fresh install; when disabled, checks never install updates automatically.
-Reinstalling or downgrading always requires an
-explicit install request. The selected channel and last checked version remain
-saved across the restart; the startup check refreshes the highest available
-version. Cargo executables run from a target directory allow manual installation
-but never automatic installation, even if Auto install was previously enabled.
-Manual installation replaces the running executable and restarts the app.
-Tool updates (FFmpeg/yt-dlp) are
-unaffected. A status GET never starts an application update operation.
+Manual installation requires a concrete release in the selected channel, at or
+above the minimum supported target `2.0-pre-release-2`. The button changes to
+Install, Reinstall or Downgrade based on that selection. The server revalidates
+the release and refuses installation while a stream or local preview is active.
+Installing replaces the running executable and restarts the application.
 
-Release matching establishes automatic-install eligibility, not binary provenance: a
-locally compiled executable copied outside Cargo's target directory with the
-same version as a published release passes the automatic-install version gate.
+## Checks and status
 
-Jobs expose operation, phase, outcome and restart_expected independently of their
-running flag. Completed checks never reload the dashboard. The page reloads only
-when installation is confirmed or a new application instance is observed after
-an installation was in progress. A boot identifier changes even for an exec
-restart retaining the same process ID. Network failures during checks do not
-trigger refreshes. Downloads remain staged, executable permissions are set, and
-installation uses the existing replacement/systemd restart handoff.
+The app always checks once at startup. `app_update_check_minutes` controls later
+checks; `0` (Never) disables recurring checks without suppressing the startup
+check. Dashboard refreshes and status GETs do not start app update operations.
+The legacy `check_updates_startup` preference supplies the interval only when no
+explicit interval is saved: hourly when enabled, Never when disabled.
 
-Check starts/results, compared versions, the selected channel, installation mode,
-and operation failures are written through the normal application logger. They
-are included in logs/app.log when application file logging is enabled.
+The selected channel and last checked version survive restarts. Startup and
+recurring checks discover the highest version again; saved versions do not pin
+these checks to an older release. There is no separate Latest menu choice or
+saved follow-latest mode.
 
-App and tool downloads have no application-imposed speed cap. Downloads are still
-staged and checked for completeness before installation.
+Jobs expose operation, phase, outcome and `restart_expected` independently of
+their running flag. Completed checks never reload the dashboard. The page reloads
+only after installation is confirmed or a new application instance is observed
+following an installation. A boot identifier changes even for an exec restart
+retaining the same process ID. Network failures during checks do not trigger
+refreshes.
+
+App and tool downloads have no application-imposed speed cap. Downloads remain
+staged and checked for completeness, executable permissions are set, and app
+installation uses the existing replacement/systemd restart handoff. FFmpeg and
+yt-dlp provisioning are separate from application updates.
+
+Check results, installed/newest/selected versions, installation requests and
+failures use the normal application logger, including `logs/app.log` when app
+file logging is enabled.
 
 ## FFmpeg provisioning
 

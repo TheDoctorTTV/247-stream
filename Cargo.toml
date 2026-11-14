@@ -1,6 +1,6 @@
 [package]
 name = "stream247"
-version = "3.0.0-b5"
+version = "3.0.0-b6"
 edition = "2021"
 publish = false
 description = "Headless playlist streamer with a web dashboard"

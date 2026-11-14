@@ -238,7 +238,6 @@ pub fn normalize(v: &Value) -> Value {
         ("debug_logging", false),
         ("twitch_enhanced_broadcasting", false),
         ("check_updates_startup", true),
-        ("auto_app_updates", false),
         ("youtube_persistent_output", true),
     ] {
         out[k] = json!(boolean(v, k, default));
@@ -270,6 +269,7 @@ pub fn merge(base: &Value, payload: &Value) -> Result<Value> {
         out.remove("bufsize");
     }
     out.remove("update_download_cap_mbps");
+    out.remove("auto_app_updates");
     Ok(Value::Object(out))
 }
 pub fn load(dir: &Path) -> Result<Value> {

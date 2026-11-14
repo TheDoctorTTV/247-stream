@@ -7,7 +7,7 @@ RTMP/RTMPS destinations.
 - Start, stop, restart, and skip streams from the dashboard.
 - Choose resolution, frame rate, bitrate, and CPU or hardware encoding.
 - Enable title overlays, playlist shuffle, and custom transition or recovery media.
-- Manage app and binary updates, with optional automatic checks and installation.
+- Manage app and binary updates, with scheduled app checks and manual installation.
 - View live logs and preview sources in the Debug tab.
 
 ## Quick setup (Linux x86_64)

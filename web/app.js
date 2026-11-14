@@ -16,6 +16,7 @@
     const appUpdateProgressBar = document.getElementById("appUpdateProgressBar");
     const appUpdateProgressText = document.getElementById("appUpdateProgressText");
     const appUpdateVersion = document.getElementById("app_update_version");
+    const aboutTabButton = document.querySelector('[data-tab="tab-about"]');
     const updateBinariesBtn = document.getElementById("updateBinariesBtn");
     const binariesStatus = document.getElementById("binariesStatus");
     const binariesProgressBar = document.getElementById("binariesProgressBar");
@@ -70,7 +71,7 @@
     let appUpdateStatusLoading = false;
     const STORAGE_TAB_KEY = "stream247.active_tab";
     const STORAGE_SUBTAB_KEY = "stream247.active_subtab";
-    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "remember_current_video", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "app_update_check_minutes", "auto_app_updates", "app_update_channel"];
+    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "remember_current_video", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "app_update_check_minutes", "app_update_channel"];
     const STREAM_URL_PRESETS = {
       youtube: { name: "YouTube", rtmp_base: "rtmp://a.rtmp.youtube.com/live2" },
       twitch: { name: "Twitch", rtmp_base: "rtmp://live.twitch.tv/app" },
@@ -1539,14 +1540,12 @@
       if (!r) return "Not checked yet";
       if (r.updater_enabled === false) return String(r.disabled_reason || "App updater disabled.");
       const current = String(r.current_version || "unknown");
-      const selected = String(r.selected_version || "unknown");
-      const comparison = compareVersions(current, selected);
-      let state = "Up to date";
-      if (comparison === 1) state = r.asset_supported ? "Downgrade available" : "Downgrade unavailable (unsupported asset)";
-      else if (comparison === -1) {
-        state = r.asset_supported ? "Update available" : "Update available (unsupported asset)";
-      }
-      return state;
+      const newest = String(r.newest_version || "");
+      if (!newest) return "Check for updates to load the newest version.";
+      const comparison = compareVersions(current, newest);
+      if (comparison === -1) return "Update available: " + newest;
+      if (comparison === 1) return "Running a newer version than this channel";
+      return "Up to date";
     }
 
     function updateAppVersionDropdown(info) {
@@ -1599,21 +1598,22 @@
       }
       if (info.last_error || info.phase === "downloaded") appInstallPending = false;
       updateAppVersionDropdown(info);
-      const comparison = compareVersions(result.current_version, result.selected_version);
       const enabled = result.updater_enabled === true;
-      const supported = enabled && result.asset_supported === true;
-      const updateAvailable = comparison === -1 && supported;
+      const newest = String(result.newest_version || "");
+      const updateAvailable = !!newest && compareVersions(result.current_version, newest) === -1;
       let level = "updated";
       if (info.last_error) level = "error";
       else if (info.running) level = "running";
       else if (updateAvailable) level = "outdated";
-      else if (!info.last_result || !enabled) level = "unknown";
+      else if (!info.last_result || !enabled || !newest) level = "unknown";
+      aboutTabButton.classList.toggle("has-app-update", updateAvailable);
+      aboutTabButton.setAttribute("aria-label", updateAvailable ? "About — app update available" : "About");
       setAppUpdateStatus(formatAppUpdateSummary(info), level);
       const pct = Number(info.progress_percent || 0);
       const message = String(info.progress_message || "");
       setAppUpdateProgress(info.running ? pct : 0, info.running && message ? message + " (" + pct + "%)" : "");
       checkAppUpdateBtn.disabled = !!info.running;
-      checkAppUpdateBtn.title = info.running ? "An update operation is running" : "Check GitHub for the selected version";
+      checkAppUpdateBtn.title = info.running ? "An update operation is running" : "Check GitHub for the highest version in this channel";
       appUpdateVersion.disabled = !!info.running;
       document.getElementById("app_update_channel").disabled = !!info.running;
       syncAppInstallButtons();
@@ -1628,9 +1628,6 @@
       const locked = streamSettingsLocked();
       const reason = locked ? (!streamStateKnown ? "Waiting for stream status" : "Stop the stream before installing app versions")
         : String(result.disabled_reason || "Check the selected GitHub release first.");
-      const autoInstall = document.getElementById("auto_app_updates");
-      autoInstall.disabled = result.auto_install_supported === false;
-      autoInstall.title = String(result.auto_install_disabled_reason || "Automatically install newer app versions");
       downloadAppUpdateBtn.disabled = locked || !!info.running || !supported;
       downloadAppUpdateBtn.textContent = comparison === 1 ? "Downgrade" : comparison === 0 ? "Reinstall" : "Install";
       downloadAppUpdateBtn.title = locked || !enabled ? reason : !supported ?

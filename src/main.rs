@@ -51,7 +51,7 @@ fn main() -> Result<()> {
     if dir.is_relative() {
         dir = std::env::current_dir()?.join(dir);
     }
-    let app = runtime::App::new(dir, development)?;
+    let app = runtime::App::new(dir)?;
     let shutdown = Arc::clone(&app);
     ctrlc::set_handler(move || {
         *shutdown.shutdown_reason.lock().unwrap() = "interrupt or termination signal";

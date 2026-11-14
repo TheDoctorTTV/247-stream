@@ -26,7 +26,6 @@ pub struct App {
     pub dir: PathBuf,
     pub started: Instant,
     pub shutdown_reason: Mutex<&'static str>,
-    pub development: bool,
     pub state: SharedState,
     config: Mutex<Value>,
     worker: Mutex<Option<Running>>,
@@ -39,7 +38,7 @@ pub struct App {
     pub restart: AtomicBool,
 }
 impl App {
-    pub fn new(dir: PathBuf, development: bool) -> Result<Arc<Self>> {
+    pub fn new(dir: PathBuf) -> Result<Arc<Self>> {
         fs::create_dir_all(&dir)?;
         let cfg = config::load(&dir)?;
         let mut state = State::default();
@@ -48,7 +47,6 @@ impl App {
             dir,
             started: Instant::now(),
             shutdown_reason: Mutex::new("shutdown requested"),
-            development,
             state: Mutex::new(state),
             config: Mutex::new(cfg),
             worker: Mutex::new(None),

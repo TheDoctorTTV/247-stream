@@ -100,8 +100,8 @@ pub fn release(channel: &str, selected: Option<&str>) -> Result<Value> {
     if selected.is_some_and(|version| compare(version, "2.0-pre-release-2") == Ordering::Less) {
         bail!("Selected version is below the minimum supported in-app target");
     }
-    // Check all published tags to determine automatic-install eligibility.
-    // Manual installation remains available for unpublished local versions.
+    // Enumerate published releases to compare channel status independently
+    // of the concrete version selected for manual installation.
     let mut published = Vec::new();
     for page in 1.. {
         let data = get_json(&format!(
@@ -121,10 +121,6 @@ pub fn release(channel: &str, selected: Option<&str>) -> Result<Value> {
             break;
         }
     }
-    let tag_version = |v: &str| v.trim().trim_start_matches(['v', 'V']).to_owned();
-    let current_published = published
-        .iter()
-        .any(|r| tag_version(&text(r, "tag_name", "")) == tag_version(VERSION));
     let mut releases: Vec<&Value> = published
         .iter()
         .filter(|r| {
@@ -133,6 +129,13 @@ pub fn release(channel: &str, selected: Option<&str>) -> Result<Value> {
         })
         .collect();
     releases.sort_by(|a, b| compare(&text(b, "tag_name", ""), &text(a, "tag_name", "")));
+    let newest_version = text(
+        releases.first().context("No supported release found for this channel")?,
+        "tag_name",
+        "",
+    )
+    .trim_start_matches(['v', 'V'])
+    .to_owned();
     let chosen = match selected {
         Some(version) => releases
             .iter()
@@ -160,7 +163,7 @@ pub fn release(channel: &str, selected: Option<&str>) -> Result<Value> {
         .to_owned();
     let name = text(&asset, "name", "");
     Ok(
-        json!({"current_version":VERSION,"current_published":current_published,"updater_enabled":true,"disabled_reason":"","selected_version":version,"is_newer":compare(&version,VERSION)==Ordering::Greater,"should_install":compare(&version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
+        json!({"current_version":VERSION,"updater_enabled":true,"disabled_reason":"","selected_version":version,"newest_version":newest_version,"update_available":compare(&newest_version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
     )
 }
 pub fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
@@ -488,7 +491,7 @@ pub fn empty_job() -> Value {
         "instance_id":instance_id(),"restart_expected":false,
         "last_result":null,"last_error":"","started_at":0.0,"finished_at":0.0,
         "progress_percent":0,"progress_message":"","downloaded_path":"",
-        "selected_version":"","selected_channel":"","mode":"manual"
+        "selected_version":"","selected_channel":""
     })
 }
 
@@ -563,20 +566,10 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     !install || selected.is_some(),
                     "Choose a version before installing the app"
                 );
-                let mut info = release(&channel, selected.as_deref())?;
+                let info = release(&channel, selected.as_deref())?;
                 let resolved_version = text(&info, "selected_version", "");
                 cloned.remember_update_selection(&channel, &resolved_version)?;
                 cloned.app_job.lock().unwrap()["selected_version"] = json!(resolved_version);
-                let auto_install_supported = !cloned.development
-                    && boolean(&info, "current_published", false);
-                info["auto_install_supported"] = json!(auto_install_supported);
-                info["auto_install_disabled_reason"] = json!(if cloned.development {
-                    "Automatic installation is disabled for Cargo development builds. Manual installation is available."
-                } else if !auto_install_supported {
-                    "Automatic installation is disabled for unpublished versions. Manual installation is available."
-                } else {
-                    ""
-                });
                 if !boolean(&info, "updater_enabled", false) {
                     let message = text(&info, "disabled_reason", "App updater disabled.");
                     cloned.app_job.lock().unwrap()["outcome"] = json!("disabled");
@@ -586,29 +579,25 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                 }
                 let target = text(&info, "selected_version", "");
                 let ordering = compare(&target, VERSION);
-                let newer = ordering == Ordering::Greater;
+                let newest = text(&info, "newest_version", "");
+                let update_ordering = compare(&newest, VERSION);
+                let newer = update_ordering == Ordering::Greater;
                 let reinstall = ordering == Ordering::Equal;
                 let downgrade = ordering == Ordering::Less;
-                let automatic = !install
-                    && boolean(&cloned.settings(), "auto_app_updates", false)
-                    && auto_install_supported
-                    && !cloned.is_streaming();
-                let do_install = install || (automatic && newer);
                 let supported = boolean(&info, "asset_supported", false);
                 {
                     let mut job = cloned.app_job.lock().unwrap();
                     job["last_result"] = info.clone();
-                    job["mode"] = json!(if automatic { "automatic" } else { "manual" });
                     job["outcome"] = json!(if newer {
                         "update_available"
-                    } else if ordering == Ordering::Less {
-                        "downgrade_available"
+                    } else if update_ordering == Ordering::Less {
+                        "ahead_of_channel"
                     } else {
                         "up_to_date"
                     });
                 }
-                cloned.log(&format!("[INFO] App update check complete: current {VERSION}, selected {target}, newer={newer}, asset_supported={supported}."));
-                if do_install && supported {
+                cloned.log(&format!("[INFO] App update check complete: current {VERSION}, selected {target}, newest {newest}, update_available={newer}, asset_supported={supported}."));
+                if install && supported {
                     let name = text(&info, "asset_name", "");
                     anyhow::ensure!(
                         Path::new(&name).file_name().and_then(|s| s.to_str())
@@ -625,8 +614,7 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                         job["restart_expected"] = json!(true);
                     }
                     cloned.log(&format!(
-                        "[INFO] {} app {}: {VERSION} -> {target}.",
-                        if automatic { "Automatic" } else { "Manual" },
+                        "[INFO] Manual app {}: {VERSION} -> {target}.",
                         if reinstall {
                             "reinstall"
                         } else if downgrade {
@@ -654,16 +642,16 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     job["outcome"] = json!("installed");
                     job["progress_message"] = json!("Update installed. Restarting...");
                 } else {
-                    let message = if !supported {
-                        "The selected release has no self-installable asset for this platform."
-                    } else if downgrade {
-                        "Downgrade available"
-                    } else if reinstall {
-                        "Up to date"
+                    let message = if install && !supported {
+                        "The selected release has no self-installable asset for this platform.".to_owned()
+                    } else if newer {
+                        format!("Update available: {newest}")
+                    } else if update_ordering == Ordering::Less {
+                        "Running a newer version than this channel".to_owned()
                     } else {
-                        "Update available"
+                        "Up to date".to_owned()
                     };
-                    cloned.progress(true, message, 100);
+                    cloned.progress(true, &message, 100);
                     cloned.log(&format!("[INFO] {message}"));
                 }
                 Ok(info)
@@ -744,7 +732,7 @@ pub fn initial_status(app: &Arc<App>, is_app: bool) -> Value {
 }
 
 pub fn startup(app: Arc<App>) {
-    // Always check once at startup. Installation still requires auto_app_updates.
+    // Always check once at startup; checks never install application updates.
     trigger(&app, true, false, &json!({}));
     // One timer per app, independent of dashboard refreshes or open browser tabs.
     let mut interval = config_interval(&app);

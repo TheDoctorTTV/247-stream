@@ -1283,7 +1283,7 @@ mod resolver_tests {
             "yt_auth_allow_unauth_fallback": false
         });
         fs::write(dir.0.join("config.json"), legacy.to_string()).unwrap();
-        let app = App::new(dir.0.clone(), true).unwrap();
+        let app = App::new(dir.0.clone()).unwrap();
         let cfg = StreamConfig::new(&app.raw_settings(), &dir.0);
         for key in legacy.as_object().unwrap().keys() {
             assert!(app.settings().get(key).is_none());
