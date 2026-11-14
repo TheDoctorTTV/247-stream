@@ -277,7 +277,7 @@ button.number-step:disabled { opacity: .3; }
 .playback-items dd { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .playback-current dd { color: var(--text); font-weight: 500; }
 .creator-link { display: inline-flex; align-items: center; gap: 7px; }
-.creator .creator-link img { width: 18px; height: 18px; border-radius: 0; }
+.creator .creator-link img { width: 18px; height: 18px; border-radius: 0; filter: brightness(0) invert(1); }
 @media (max-width: 600px) { .playback-items { grid-template-columns: 1fr; gap: 18px; } }
 
 .browser-pairing { max-width: 620px; margin-top: 18px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }

@@ -542,6 +542,14 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
         if boolean(&job, "running", false) {
             return job.clone();
         }
+        if app_update && install && app.is_streaming() {
+            let message = "Stop the stream before installing, reinstalling, or downgrading the app";
+            job["phase"] = json!("blocked");
+            job["last_error"] = json!(message);
+            job["progress_message"] = json!(message);
+            job["restart_expected"] = json!(false);
+            return job.clone();
+        }
         *job = empty_job();
         job["running"] = json!(true);
         job["operation"] = json!(if app_update {
@@ -605,7 +613,8 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                 let downgrade = ordering == Ordering::Less;
                 let automatic = !install
                     && boolean(&cloned.settings(), "auto_app_updates", false)
-                    && !cloned.development;
+                    && !cloned.development
+                    && !cloned.is_streaming();
                 let do_install = install || (automatic && newer);
                 let supported = boolean(&info, "asset_supported", false);
                 {

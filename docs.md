@@ -37,7 +37,9 @@ Recovery and transition media are uploaded through Settings. See
 | `auto_app_updates` | Automatically install newer app versions |
 
 Automatic checks run on an app timer. Refreshing the dashboard does not start a
-check. The old `check_updates_startup` preference maps to hourly checks when
+check. App installs, reinstalls, and downgrades are blocked while streaming or
+running a local preview. Automatic checks still report available updates; automatic
+installation waits for a later check while stopped. The old `check_updates_startup` preference maps to hourly checks when
 enabled, or Never when disabled. Update downloads are capped at 50 Mbps.
 
 | Theme | Identifier |

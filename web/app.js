@@ -51,6 +51,7 @@
     let streamActive = false;
     let streamStateKnown = false;
     let appUpdateRunning = false;
+    let lastAppUpdateInfo = null;
     let binariesUpdateRunning = false;
     let prevBinariesUpdateRunning = false;
     let binariesJustUpdatedUntil = 0;
@@ -893,10 +894,12 @@
 
     function syncActionButtons() {
       syncStreamSettingsLock();
-      startBtn.disabled = !streamStateKnown || actionPending || streamActive;
+      startBtn.disabled = !streamStateKnown || actionPending || streamActive ||
+        appInstallPending || (appUpdateRunning && lastAppUpdateInfo?.operation === "install");
       restartBtn.disabled = !streamStateKnown || actionPending || !streamActive;
       stopBtn.disabled = !streamStateKnown || actionPending || !streamActive;
       skipBtn.disabled = !streamStateKnown || actionPending || !streamActive;
+      syncAppInstallButtons();
     }
 
     async function api(path) {
@@ -1651,6 +1654,7 @@
     }
 
     function renderAppUpdateStatus(info) {
+      lastAppUpdateInfo = info;
       appUpdateRunning = !!info.running;
       const result = info.last_result || {};
       const restarted = appInstallPending && appInstallInstance &&
@@ -1672,9 +1676,6 @@
       const enabled = result.updater_enabled === true;
       const supported = enabled && result.asset_supported === true;
       const updateAvailable = comparison === -1 && supported;
-      const installAvailable = supported;
-      const reinstallAvailable = comparison === 0 && supported;
-      const disabledReason = String(result.disabled_reason || "Check the selected GitHub release first.");
       let level = "updated";
       if (info.last_error) level = "error";
       else if (info.running) level = "running";
@@ -1688,14 +1689,25 @@
       checkAppUpdateBtn.title = info.running ? "An update operation is running" : "Check GitHub for the selected version";
       appUpdateVersion.disabled = !!info.running;
       document.getElementById("app_update_channel").disabled = !!info.running;
-      downloadAppUpdateBtn.disabled = !!info.running || !installAvailable;
+      syncAppInstallButtons();
+    }
+
+    function syncAppInstallButtons() {
+      const info = lastAppUpdateInfo || {};
+      const result = info.last_result || {};
+      const comparison = compareVersions(result.current_version, result.selected_version);
+      const enabled = result.updater_enabled === true;
+      const supported = enabled && result.asset_supported === true;
+      const locked = streamSettingsLocked();
+      const reason = locked ? (!streamStateKnown ? "Waiting for stream status" : "Stop the stream before installing app versions")
+        : String(result.disabled_reason || "Check the selected GitHub release first.");
+      downloadAppUpdateBtn.disabled = locked || !!info.running || !supported;
       downloadAppUpdateBtn.textContent = comparison === 1 ? "Downgrade" : comparison === 0 ? "Reinstall" : "Install";
-      downloadAppUpdateBtn.title = !enabled ? disabledReason : !supported ?
-        "Selected release has no self-installable asset" :
-        "Install the selected version and restart, including older or identical versions";
+      downloadAppUpdateBtn.title = locked || !enabled ? reason : !supported ?
+        "Selected release has no self-installable asset" : "Install the selected version and restart";
       if (reinstallAppBtn) {
-        reinstallAppBtn.disabled = !!info.running || !reinstallAvailable;
-        reinstallAppBtn.title = !enabled ? disabledReason : reinstallAvailable ?
+        reinstallAppBtn.disabled = locked || !!info.running || comparison !== 0 || !supported;
+        reinstallAppBtn.title = locked || !enabled ? reason : comparison === 0 && supported ?
           "Reinstall the currently installed version" : "Select the installed version to reinstall it";
       }
     }
@@ -1718,6 +1730,10 @@
     }
 
     async function triggerAppUpdateDownload(forceReinstall = false) {
+      if (streamSettingsLocked()) {
+        setAppUpdateStatus("Stop the stream before installing app versions.", "unknown");
+        return;
+      }
       const selectedVersion = String(appUpdateVersion.value || "").trim();
       const selectedChannel = String(document.getElementById("app_update_channel").value || "release").trim();
       setAppUpdateStatus(

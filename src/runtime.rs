@@ -30,6 +30,7 @@ pub struct App {
     pub state: SharedState,
     config: Mutex<Value>,
     worker: Mutex<Option<Running>>,
+    lifecycle_lock: Mutex<()>,
     pub provision_lock: Mutex<()>,
     pub fallback_image_lock: Mutex<()>,
     pub youtube_cookie_lock: Mutex<()>,
@@ -53,6 +54,7 @@ impl App {
             state: Mutex::new(state),
             config: Mutex::new(cfg),
             worker: Mutex::new(None),
+            lifecycle_lock: Mutex::new(()),
             provision_lock: Mutex::new(()),
             fallback_image_lock: Mutex::new(()),
             youtube_cookie_lock: Mutex::new(()),
@@ -166,6 +168,11 @@ impl App {
         local_preview: bool,
         preview_source: Option<String>,
     ) -> Result<()> {
+        let _lifecycle = self.lifecycle_lock.lock().unwrap();
+        anyhow::ensure!(
+            !self.shutdown.load(Ordering::Acquire),
+            "Application is restarting"
+        );
         let mut running = self.worker.lock().unwrap();
         if running.as_ref().is_some_and(|r| !r.thread.is_finished()) {
             anyhow::ensure!(!local_preview, "Stop the current stream before starting a local test; it will not be interrupted automatically");
@@ -178,6 +185,14 @@ impl App {
             !config::boolean(&self.binary_job.lock().unwrap(), "running", false),
             "Wait for the binary operation to finish before starting"
         );
+        {
+            let job = self.app_job.lock().unwrap();
+            anyhow::ensure!(
+                !config::boolean(&job, "running", false)
+                    || config::text(&job, "operation", "") != "install",
+                "Wait for the app installation to finish before starting"
+            );
+        }
         let mut cfg = StreamConfig::new(&self.raw_settings(), &self.dir);
         if local_preview {
             crate::debug::prepare_preview(self)?;
@@ -400,6 +415,18 @@ impl App {
         job["progress_percent"] = json!(percent.clamp(0, 100));
     }
     pub fn install_update(&self, staged: &Path) -> Result<()> {
+        // Serialize the final installation with stream startup, including preview.
+        let _lifecycle = self.lifecycle_lock.lock().unwrap();
+        let worker_active = self
+            .worker
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|running| !running.thread.is_finished());
+        anyhow::ensure!(
+            !worker_active && !self.is_streaming(),
+            "Stop the stream before installing, reinstalling, or downgrading the app"
+        );
         anyhow::ensure!(
             !self.development,
             "Self-install is disabled for Cargo development binaries"
