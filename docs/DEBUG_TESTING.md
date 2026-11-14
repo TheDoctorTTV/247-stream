@@ -1,8 +1,7 @@
 # Debug tab and local recovery testing
 
 The Debug tab previews the source selected on the Stream page in the browser
-and exposes explicit source-only failure controls. These are tools for the user
-to run; no tests or streams were started by the agent.
+and exposes controls for manually simulating source failures.
 
 The Debug tab is visible only while Settings → Debug logging is enabled. Turning
 it off hides the tab immediately, stops Debug status polling and detaches browser
@@ -15,7 +14,7 @@ debugging is disabled.
 Start Local Test uses the source currently selected on the Stream page, including
 YouTube playlist/video, Twitch-source retrieval or direct HLS. It uses the selected
 resolution, frame rate, bitrate and encoder, and the same playlist, persistent
-feeder, source watchdog, fallback image and recovery code as normal streaming.
+feeder, source watchdog, recovery/transition media and source recovery code as normal streaming.
 It produces one H.264/AAC HLS output in the app data directory `debug-preview/` and serves it through the existing dashboard HTTP
 server. The selected source is fetched normally; only the output is local.
 No streaming destination is opened, EB negotiation is skipped, and no destination
@@ -23,7 +22,7 @@ stream key is required. A selected source is required. Saved streaming settings
 are not changed. Local mode never automatically interrupts an existing stream.
 
 Initial startup waits for the selected source's audio and video before creating
-the preview output; the first picture is source media, not the recovery image.
+the preview output; the first picture is source media, not recovery media.
 The preview playlist may return 404 while preparation is in progress. Fallback
 is used only for interruptions or transitions after source playback has started.
 
@@ -34,7 +33,8 @@ a transition, startup or recovery is in progress. Configure Transition media in
 Settings first; without it, the existing recovery fallback fills the handoff.
 This action cannot skip a normal broadcast or a live relay. Allow a few seconds
 for the buffered HLS preview to show the change. The ordinary Stream-tab Skip
-retains its existing behavior.
+advances YouTube playlist/video playback and bypasses the remaining transition;
+it is hidden for Twitch and HLS relays.
 
 The player is muted initially; unmute it to hear the selected source. HLS adds
 several seconds of playback buffering. Reconnect Player restarts only browser playback,
@@ -80,18 +80,18 @@ claiming to verify every network failure mode.
 
 The Debug tab displays current source/output PIDs, recovery count, readiness and
 the last injected fault. For a successful source recovery, the source PID should
-change, recovery count increase, fallback image/black output appear during the
-gap, and the original output PID remain unchanged. With a real selected source,
+change, recovery count increase, configured recovery media (or black output when
+unset) appear during the gap, and the original output PID remain unchanged. With a real selected source,
 the source picture and audio should resume after fallback.
 
 For timestamp handoffs, enable debug logging and check for `Playout clock handoff`
 entries with a single shared A/V offset for each new producer. After repeated
 fallback/source and playlist transitions, check that there is no recurring
 alternation of positive/negative `timestamp discontinuity` warnings, no
-`Non-monotonic DTS` warnings, and that audible sync stays stable. Include image
-to black fallback changes, which also create a new producer. Source content PTS
+`Non-monotonic DTS` warnings, and that audible sync stays stable. Include recovery
+media replacement and removal, which also create a new producer. Source content PTS
 can restart on recovery; the bridge program PTS should continue advancing.
-These are manual checks for the user's build; they have not been run by the agent.
+These are manual checks for the deployed build and its selected media.
 
 ## HTTP endpoints
 
@@ -101,6 +101,7 @@ All URLs are relative to the existing dashboard origin.
 | --- | --- | --- |
 | GET | `/api/debug/state` | Running/local-preview flags, readiness, source/output PIDs, recovery count, preview URL and fault state |
 | POST | `/api/debug/test-stream/start` | `{"source":"<selected-source-url>"}` (or `{}` to use the saved selected source); refuses when another stream is running; returns local preview playlist URL |
+| POST | `/api/debug/test-stream/skip` | `{"source_pid":12345}`; ends the active local playlist item with a transition; requires the current source PID |
 | POST | `/api/debug/test-stream/stop` | `{}`; stops only a local preview |
 | POST | `/api/debug/failure` | `{"kind":"audio_drop","source_pid":12345}`; PID is an optional stale-source guard, never a target chosen by the client |
 | GET | `/api/debug/preview/index.m3u8` | Rolling local preview playlist, 404 while not ready |
@@ -108,9 +109,10 @@ All URLs are relative to the existing dashboard origin.
 
 Suggested manual sequence: select a source, start local preview, unmute, record the output PID,
 inject one failure, wait for recovery and compare PIDs/count, repeat for other
-fault types, then stop the local test. Upload/remove a recovery image to check
-image-to-black fallback behavior as well. No build, test execution, browser
-session or destination stream has been run by the agent for this change.
+fault types, then stop the local test. Upload, replace and remove recovery media
+to check transitions between configured media and black fallback. Recovery media
+loops silently; transition videos retain their audio. Supported media and timing
+are described in [source recovery](SOURCE_RECOVERY.md#recovery-and-transition-media).
 
 Custom destinations can supply a complete RTMP/RTMPS URL without a separate
 stream-key field when their server permits it. EB eligibility is based on Twitch

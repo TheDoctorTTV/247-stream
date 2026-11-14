@@ -165,7 +165,7 @@ pub fn normalize(v: &Value) -> Value {
         "playlist_url":source,"sources":sources,"source_names":names(v,"sources","source_names",&sources,&["url","source","playlist_url"]),
         "stream_key":key,"stream_keys":keys,"stream_key_names":names(v,"stream_keys","stream_key_names",&keys,&["stream_key","key","value"]),
         "rtmp_base":text(v,"rtmp_base","rtmp://a.rtmp.youtube.com/live2"),"stream_url_services":services,
-        "video_bitrate":format!("{}k",bitrate(&v["video_bitrate"])),"update_download_cap_mbps":50
+        "video_bitrate":format!("{}k",bitrate(&v["video_bitrate"]))
     });
     for (k, allowed, default) in [
         (
@@ -232,11 +232,11 @@ pub fn normalize(v: &Value) -> Value {
     for (k, default) in [
         ("overlay_titles", true),
         ("shuffle", false),
+        ("remember_current_video", false),
         ("log_to_file", false),
         ("ffmpeg_log_to_file", false),
         ("debug_logging", false),
         ("twitch_enhanced_broadcasting", false),
-        ("remember", true),
         ("check_updates_startup", true),
         ("auto_app_updates", false),
         ("youtube_persistent_output", true),
@@ -269,7 +269,7 @@ pub fn merge(base: &Value, payload: &Value) -> Result<Value> {
     if obj.contains_key("video_bitrate") || obj.contains_key("buffer_mode") {
         out.remove("bufsize");
     }
-    out.insert("update_download_cap_mbps".into(), json!(50));
+    out.remove("update_download_cap_mbps");
     Ok(Value::Object(out))
 }
 pub fn load(dir: &Path) -> Result<Value> {

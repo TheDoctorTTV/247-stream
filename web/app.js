@@ -48,6 +48,7 @@
     const subtabPanels = Array.from(document.querySelectorAll(".subtab-panel"));
     let busy = false;
     let streamActive = false;
+    let runtimeSourceUrl = "";
     let streamStateKnown = false;
     let appUpdateRunning = false;
     let lastAppUpdateInfo = null;
@@ -64,13 +65,12 @@
     let appVersionsBoundToChannel = "";
     let appVersionListSignature = "";
     let appUpdateRefreshScheduled = false;
-    let appRequestedVersion = "";
     let appInstallPending = false;
     let appInstallInstance = "";
     let appUpdateStatusLoading = false;
     const STORAGE_TAB_KEY = "stream247.active_tab";
     const STORAGE_SUBTAB_KEY = "stream247.active_subtab";
-    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "remember", "app_update_check_minutes", "auto_app_updates", "app_update_channel"];
+    const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "remember_current_video", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "app_update_check_minutes", "auto_app_updates", "app_update_channel"];
     const STREAM_URL_PRESETS = {
       youtube: { name: "YouTube", rtmp_base: "rtmp://a.rtmp.youtube.com/live2" },
       twitch: { name: "Twitch", rtmp_base: "rtmp://live.twitch.tv/app" },
@@ -230,7 +230,7 @@
 
     function syncStreamSettingsLock() {
       const locked = streamSettingsLocked();
-      for (const id of ["resolution", "framerate", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "stream_url_preset"]) {
+      for (const id of ["resolution", "framerate", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "remember_current_video", "stream_url_preset"]) {
         document.getElementById(id).disabled = locked;
       }
       sourceSelect.disabled = locked || sourceSelect.options.length <= 1;
@@ -891,13 +891,26 @@
       if (!response.ok || result.ok === false) throw new Error(result.error || "Stream action failed.");
     }
 
+    function sourceSupportsSkip(source) {
+      try {
+        const url = new URL(source);
+        const host = url.hostname.toLowerCase();
+        const youtube = host === "youtube.com" || host.endsWith(".youtube.com") || host === "youtu.be";
+        return youtube && (url.searchParams.has("list") ||
+          (url.pathname === "/watch" && url.searchParams.has("v")) ||
+          (host === "youtu.be" && url.pathname.length > 1));
+      } catch (error) { return false; }
+    }
+
     function syncActionButtons() {
       syncStreamSettingsLock();
       startBtn.disabled = !streamStateKnown || actionPending || streamActive ||
         appInstallPending || (appUpdateRunning && lastAppUpdateInfo?.operation === "install");
       restartBtn.disabled = !streamStateKnown || actionPending || !streamActive;
       stopBtn.disabled = !streamStateKnown || actionPending || !streamActive;
-      skipBtn.disabled = !streamStateKnown || actionPending || !streamActive;
+      const canSkip = sourceSupportsSkip(streamActive ? runtimeSourceUrl : sourceSelect.value);
+      skipBtn.hidden = !canSkip;
+      skipBtn.disabled = !canSkip || !streamStateKnown || actionPending || !streamActive;
       syncAppInstallButtons();
     }
 
@@ -967,7 +980,7 @@
         stateText.textContent = s.status || "Unknown";
         stateText.className = "status" + (streaming ? " on" : "");
         const meta = s.meta || {};
-        const runtimeSourceUrl = String(meta.source || "").trim();
+        runtimeSourceUrl = String(meta.source || "").trim();
         const selectedSourceUrl = String(sourceSelect && sourceSelect.value || "").trim();
         const firstSourceUrl = String((sourcesState[0] && sourcesState[0].url) || "").trim();
         const sourceUrl = runtimeSourceUrl || selectedSourceUrl || firstSourceUrl;
@@ -1094,7 +1107,6 @@
         out.stream_key = normalizedStreamKey;
       }
       out.framerate = Number(out.framerate || 30);
-      out.update_download_cap_mbps = 50;
       return out;
     }
 
@@ -1132,7 +1144,7 @@
             }
           });
         } else if (el.type === "checkbox" || el.tagName === "SELECT") {
-          el.addEventListener("change", () => queueAutoSave(180));
+          el.addEventListener("change", () => { syncActionButtons(); queueAutoSave(180); });
         } else {
           el.addEventListener("input", () => queueAutoSave(650));
           el.addEventListener("change", () => queueAutoSave(180));
@@ -1463,7 +1475,6 @@
         if (!payload.ok || !payload.settings) throw new Error(payload.error || "invalid response");
         suppressAutoSave = true;
         applySettingsToForm(payload.settings, bitrateEditRevision !== bitrateRevisionAtLoad);
-        appRequestedVersion = String(payload.settings.app_update_selected_version || "");
         lastSavedPayload = payloadSignature({ ...formToPayload(), video_bitrate: payload.settings.video_bitrate });
         setSettingsStatus("Settings loaded.", "ok");
         loadAppUpdateStatus();
@@ -1543,7 +1554,7 @@
       const result = info.last_result;
       const channel = String(result.channel || document.getElementById("app_update_channel").value || "release");
       const versions = (Array.isArray(result.available_versions) ? result.available_versions : []).filter(Boolean).sort((a, b) => compareVersions(b, a));
-      const selected = String(result.requested_version || "");
+      const selected = String(result.selected_version || "");
       // Status polling should leave an unchanged version menu intact.
       const signature = JSON.stringify([channel, versions, selected]);
       if (appVersionsBoundToChannel === channel && appVersionListSignature === signature) return;
@@ -1566,7 +1577,6 @@
         return "";
       };
       appUpdateVersion.value = canonicalMatch(selected) || versions[0] || "";
-      appRequestedVersion = selected;
       appVersionsBoundToChannel = channel;
     }
 
@@ -1644,51 +1654,41 @@
       }
     }
 
-    async function triggerAppUpdateDownload(forceReinstall = false) {
+    async function triggerAppUpdateDownload() {
       if (streamSettingsLocked()) {
         setAppUpdateStatus("Stop the stream before installing app versions.", "unknown");
         return;
       }
       const selectedVersion = String(appUpdateVersion.value || "").trim();
       const selectedChannel = String(document.getElementById("app_update_channel").value || "release").trim();
-      setAppUpdateStatus(
-        forceReinstall ? "Starting app reinstall..." : "Starting app update install...",
-        "running"
-      );
+      setAppUpdateStatus("Starting app installation...", "running");
       try {
         const res = await fetch("/api/app-update/download", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             selected_version: selectedVersion,
-            channel: selectedChannel,
-            force_reinstall: !!forceReinstall
+            channel: selectedChannel
           })
         });
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
         renderAppUpdateStatus(payload.app_update || {});
       } catch (err) {
-        setAppUpdateStatus(
-          forceReinstall ? "Failed to start app reinstall." : "Failed to start app update install.",
-          "error"
-        );
+        setAppUpdateStatus("Failed to start app installation.", "error");
         setAppUpdateProgress(0, "");
       }
     }
 
     async function triggerAppUpdateCheck(selectedVersion = null) {
-      const selected = (selectedVersion === null || selectedVersion === undefined)
-        ? appRequestedVersion
-        : String(selectedVersion || "").trim();
+      const selected = String(selectedVersion || "").trim();
       const selectedChannel = String(document.getElementById("app_update_channel").value || "release").trim();
-      appRequestedVersion = selected;
       setAppUpdateStatus("Checking app update...", "running");
       try {
         const res = await fetch("/api/app-update/check", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ selected_version: selected, channel: selectedChannel })
+          body: JSON.stringify({ channel: selectedChannel, ...(selected ? { selected_version: selected } : {}) })
         });
         const payload = await res.json();
         if (!res.ok || !payload.ok) throw new Error(payload.error || "failed");
@@ -1924,16 +1924,14 @@
     checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
     appUpdateVersion.addEventListener("change", () => {
-      appRequestedVersion = String(appUpdateVersion.value || "").trim();
-      triggerAppUpdateCheck(appRequestedVersion);
+      triggerAppUpdateCheck(String(appUpdateVersion.value || "").trim());
     });
     const appUpdateChannel = document.getElementById("app_update_channel");
     if (appUpdateChannel) {
       appUpdateChannel.addEventListener("change", () => {
         appVersionsBoundToChannel = "";
-        appRequestedVersion = "";
         appUpdateVersion.innerHTML = '<option value="" disabled>Loading versions…</option>';
-        triggerAppUpdateCheck("");
+        triggerAppUpdateCheck();
       });
     }
     updateBinariesBtn.addEventListener("click", () => triggerBinariesUpdate());

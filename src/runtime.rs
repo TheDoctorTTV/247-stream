@@ -142,6 +142,27 @@ impl App {
         }
         Ok(normalized)
     }
+    pub fn remembered_video(&self, source: &str) -> Option<String> {
+        self.config.lock().unwrap()["remembered_videos"]
+            .get(source)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+    pub fn remember_video(&self, source: &str, id: &str) -> Result<()> {
+        // Share the settings lock so a dashboard save cannot overwrite progress.
+        let mut cfg = self.config.lock().unwrap();
+        if cfg["remembered_videos"].get(source).and_then(Value::as_str) == Some(id) {
+            return Ok(());
+        }
+        let mut next = cfg.clone();
+        if !next["remembered_videos"].is_object() {
+            next["remembered_videos"] = json!({});
+        }
+        next["remembered_videos"][source] = json!(id);
+        config::save(&self.dir, &next)?;
+        *cfg = next;
+        Ok(())
+    }
     pub fn remember_update_selection(&self, channel: &str, version: &str) -> Result<()> {
         let mut cfg = self.config.lock().unwrap();
         let mut next = cfg.clone();

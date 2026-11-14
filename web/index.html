@@ -99,7 +99,7 @@
         <div class="stream-actions" aria-label="Stream controls">
           <button class="primary" id="startBtn">Start</button>
           <button id="restartBtn" disabled>Restart</button>
-          <button id="skipBtn" disabled>Skip</button>
+          <button id="skipBtn" hidden disabled>Skip</button>
           <button id="stopBtn" disabled>Stop</button>
         </div>
         <div class="stream-utilities">
@@ -151,16 +151,11 @@
         </div>
         <div class="settings-toggle-groups">
           <fieldset class="settings-toggle-group">
-            <legend>Playback</legend>
+            <legend>Playback &amp; preferences</legend>
             <div class="settings-toggle-grid">
               <label class="check"><input id="shuffle" type="checkbox">Shuffle playlist</label>
+              <label class="check"><input id="remember_current_video" type="checkbox" aria-describedby="remember_current_video_hint"><span>Remember current video<span id="remember_current_video_hint" class="toggle-hint">When streaming starts again, restart the last playing video from the beginning.</span></span></label>
               <label class="check"><input id="overlay_titles" type="checkbox">Overlay current title</label>
-            </div>
-          </fieldset>
-          <fieldset class="settings-toggle-group">
-            <legend>Preferences</legend>
-            <div class="settings-toggle-grid">
-              <label class="check"><input id="remember" type="checkbox">Remember playlist and key</label>
             </div>
           </fieldset>
           <fieldset class="settings-toggle-group">

@@ -1,9 +1,8 @@
 # Source recovery and persistent playout
 
-The November 10 failure was an early EOF/read error on YouTube's separate Opus
-input. Video continued, so waiting only for the source process to exit left the
-broadcast permanently without audio. Recovery now supervises media progress as
-well as process lifetime.
+Source recovery supervises audio/video progress as well as process lifetime.
+A source can stop producing audio while video and the FFmpeg process continue;
+the per-track watchdog detects that failure and prepares a replacement source.
 
 ## Input retries
 
@@ -29,7 +28,7 @@ socket. Their bytes cannot interleave. Each producer has at most 4 MiB of pendin
 media; no full video is downloaded or stored for recovery.
 
 Initial startup resolves the selected source and buffers actual audio/video
-before opening the output bridge. No recovery image or black/silent fallback
+before opening the output bridge. No recovery media or black/silent fallback
 starts the broadcast or local preview. If the initial source fails, the existing
 retry/playlist logic runs with the output closed until a source is ready.
 
@@ -54,6 +53,11 @@ stable across source/filler changes, and adds an output encoding stage in that
 mode. EB already had this stage. It can increase CPU/GPU use for non-EB output.
 
 ## Resume and timing
+
+Recovery within a running stream resumes near the last common A/V checkpoint.
+This is separate from **Remember current video**, which restarts a saved YouTube
+video from the beginning when a new stream starts. See
+[playback settings](../docs.md#remember-current-video).
 
 For YouTube clips with known finite duration, the controller refreshes signed
 URLs through yt-dlp and seeks both inputs to the last common audio/video content
@@ -126,10 +130,8 @@ Neither project is added as a separate service or dependency.
 Protocol behavior: [FFmpeg 8 HTTP reconnect options](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/protocols.texi)
 and [timestamp-discontinuity correction](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/ffmpeg.texi).
 
-No builds, tests, tool executions or live streams were run by the agent. Source
-formatting and manual review do not verify compilation, seek behavior, handoff
-quality or compatibility with the actual Twitch ingest. The user's beta build
-and runtime verification remain necessary.
+Seek accuracy, handoff quality and destination compatibility require runtime
+verification with the deployed FFmpeg build and streaming destination.
 
 ## Recovery and transition media
 
@@ -150,7 +152,7 @@ before uploading. The server commits a manifest pointing at an immutable file
 in the data directory; client filenames never choose filesystem paths. Active
 playout holds a private hard link, so replacing or removing an upload cannot
 invalidate the current decoder. The links are removed when their producer is
-released. Assets persist independently of the Remember setting, and are excluded
+released. Uploaded assets persist across application restarts and are excluded
 from source control and release packaging. Legacy `fallback-image.png` uploads
 continue to work until replaced or removed.
 
@@ -184,34 +186,5 @@ preview as well. Live relays have no between-item transitions. Explicitly disabl
 persistent YouTube output retains direct-output behavior and cannot insert these
 transitions.
 
-No builds, tests, media commands or live streams were run for these changes.
-Compilation, upload handling, timing and live ingest behavior remain for the
-user to verify.
-
 The [Debug tab](DEBUG_TESTING.md) provides a local preview of the selected source and explicit
 source-only fault injection for manual recovery verification without broadcasting.
-
-## November 11 transition-freeze investigation
-
-The user's initial local-test logs in `releases/logs/` showed a transition
-producer continuing to generate frames until handoff. The bridge then repeated
-417 frames at 60 fps. Disabling the ordinary bridge's second CFR synchronizer
-removed those generated repeats, but did not remove the underlying timestamp gap.
-The first attempt also combined incompatible `-r 60` and passthrough flags;
-removing the bridge's output `-r` corrected that startup failure.
-
-The subsequent handoff diagnostics established the timing mismatch: the
-23:03:42.644 source handoff had video/audio gaps of 6.950/7.376 seconds;
-the 23:04:09.641 recovery handoff had gaps of 6.967/7.376 seconds. The source
-command included buffer-mode `-max_delay 7000000` alongside `-muxdelay 0`, while
-transition/recovery used zero mux delay. FFmpeg's MPEG-TS muxer uses the effective
-`max_delay` for its PTS/DTS offset and PCR lead. PCR continuity therefore forced
-the incoming source's presentation times ahead of the previous producer.
-
-The source now selects `-max_delay 0` for private MPEG-TS, and transition/recovery
-set it explicitly to zero as well. Direct output retains the configured delay.
-Handoff-gap logging remains in place for the user's next run. These corrections
-have not been built or runtime-verified by the agent.
-
-Owning FFmpeg sources: [MPEG-TS timestamp and PCR delay](https://github.com/FFmpeg/FFmpeg/blob/n8.0/libavformat/mpegtsenc.c)
-and [video sync options](https://ffmpeg.org/ffmpeg.html#Advanced-options).

@@ -1,10 +1,16 @@
 # Application updater behavior
 
 The application compares its embedded Cargo package version to the selected
-GitHub release tag. Release and prerelease channels are filtered separately;
-Latest chooses the highest supported version in that channel. An explicit
-selection must exist in that channel. The channel and requested version are
-saved in config.json; an empty requested version follows Latest.
+GitHub release tag. Release and prerelease channels are filtered separately.
+Startup, recurring checks, the Check button and channel changes select the
+highest supported version number in that channel. The version menu lists concrete
+release numbers; choosing one checks that specific release. There is no separate
+Latest choice or saved follow-latest mode.
+
+The selected channel and concrete version from each successful check are saved
+in config.json. Saved versions record the last selection; startup and recurring
+checks discover the highest version again. Manual installation requires a concrete
+version from the menu and revalidates that release on the server.
 
 Before allowing automatic installation, the updater verifies that the running
 version has an exact matching published release tag, ignoring a leading `v` or
@@ -38,8 +44,9 @@ A successful check, including a startup, manual, or timed check, installs only a
 newer target when auto_app_updates is enabled. Auto install is disabled by default
 on a fresh install; when disabled, checks never install updates automatically.
 Reinstalling or downgrading always requires an
-explicit install request. The selected channel/version remains saved across the
-restart. Cargo executables run from a target directory allow manual installation
+explicit install request. The selected channel and last checked version remain
+saved across the restart; the startup check refreshes the highest available
+version. Cargo executables run from a target directory allow manual installation
 but never automatic installation, even if Auto install was previously enabled.
 Manual installation replaces the running executable and restarts the app.
 Tool updates (FFmpeg/yt-dlp) are
@@ -61,8 +68,8 @@ Check starts/results, compared versions, the selected channel, installation mode
 and operation failures are written through the normal application logger. They
 are included in logs/app.log when application file logging is enabled.
 
-This change has been formatted and manually reviewed only. No builds, runtime
-checks, or tests were run by the agent.
+App and tool downloads have no application-imposed speed cap. Downloads are still
+staged and checked for completeness before installation.
 
 ## FFmpeg provisioning
 
@@ -84,5 +91,4 @@ compatible previous version remains available.
 
 The provider documents glibc 2.28+ and Linux 4.18+ for these builds; see its
 [build requirements](https://github.com/FFmpeg-Builds/FFmpeg-Builds#targets-variants-and-addins).
-These runtime checks are code executed by the application, not tests run by the
-agent. No binaries were downloaded or executed during this change.
+These version and encoding probes run automatically during tool provisioning.

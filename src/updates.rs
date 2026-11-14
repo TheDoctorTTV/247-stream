@@ -96,8 +96,8 @@ fn installable(name: &str) -> bool {
         .iter()
         .any(|ext| name.to_lowercase().ends_with(ext))
 }
-pub fn release(channel: &str, selected: &str) -> Result<Value> {
-    if !selected.is_empty() && compare(selected, "2.0-pre-release-2") == Ordering::Less {
+pub fn release(channel: &str, selected: Option<&str>) -> Result<Value> {
+    if selected.is_some_and(|version| compare(version, "2.0-pre-release-2") == Ordering::Less) {
         bail!("Selected version is below the minimum supported in-app target");
     }
     // Check all published tags to determine automatic-install eligibility.
@@ -133,17 +133,15 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
         })
         .collect();
     releases.sort_by(|a, b| compare(&text(b, "tag_name", ""), &text(a, "tag_name", "")));
-    let latest = *releases
-        .first()
-        .context("No supported release found for this channel")?;
-    let chosen = if selected.is_empty() {
-        latest
-    } else {
-        releases
+    let chosen = match selected {
+        Some(version) => releases
             .iter()
             .copied()
-            .find(|r| compare(&text(r, "tag_name", ""), selected) == Ordering::Equal)
-            .context("Selected version was not found in this channel")?
+            .find(|r| compare(&text(r, "tag_name", ""), version) == Ordering::Equal)
+            .context("Selected version was not found in this channel")?,
+        None => *releases
+            .first()
+            .context("No supported release found for this channel")?,
     };
     let mut assets = chosen["assets"].as_array().cloned().unwrap_or_default();
     assets.sort_by_key(|a| {
@@ -162,7 +160,7 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
         .to_owned();
     let name = text(&asset, "name", "");
     Ok(
-        json!({"current_version":VERSION,"current_published":current_published,"updater_enabled":true,"disabled_reason":"","latest_version":version,"selected_version":version,"requested_version":selected,"latest_channel_version":text(latest,"tag_name","").trim_start_matches(['v','V']),"is_newer":compare(&version,VERSION)==Ordering::Greater,"should_install":compare(&version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
+        json!({"current_version":VERSION,"current_published":current_published,"updater_enabled":true,"disabled_reason":"","selected_version":version,"is_newer":compare(&version,VERSION)==Ordering::Greater,"should_install":compare(&version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
     )
 }
 pub fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
@@ -176,7 +174,6 @@ pub fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<(
         let mut done = 0;
         let mut file = File::create(&temp)?;
         let mut buffer = [0u8; 65536];
-        let started = Instant::now();
         let mut last = Instant::now() - Duration::from_secs(1);
         loop {
             let n = response.read(&mut buffer)?;
@@ -185,11 +182,6 @@ pub fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<(
             }
             file.write_all(&buffer[..n])?;
             done += n as u64;
-            // Keep the existing 50 MB/s download cap without busy-spinning.
-            let expected = Duration::from_secs_f64(done as f64 / (50.0 * 1024.0 * 1024.0));
-            if expected > started.elapsed() {
-                std::thread::sleep(expected.saturating_sub(started.elapsed()));
-            }
             if last.elapsed() >= Duration::from_millis(200) {
                 progress(done, total);
                 last = Instant::now();
@@ -496,13 +488,12 @@ pub fn empty_job() -> Value {
         "instance_id":instance_id(),"restart_expected":false,
         "last_result":null,"last_error":"","started_at":0.0,"finished_at":0.0,
         "progress_percent":0,"progress_message":"","downloaded_path":"",
-        "selected_version":"","selected_channel":"","force_reinstall":false,"mode":"manual"
+        "selected_version":"","selected_channel":"","mode":"manual"
     })
 }
 
 pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value) -> Value {
     let settings = app.settings();
-    let raw = app.raw_settings();
     let channel = text(
         payload,
         "channel",
@@ -514,14 +505,14 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
         "release"
     }
     .to_owned();
-    // Missing means retain the user's selection; an explicit empty string means latest.
-    let fallback = if channel == text(&settings, "app_update_channel", "release") {
-        text(&raw, "app_update_selected_version", "")
-    } else {
-        String::new()
-    };
-    let selected = text(payload, "selected_version", &fallback);
-    let force = install && boolean(payload, "force_reinstall", false);
+    // Checks discover the highest numbered release unless a version is requested.
+    // Installation always requires a concrete version from the version menu.
+    let selected = payload
+        .get("selected_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned);
     {
         let lock = if app_update {
             &app.app_job
@@ -557,18 +548,7 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
         job["started_at"] = json!(now());
         job["selected_channel"] = json!(channel);
         job["selected_version"] = json!(selected);
-        job["force_reinstall"] = json!(force);
         job["progress_message"] = json!("Checking versions...");
-    }
-    if app_update && (payload.get("selected_version").is_some() || payload.get("channel").is_some())
-    {
-        if let Err(e) = app.remember_update_selection(&channel, &selected) {
-            let mut job = app.app_job.lock().unwrap();
-            job["running"] = json!(false);
-            job["phase"] = json!("failed");
-            job["last_error"] = json!(format!("Save update selection: {e:#}"));
-            return job.clone();
-        }
     }
     let cloned = Arc::clone(app);
     std::thread::spawn(move || {
@@ -576,14 +556,17 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
             if app_update {
                 cloned.log(&format!(
                     "[INFO] App update check: current {VERSION}, channel {channel}, selection {}.",
-                    if selected.is_empty() {
-                        "latest"
-                    } else {
-                        &selected
-                    }
+                    selected.as_deref().unwrap_or("highest numbered release")
                 ));
                 cloned.progress(true, "Checking GitHub releases...", 5);
-                let mut info = release(&channel, &selected)?;
+                anyhow::ensure!(
+                    !install || selected.is_some(),
+                    "Choose a version before installing the app"
+                );
+                let mut info = release(&channel, selected.as_deref())?;
+                let resolved_version = text(&info, "selected_version", "");
+                cloned.remember_update_selection(&channel, &resolved_version)?;
+                cloned.app_job.lock().unwrap()["selected_version"] = json!(resolved_version);
                 let auto_install_supported = !cloned.development
                     && boolean(&info, "current_published", false);
                 info["auto_install_supported"] = json!(auto_install_supported);

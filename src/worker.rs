@@ -845,6 +845,19 @@ impl Worker {
         }
         args
     }
+    fn remember_playing_video(&self, media: &Media, skippable: bool) {
+        if !skippable
+            || self.cfg.local_preview
+            || !boolean(&self.cfg.settings, "remember_current_video", false)
+        {
+            return;
+        }
+        if let Some(id) = &media.id {
+            if let Err(error) = self.app.remember_video(&self.cfg.source, id) {
+                self.log(&format!("[WARN] Could not remember current video: {error:#}"));
+            }
+        }
+    }
     fn play(&mut self, media: &Media, persistent: bool, skippable: bool) -> Result<()> {
         let transport = if media.video.to_lowercase().contains(".m3u8") {
             "HLS"
@@ -892,6 +905,7 @@ impl Worker {
             }
             let args = self.ffmpeg_args(media, persistent, 0.0);
             let mut child = self.launch(&args, Stdio::null(), "source")?;
+            self.remember_playing_video(media, skippable);
             let status = self.wait(&mut child, None, skippable)?;
             if self.control.stopped() || (skippable && self.control.skipped()) {
                 return Ok(());
@@ -1077,6 +1091,14 @@ impl Worker {
             self.app.status("Preparing source…");
             self.log("[INFO] Waiting for selected-source audio/video before opening the output; startup fallback is disabled.");
         }
+        // Apply the saved starting point only once, never on later playlist loops.
+        let mut remembered_video = if !self.cfg.local_preview
+            && boolean(&self.cfg.settings, "remember_current_video", false)
+        {
+            self.app.remembered_video(&self.cfg.source)
+        } else {
+            None
+        };
         while !self.control.stopped() {
             let mut enhanced_output_failed = false;
             let result = (|| -> Result<()> {
@@ -1106,6 +1128,21 @@ impl Worker {
                 self.log(&format!("[INFO] Found {} videos in playlist", ids.len()));
                 if boolean(&self.cfg.settings, "shuffle", false) {
                     ids.shuffle(&mut rand::thread_rng());
+                }
+                if let Some(id) = remembered_video.take() {
+                    if let Some(index) = ids.iter().position(|candidate| candidate == &id) {
+                        if boolean(&self.cfg.settings, "shuffle", false) {
+                            ids.swap(0, index);
+                        } else {
+                            // Continue to the playlist end, then refresh and loop normally.
+                            ids.drain(..index);
+                        }
+                        self.log(&format!(
+                            "[INFO] Restarting remembered video {id} from the beginning."
+                        ));
+                    } else {
+                        self.log("[INFO] Remembered video is no longer in this source; starting normally.");
+                    }
                 }
                 let mut prefetched: Option<(String, Receiver<Result<Media>>)> = None;
                 let mut auth_skipped = 0;

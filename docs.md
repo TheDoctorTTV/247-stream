@@ -19,10 +19,25 @@ beside the packaged executable, or in the current directory when using
 | `buffer_mode` | `Low`, `Medium`, `High`, or `Ultra` |
 | `encoder_preference` | `auto`, `libx264`, `h264_nvenc`, `h264_qsv`, `h264_amf`, or `h264_vaapi` |
 | `overlay_titles`, `shuffle` | Title overlays and playlist shuffle |
-| `remember` | Remember source and stream key selections |
+| `remember_current_video` | Restart the last playing YouTube video from the beginning on the next stream start (default: off) |
 
 Recovery and transition media are uploaded through Settings. See
 [source recovery](docs/SOURCE_RECOVERY.md) for supported formats and behavior.
+
+### Remember current video
+
+Enable **Settings → Playback & preferences → Remember current video** to save the playing
+YouTube video per source in `config.json`. Stopping the stream or restarting the
+application then replays that video from the beginning. Playlist playback continues
+from that item; with shuffle enabled, the saved video plays first and the remaining
+items follow in shuffled order. The saved starting point is applied only at stream
+startup, not on every playlist loop. If the video is no longer listed, playback
+starts normally; unavailable videos follow the usual error/skip behavior.
+
+Playlist and stream key selections are always saved. Local Debug previews
+neither use nor overwrite the saved video. Twitch and HLS relays are unaffected.
+Disabling the option ignores saved videos and stops updating them; enabling it
+again reuses the last saved video for that source. No playback timestamp is saved.
 
 ### Dashboard and updates
 
@@ -32,7 +47,7 @@ Recovery and transition media are uploaded through Settings. See
 | `web_server_port` | Dashboard port; default `7788` |
 | `theme` | Theme identifier from the table below |
 | `app_update_channel` | `release` or `prerelease` |
-| `app_update_selected_version` | Selected version; empty follows the latest in the channel |
+| `app_update_selected_version` | Concrete version selected by the last successful check |
 | `app_update_check_minutes` | Check interval after startup: `0` (Never), `30`, `60`, `360`, `720`, `1440`, or `2880` |
 | `auto_app_updates` | Automatically install newer app versions; disabled by default |
 
@@ -44,7 +59,7 @@ off on a fresh install. App installs, reinstalls, and downgrades are blocked whi
 streaming or running a local preview. Automatic checks still report available
 updates; automatic installation waits for a later check while stopped. The old
 `check_updates_startup` preference maps to hourly recurring checks when enabled,
-or no recurring checks when disabled. Update downloads are capped at 50 Mbps.
+or no recurring checks when disabled. App and tool downloads have no application-imposed speed cap.
 
 Local Cargo builds and unpublished versions can check for updates and manually
 install a supported published release. Automatic installation is disabled for

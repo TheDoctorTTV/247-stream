@@ -691,6 +691,7 @@ impl Worker {
                 } else {
                     self.log(&format!("[INFO] Source A/V ready at content position {seek:.3}s; handing off within the existing output session."));
                 }
+                self.remember_playing_video(media, skippable);
                 self.app.status("Streaming");
                 active = true;
                 self.control
