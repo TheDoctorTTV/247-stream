@@ -77,8 +77,7 @@
       twitch: { name: "Twitch", rtmp_base: "rtmp://live.twitch.tv/app" },
       kick: { name: "Kick", rtmp_base: "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app" },
       facebook: { name: "Facebook Live", rtmp_base: "rtmps://live-api-s.facebook.com:443/rtmp/" },
-      tiktok: { name: "TikTok Live", rtmp_base: "rtmps://push-rtmp-global.tiktok.com/live/" },
-      trovo: { name: "Trovo", rtmp_base: "rtmp://livepush.trovo.live/live/" }
+      tiktok: { name: "TikTok Live", rtmp_base: "rtmps://push-rtmp-global.tiktok.com/live/" }
     };
     let streamUrlServicesState = [];
 
@@ -247,6 +246,37 @@
           : "Stream settings are locked. Stop the stream to edit them.";
       });
       syncEnhancedBroadcastingUI();
+      syncStreamFieldHints();
+    }
+
+    function streamSettingsLockHint(subject) {
+      if (!streamStateKnown) return "Waiting for stream status before editing " + subject + ".";
+      if (actionPending) return "Wait for the current stream action to finish before editing " + subject + ".";
+      if (streamActive) return "Stop the stream to edit " + subject + ".";
+      return "";
+    }
+
+    function syncStreamFieldHints() {
+      document.getElementById("bitrate_edit_hint").textContent = streamSettingsLockHint("the bitrate") ||
+        (document.getElementById("video_bitrate").disabled
+          ? "Disable Enhanced Broadcasting to edit the video bitrate."
+          : "Press Enter or leave the field to save. Range: 1500–25000 kbps, in steps of 500.");
+      sourceHint.textContent = streamSettingsLockHint("the source") || (!sourcesState.length
+        ? "Add source URLs in the Sources tab."
+        : sourcesState.length === 1
+          ? "Only one source is configured. It will be used automatically."
+          : "Choose which source to stream.");
+      streamKeyHint.textContent = streamSettingsLockHint("the stream key") || (!streamKeysState.length
+        ? "Add stream keys in the Stream Keys tab."
+        : streamKeysState.length === 1
+          ? "Only one stream key is configured. It will be used automatically."
+          : "Choose which stream key to use.");
+      if (streamPlatformHint && streamUrlPreset) {
+        const selected = String(streamUrlPreset.value || "").trim();
+        const saved = savedServiceForOption(selected);
+        streamPlatformHint.textContent = streamSettingsLockHint("the platform") ||
+          (saved ? String(saved.rtmp_base || "").trim() : presetUrlForKey(selected));
+      }
     }
 
     function syncEnhancedBroadcastingUI() {
@@ -267,7 +297,6 @@
       const active = twitch && enabled.checked;
       const videoBitrate = document.getElementById("video_bitrate");
       videoBitrate.disabled = locked || active;
-      videoBitrate.title = locked ? "Stop the stream to edit the bitrate." : active ? "Disable Enhanced Broadcasting to edit the video bitrate." : "";
       document.getElementById("twitchEnhancedOptions").hidden = !twitch;
       const tracksAuto = document.getElementById("twitch_enhanced_tracks_auto");
       const bitrateAuto = document.getElementById("twitch_enhanced_bitrate_auto");
@@ -279,15 +308,6 @@
 
     function syncStreamPlatformHint() {
       syncStreamSettingsLock();
-      if (!streamPlatformHint || !streamUrlPreset) return;
-      const selected = String(streamUrlPreset.value || "").trim();
-      const saved = savedServiceForOption(selected);
-      if (saved) {
-        streamPlatformHint.textContent = String(saved.rtmp_base || "").trim();
-        return;
-      }
-      const presetUrl = presetUrlForKey(selected);
-      streamPlatformHint.textContent = presetUrl || "";
     }
 
     function normalizeSources(value) {
@@ -546,7 +566,7 @@
         sourceSelect.appendChild(emptyOption);
         sourceSelect.value = "";
         sourceSelect.disabled = true;
-        sourceHint.textContent = "Add source URLs in the Sources tab.";
+        syncStreamFieldHints();
         return "";
       }
       safeEntries.forEach((entry) => {
@@ -560,9 +580,7 @@
       const wanted = urls.includes(preferred) ? preferred : urls[0];
       sourceSelect.value = wanted;
       sourceSelect.disabled = streamSettingsLocked() || safeEntries.length <= 1;
-      sourceHint.textContent = (safeEntries.length <= 1)
-        ? "Only one source is configured. It will be used automatically."
-        : "Choose which source to stream.";
+      syncStreamFieldHints();
       return wanted;
     }
 
@@ -667,7 +685,7 @@
         streamKeySelect.appendChild(emptyOption);
         streamKeySelect.value = "";
         streamKeySelect.disabled = true;
-        streamKeyHint.textContent = "Add stream keys in the Stream Keys tab.";
+        syncStreamFieldHints();
         return "";
       }
       safeEntries.forEach((entry) => {
@@ -680,9 +698,7 @@
       const wanted = keys.includes(preferred) ? preferred : keys[0];
       streamKeySelect.value = wanted;
       streamKeySelect.disabled = streamSettingsLocked() || safeEntries.length <= 1;
-      streamKeyHint.textContent = (safeEntries.length <= 1)
-        ? "Only one stream key is configured. It will be used automatically."
-        : "Choose which stream key to use.";
+      syncStreamFieldHints();
       return wanted;
     }
 
@@ -1343,12 +1359,10 @@
     const debugStart = document.getElementById("debug_test_start");
     const debugSkip = document.getElementById("debug_test_skip");
     const debugStop = document.getElementById("debug_test_stop");
-    const debugReconnect = document.getElementById("debug_preview_reconnect");
     const debugVideo = document.getElementById("debug_preview_video");
     const debugPreviewStatus = document.getElementById("debug_preview_status");
     const debugSourceStatus = document.getElementById("debug_source_status");
     const debugActionStatus = document.getElementById("debug_action_status");
-    const debugPreviewLink = document.getElementById("debug_preview_link");
     const debugFaultButtons = Array.from(document.querySelectorAll("[data-debug-fault]"));
     let debugInfo = {};
     let debugPending = false;
@@ -1358,11 +1372,13 @@
     let debugPlayerPreparing = "";
     let debugPlayerLibrary = null;
     let debugPlayerError = "";
+    let debugPlayerRetryAt = 0;
+    let debugPlayerProgressAt = 0;
+    let debugPlayerLastTime = 0;
     function syncDebugButtons() {
       debugStart.disabled = !debugToggle.checked || debugPending || !!debugInfo.running;
       debugSkip.disabled = !debugToggle.checked || debugPending || !debugInfo.running || !debugInfo.local_preview || !debugInfo.can_skip;
       debugStop.disabled = debugPending || !debugInfo.running || !debugInfo.local_preview;
-      debugReconnect.disabled = !debugInfo.running || !debugInfo.local_preview || !debugInfo.preview_ready;
       const ready = debugToggle.checked && debugInfo.running && debugInfo.source_ready && !debugInfo.fault_pending && !debugInfo.fault_active;
       for (const button of debugFaultButtons) button.disabled = debugPending || !ready;
     }
@@ -1370,6 +1386,8 @@
       debugPlayerKey = "";
       debugPlayerPreparing = "";
       debugPlayerError = "";
+      debugPlayerRetryAt = 0;
+      debugPlayerProgressAt = 0;
       if (debugPlayer) { debugPlayer.destroy(); debugPlayer = null; }
       debugVideo.pause();
       debugVideo.removeAttribute("src");
@@ -1377,6 +1395,17 @@
       debugVideo.hidden = true;
       debugEmpty.hidden = false;
     }
+    function reconnectDebugPlayer() {
+      if (!debugToggle.checked || !debugInfo.running || !debugInfo.local_preview || debugPlayerRetryAt) return;
+      clearDebugPlayer();
+      debugPlayerRetryAt = Date.now() + 2000;
+      debugPlayerError = "Preview interrupted. Reconnecting automatically…";
+      debugPreviewStatus.textContent = debugPlayerError;
+    }
+    debugVideo.addEventListener("error", () => {
+      if (debugPlayerKey && debugVideo.error) reconnectDebugPlayer();
+    });
+    debugVideo.addEventListener("playing", () => { debugPlayerProgressAt = Date.now(); });
     function loadPreviewPlayerLibrary() {
       if (window.Hls) return Promise.resolve();
       if (!debugPlayerLibrary) {
@@ -1391,7 +1420,7 @@
       return debugPlayerLibrary;
     }
     async function attachDebugPlayer(info) {
-      if (!debugToggle.checked) return;
+      if (!debugToggle.checked || Date.now() < debugPlayerRetryAt) return;
       const key = String(info.preview_id) + String(info.preview_url);
       if (debugPlayerKey === key || debugPlayerPreparing === key) return;
       clearDebugPlayer();
@@ -1404,22 +1433,31 @@
         } else {
           await loadPreviewPlayerLibrary();
           if (!debugToggle.checked || debugPlayerPreparing !== key || !debugInfo.running || !debugInfo.local_preview) return;
-          if (!window.Hls || !Hls.isSupported()) throw new Error("This browser cannot play the preview. Open the playlist in an HLS-compatible player.");
-          debugPlayer = new Hls({ enableWorker: false, backBufferLength: 10, liveSyncDurationCount: 2 });
-          debugPlayer.on(Hls.Events.ERROR, (_event, data) => {
-            if (data.fatal) {
-              debugPlayerError = "Preview player interrupted. Reconnect Player retries playback without restarting the test or output process.";
-              debugPreviewStatus.textContent = debugPlayerError;
-            }
+          if (!window.Hls || !Hls.isSupported()) {
+            debugPlayerKey = key;
+            debugPlayerError = "This browser cannot play the local preview. Use a browser with HLS playback support.";
+            debugPreviewStatus.textContent = debugPlayerError;
+            return;
+          }
+          const player = new Hls({ enableWorker: false, backBufferLength: 10, liveSyncDurationCount: 2 });
+          debugPlayer = player;
+          player.on(Hls.Events.ERROR, (_event, data) => {
+            if (data.fatal && debugPlayer === player) reconnectDebugPlayer();
           });
-          debugPlayer.loadSource(url);
-          debugPlayer.attachMedia(debugVideo);
+          player.loadSource(url);
+          if (debugPlayer !== player) return;
+          player.attachMedia(debugVideo);
         }
+        if (debugPlayerPreparing !== key) return;
         debugPlayerKey = key;
+        debugPlayerProgressAt = Date.now();
+        debugPlayerLastTime = debugVideo.currentTime;
         debugVideo.hidden = false;
         debugEmpty.hidden = true;
         debugVideo.play().catch(() => {});
-      } catch (error) { debugPlayerError = error.message; debugPreviewStatus.textContent = error.message; }
+      } catch (error) {
+        if (debugPlayerPreparing === key) reconnectDebugPlayer();
+      }
       finally { if (debugPlayerPreparing === key) debugPlayerPreparing = ""; }
     }
     async function loadDebugStatus() {
@@ -1433,7 +1471,6 @@
         debugInfo = payload.debug || {};
         syncDebugButtons();
         const local = debugInfo.running && debugInfo.local_preview;
-        debugPreviewLink.hidden = !local;
         debugPreviewStatus.textContent = local ? (debugInfo.preview_ready ? (debugPlayerError || "Local preview running. Unmute to hear the selected source.") : "Preparing local preview...") : "Local preview is stopped.";
         document.getElementById("debug_source_pid").textContent = debugInfo.source_pid || "—";
         document.getElementById("debug_output_pid").textContent = debugInfo.output_pid || "—";
@@ -1442,8 +1479,18 @@
         debugSourceStatus.textContent = debugInfo.running ? (debugInfo.source_ready ? "Source active" : "Preparing or recovering source…") : "No stream is running.";
         debugEmpty.querySelector("strong").textContent = local ? "Preparing preview…" : "Preview is stopped";
         debugEmpty.querySelector("span").textContent = local ? "Waiting for source media and preview segments." : "Select a source on the Stream tab, then start a local test.";
-        if (local && debugInfo.preview_ready) await attachDebugPlayer(debugInfo);
-        else if (!local && (debugPlayerKey || debugPlayerPreparing)) clearDebugPlayer();
+        if (local && debugInfo.preview_ready) {
+          // Recover a stalled preview while preserving an intentional pause.
+          if (debugPlayerKey && !debugVideo.hidden) {
+            if (debugVideo.paused || debugVideo.seeking || debugVideo.currentTime !== debugPlayerLastTime) {
+              debugPlayerProgressAt = Date.now();
+              debugPlayerLastTime = debugVideo.currentTime;
+            } else if (Date.now() - debugPlayerProgressAt > 15000) {
+              reconnectDebugPlayer();
+            }
+          }
+          await attachDebugPlayer(debugInfo);
+        } else if (!local && (debugPlayerKey || debugPlayerPreparing || debugPlayerRetryAt)) clearDebugPlayer();
       } catch (error) { debugActionStatus.textContent = error.message; }
       finally { debugLoading = false; }
     }
@@ -1935,7 +1982,6 @@
     debugStart.addEventListener("click", () => debugAction("/api/debug/test-stream/start", { source: String(sourceSelect.value || "").trim() }));
     debugSkip.addEventListener("click", () => debugAction("/api/debug/test-stream/skip", { source_pid: debugInfo.source_pid }));
     debugStop.addEventListener("click", () => debugAction("/api/debug/test-stream/stop"));
-    debugReconnect.addEventListener("click", () => { clearDebugPlayer(); if (debugInfo.running && debugInfo.local_preview && debugInfo.preview_ready) attachDebugPlayer(debugInfo); });
     for (const button of debugFaultButtons) {
       button.addEventListener("click", () => debugAction("/api/debug/failure", { kind: button.dataset.debugFault, source_pid: debugInfo.source_pid }));
     }
@@ -2029,7 +2075,6 @@
           renderedSelectState = state;
           const selected = select.selectedOptions[0];
           text.textContent = selected ? selected.textContent : "Select…";
-          trigger.title = selected ? selected.textContent : "";
           trigger.disabled = select.disabled || !select.options.length;
           menuItems.replaceChildren();
           for (const [index, option] of Array.from(select.options).entries()) {
@@ -2044,7 +2089,10 @@
             item.textContent = option.textContent;
             item.addEventListener("pointerdown", event => event.preventDefault());
             item.addEventListener("click", () => {
-              if (select.disabled || option.disabled || option.parentElement.disabled) return;
+              // Autosave can replace native options without changing the rendered
+              // menu state. Resolve the current option instead of a detached one.
+              const currentOption = select.options[index];
+              if (select.disabled || !currentOption || currentOption.hidden || currentOption.disabled || currentOption.parentElement.disabled) return;
               select.selectedIndex = index;
               select.dispatchEvent(new Event("input", { bubbles: true }));
               select.dispatchEvent(new Event("change", { bubbles: true }));

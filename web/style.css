@@ -58,7 +58,7 @@ select { padding-right: 28px; text-overflow: ellipsis; cursor: pointer; }
 option { background: var(--surface); color: var(--text); }
 input:hover, select:hover { background-color: var(--accent-hover); }
 input:disabled { opacity: .5; cursor: not-allowed; }
-.field-hint { position: absolute; top: 100%; left: 8px; right: 0; z-index: 1; padding: 6px 8px; background: var(--surface); border-radius: 99px; font-size: 10px; overflow-wrap: anywhere; opacity: 0; pointer-events: none; transition: opacity 150ms ease; }
+.field-hint { position: absolute; top: 100%; left: 8px; right: 0; z-index: 1; padding: 6px 8px; background: var(--surface); border-radius: 8px; font-size: 10px; overflow-wrap: anywhere; opacity: 0; pointer-events: none; transition: opacity 150ms ease; }
 .field:hover > .field-hint, .field:focus-within > .field-hint { opacity: 1; }
 .field-hint:empty { display: none; }
 /* Keep useful setup hints without displacing the prototype's form rows. */
@@ -200,7 +200,6 @@ button.tool-secondary:hover:enabled { background: var(--surface); border-color: 
 .media-empty span { max-width: 38ch; font-size: 12px; line-height: 1.6; }
 .debug-preview-video, .fallback-image-preview { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
 .debug-preview-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px 20px; flex-wrap: wrap; margin: 18px 0 14px; }
-.debug-player-actions a { font-size: 12px; text-underline-offset: 4px; }
 .debug-workspace > .statusline, .recovery-controls .statusline { overflow-wrap: anywhere; }
 .debug-failures { margin-top: 36px; padding-top: 30px; border-top: 1px solid var(--border); }
 .debug-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 0 0 12px; padding: 18px 20px; border-radius: 99px; background: var(--surface); }

@@ -163,7 +163,7 @@
             <div class="settings-toggle-grid">
               <label class="check"><input id="log_to_file" type="checkbox">Save app log</label>
               <label class="check"><input id="ffmpeg_log_to_file" type="checkbox">Save FFmpeg log</label>
-              <label class="check settings-debug-toggle"><input id="debug_logging" type="checkbox" aria-describedby="debug_logging_hint"><span>Debug logging<span id="debug_logging_hint" class="toggle-hint">Show the Debug tab and include extra diagnostics.</span></span></label>
+              <label class="check settings-debug-toggle"><input id="debug_logging" type="checkbox">Debug</label>
             </div>
           </fieldset>
         </div>
@@ -310,8 +310,8 @@
     <div class="tab-panel" id="tab-debug" hidden>
       <section class="card debug-workspace" aria-labelledby="debug_heading">
         <div class="tool-heading">
-          <div class="tool-title"><h2 id="debug_heading">Local preview</h2><span class="tool-badge">Local only</span></div>
-          <p>Test the selected source and its recovery behavior without publishing to a streaming platform.</p>
+          <div class="tool-title"><h2 id="debug_heading">Debugging</h2><span class="tool-badge">Local only</span></div>
+          <p>Use Debug for local testing without publishing to a streaming platform, and for extra diagnostic detail in the logs.</p>
         </div>
         <div class="media-frame debug-preview-frame">
           <div id="debug_preview_empty" class="media-empty"><strong>Preview is stopped</strong><span>Select a source on the Stream tab, then start a local test.</span></div>
@@ -322,10 +322,6 @@
             <button id="debug_test_start" class="primary" type="button">Start local test</button>
             <button id="debug_test_skip" class="tool-secondary" type="button" title="End the current playlist item and play the transition" disabled>Skip to transition</button>
             <button id="debug_test_stop" class="tool-secondary" type="button" disabled>Stop test</button>
-          </div>
-          <div class="tool-actions debug-player-actions">
-            <button id="debug_preview_reconnect" class="tool-secondary" type="button" disabled>Reconnect player</button>
-            <a id="debug_preview_link" href="/api/debug/preview/index.m3u8" target="_blank" rel="noopener" hidden>Open playlist ↗</a>
           </div>
         </div>
         <div id="debug_preview_status" class="statusline" role="status" aria-live="polite">Local preview is stopped.</div>
