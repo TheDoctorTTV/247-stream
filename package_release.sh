@@ -4,7 +4,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RELEASE_DIR="${ROOT_DIR}/releases"
 ARCHIVE_PATH="${ROOT_DIR}/stream247-linux-x86_64.tar.gz"
 if [[ ! -x "${RELEASE_DIR}/stream247-server" ]]; then
-  echo "ERROR: Missing executable releases/stream247-server. Run ./build_linux.sh first." >&2
+  echo "ERROR: Missing executable releases/stream247-server. Run ./build.sh first." >&2
   exit 1
 fi
 # Generate installation files alongside the compiled executable.

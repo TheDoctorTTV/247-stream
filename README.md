@@ -34,8 +34,8 @@ Requires stable Rust/Cargo, a linker, `pkg-config`, and liblzma development head
 On Debian: `build-essential pkg-config liblzma-dev`.
 
 ```bash
-./build_linux.sh
-./package_linux_release.sh
+./build.sh
+./package_release.sh
 ```
 
 Creates `releases/stream247-server` and packages it as
