@@ -12,7 +12,6 @@
     const settingsStatus = document.getElementById("settingsStatus");
     const checkAppUpdateBtn = document.getElementById("checkAppUpdateBtn");
     const downloadAppUpdateBtn = document.getElementById("downloadAppUpdateBtn");
-    const reinstallAppBtn = document.getElementById("reinstallAppBtn");
     const appUpdateStatus = document.getElementById("appUpdateStatus");
     const appUpdateProgressBar = document.getElementById("appUpdateProgressBar");
     const appUpdateProgressText = document.getElementById("appUpdateProgressText");
@@ -1303,88 +1302,6 @@
     const loadRecoveryMedia = setupMediaUpload("fallback_image", "/api/fallback-image", "Recovery media", "Recovery uses a black screen.");
     const loadTransitionMedia = setupMediaUpload("transition_media", "/api/transition-media", "Transition media", "Track changes use the recovery fallback.");
 
-    const youtubeBrowserConnect = document.getElementById("youtube_browser_connect");
-    const youtubeBrowserDisconnect = document.getElementById("youtube_browser_disconnect");
-    const youtubeBrowserStatus = document.getElementById("youtube_browser_status");
-    const youtubeBrowserPairing = document.getElementById("youtube_browser_pairing");
-    const youtubeBrowserCode = document.getElementById("youtube_browser_code");
-    let youtubeBrowserBusy = false;
-    let youtubeBrowserLoading = false;
-    let youtubeBrowserConnected = false;
-    let youtubePairingExpires = 0;
-    function renderYoutubeBrowser(browser) {
-      youtubeBrowserConnected = !!browser.connected;
-      youtubeBrowserConnect.hidden = youtubeBrowserConnected;
-      youtubeBrowserConnect.disabled = youtubeBrowserBusy;
-      youtubeBrowserDisconnect.disabled = youtubeBrowserBusy || !youtubeBrowserConnected;
-      if (youtubeBrowserConnected || Date.now() >= youtubePairingExpires * 1000) {
-        youtubeBrowserPairing.hidden = true;
-        youtubeBrowserCode.value = "";
-      }
-      let text = youtubeBrowserPairing.hidden ? "No browser connected" : "Waiting for browser pairing…";
-      if (youtubeBrowserConnected) {
-        text = (browser.device || "Browser") + " connected · Auto sync " + (browser.auto_sync ? "on" : "off");
-        text += browser.last_sync ? " · Last sync " + new Date(browser.last_sync * 1000).toLocaleString() : " · Not synced yet";
-      }
-      youtubeBrowserStatus.textContent = text;
-      youtubeBrowserStatus.className = "statusline";
-    }
-    async function loadYoutubeBrowser() {
-      if (youtubeBrowserBusy || youtubeBrowserLoading) return;
-      youtubeBrowserLoading = true;
-      try {
-        const response = await fetch("/api/youtube-browser/info", { cache: "no-store" });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error();
-        if (!youtubeBrowserBusy) renderYoutubeBrowser(data.browser || {});
-      } catch (_) {
-        youtubeBrowserStatus.textContent = "Could not load browser status.";
-        youtubeBrowserStatus.className = "statusline err";
-      } finally { youtubeBrowserLoading = false; }
-    }
-    async function youtubeBrowserAction(action) {
-      if (youtubeBrowserBusy) return;
-      if (action === "pairing" && location.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) {
-        youtubeBrowserStatus.textContent = "Open Stream247 through HTTPS to pair a browser on another device.";
-        youtubeBrowserStatus.className = "statusline err";
-        return;
-      }
-      youtubeBrowserBusy = true;
-      youtubeBrowserConnect.disabled = true;
-      youtubeBrowserDisconnect.disabled = true;
-      try {
-        const response = await fetch("/api/youtube-browser/" + action, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.error || "Could not update browser connection.");
-        if (data.pairing) {
-          youtubePairingExpires = data.pairing.expires_at;
-          youtubeBrowserCode.value = data.pairing.code;
-          document.getElementById("youtube_browser_address").textContent = location.origin;
-          youtubeBrowserPairing.hidden = false;
-          youtubeBrowserStatus.textContent = "Enter this code in the extension to connect.";
-          youtubeBrowserStatus.className = "statusline";
-        } else {
-          youtubePairingExpires = 0;
-          youtubeBrowserPairing.hidden = true;
-          youtubeBrowserCode.value = "";
-          renderYoutubeBrowser(data.browser || {});
-        }
-      } catch (error) {
-        youtubeBrowserStatus.textContent = error.message;
-        youtubeBrowserStatus.className = "statusline err";
-      } finally {
-        youtubeBrowserBusy = false;
-        youtubeBrowserConnect.disabled = false;
-        youtubeBrowserDisconnect.disabled = !youtubeBrowserConnected;
-      }
-    }
-    youtubeBrowserConnect.addEventListener("click", () => youtubeBrowserAction("pairing"));
-    youtubeBrowserDisconnect.addEventListener("click", () => youtubeBrowserAction("disconnect"));
-    document.getElementById("youtube_browser_copy").addEventListener("click", async () => {
-      try { await navigator.clipboard.writeText(youtubeBrowserCode.value); }
-      catch (_) { youtubeBrowserCode.focus(); youtubeBrowserCode.select(); }
-    });
-
     const debugTab = document.getElementById("tab-debug");
     const debugTabButton = document.querySelector('[data-tab="tab-debug"]');
     const debugToggle = document.getElementById("debug_logging");
@@ -1701,15 +1618,13 @@
       const locked = streamSettingsLocked();
       const reason = locked ? (!streamStateKnown ? "Waiting for stream status" : "Stop the stream before installing app versions")
         : String(result.disabled_reason || "Check the selected GitHub release first.");
+      const autoInstall = document.getElementById("auto_app_updates");
+      autoInstall.disabled = result.auto_install_supported === false;
+      autoInstall.title = String(result.auto_install_disabled_reason || "Automatically install newer app versions");
       downloadAppUpdateBtn.disabled = locked || !!info.running || !supported;
       downloadAppUpdateBtn.textContent = comparison === 1 ? "Downgrade" : comparison === 0 ? "Reinstall" : "Install";
       downloadAppUpdateBtn.title = locked || !enabled ? reason : !supported ?
         "Selected release has no self-installable asset" : "Install the selected version and restart";
-      if (reinstallAppBtn) {
-        reinstallAppBtn.disabled = locked || !!info.running || comparison !== 0 || !supported;
-        reinstallAppBtn.title = locked || !enabled ? reason : comparison === 0 && supported ?
-          "Reinstall the currently installed version" : "Select the installed version to reinstall it";
-      }
     }
 
     async function loadAppUpdateStatus() {
@@ -2008,9 +1923,6 @@
     });
     checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
-    if (reinstallAppBtn) {
-      reinstallAppBtn.addEventListener("click", () => triggerAppUpdateDownload(true));
-    }
     appUpdateVersion.addEventListener("change", () => {
       appRequestedVersion = String(appUpdateVersion.value || "").trim();
       triggerAppUpdateCheck(appRequestedVersion);
@@ -2278,10 +2190,6 @@
     loadSettings();
     loadRecoveryMedia();
     loadTransitionMedia();
-    loadYoutubeBrowser();
-    setInterval(() => {
-      if (document.getElementById("tab-settings").classList.contains("active")) loadYoutubeBrowser();
-    }, 4000);
     loadDebugStatus();
     loadBinariesStatus();
     refreshState(true);

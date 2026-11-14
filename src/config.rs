@@ -32,14 +32,7 @@ pub fn integer(v: &Value, key: &str, fallback: i64) -> i64 {
 }
 fn choice(v: &Value, key: &str, allowed: &[&str], default: &str) -> Value {
     let mut s = text(v, key, default);
-    if [
-        "encoder_preference",
-        "yt_auth_browser",
-        "app_update_channel",
-        "theme",
-    ]
-    .contains(&key)
-    {
+    if ["encoder_preference", "app_update_channel", "theme"].contains(&key) {
         s = s.to_lowercase();
     }
     json!(if allowed.contains(&s.as_str()) {
@@ -172,8 +165,7 @@ pub fn normalize(v: &Value) -> Value {
         "playlist_url":source,"sources":sources,"source_names":names(v,"sources","source_names",&sources,&["url","source","playlist_url"]),
         "stream_key":key,"stream_keys":keys,"stream_key_names":names(v,"stream_keys","stream_key_names",&keys,&["stream_key","key","value"]),
         "rtmp_base":text(v,"rtmp_base","rtmp://a.rtmp.youtube.com/live2"),"stream_url_services":services,
-        "video_bitrate":format!("{}k",bitrate(&v["video_bitrate"])),"update_download_cap_mbps":50,
-        "yt_auth_profile":text(v,"yt_auth_profile","")
+        "video_bitrate":format!("{}k",bitrate(&v["video_bitrate"])),"update_download_cap_mbps":50
     });
     for (k, allowed, default) in [
         (
@@ -199,20 +191,15 @@ pub fn normalize(v: &Value) -> Value {
             "auto",
         ),
         (
-            "yt_auth_browser",
-            &[
-                "auto", "firefox", "chrome", "edge", "chromium", "brave", "vivaldi", "opera",
-            ][..],
-            "auto",
-        ),
-        (
             "app_update_channel",
             &["release", "prerelease"][..],
             "release",
         ),
         (
             "theme",
-            &["blue", "purple", "red", "mono", "emerald", "teal", "amber", "rose", "orange"][..],
+            &[
+                "blue", "purple", "red", "mono", "emerald", "teal", "amber", "rose", "orange",
+            ][..],
             "purple",
         ),
     ] {
@@ -226,7 +213,7 @@ pub fn normalize(v: &Value) -> Value {
     } else {
         bandwidth.clamp(1000, 100000)
     });
-    // Migrate the old checkbox to timed checks without an immediate startup check.
+    // Migrate the old checkbox to recurring checks; startup always checks once.
     let default_interval = if boolean(v, "check_updates_startup", true) {
         60
     } else {
@@ -252,7 +239,6 @@ pub fn normalize(v: &Value) -> Value {
         ("remember", true),
         ("check_updates_startup", true),
         ("auto_app_updates", false),
-        ("yt_auth_enabled", false),
         ("youtube_persistent_output", true),
     ] {
         out[k] = json!(boolean(v, k, default));
@@ -320,8 +306,6 @@ pub struct StreamConfig {
 impl StreamConfig {
     pub fn new(raw: &Value, dir: &Path) -> Self {
         let mut v = normalize(raw);
-        v["yt_auth_allow_unauth_fallback"] =
-            json!(boolean(raw, "yt_auth_allow_unauth_fallback", true));
         let mode = text(&v, "buffer_mode", "Medium");
         let mult = match mode.as_str() {
             "Low" => 2,

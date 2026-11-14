@@ -33,14 +33,22 @@ Recovery and transition media are uploaded through Settings. See
 | `theme` | Theme identifier from the table below |
 | `app_update_channel` | `release` or `prerelease` |
 | `app_update_selected_version` | Selected version; empty follows the latest in the channel |
-| `app_update_check_minutes` | Automatic check interval: `0` (Never), `30`, `60`, `360`, `720`, `1440`, or `2880` |
-| `auto_app_updates` | Automatically install newer app versions |
+| `app_update_check_minutes` | Check interval after startup: `0` (Never), `30`, `60`, `360`, `720`, `1440`, or `2880` |
+| `auto_app_updates` | Automatically install newer app versions; disabled by default |
 
-Automatic checks run on an app timer. Refreshing the dashboard does not start a
-check. App installs, reinstalls, and downgrades are blocked while streaming or
-running a local preview. Automatic checks still report available updates; automatic
-installation waits for a later check while stopped. The old `check_updates_startup` preference maps to hourly checks when
-enabled, or Never when disabled. Update downloads are capped at 50 Mbps.
+The app checks for updates once on every startup, including when **Checks after
+startup** is set to **Never**. Later checks follow the selected interval; Never
+disables recurring checks. Refreshing the dashboard does not start a check.
+Checks only install a newer version when **Auto install** is enabled, which is
+off on a fresh install. App installs, reinstalls, and downgrades are blocked while
+streaming or running a local preview. Automatic checks still report available
+updates; automatic installation waits for a later check while stopped. The old
+`check_updates_startup` preference maps to hourly recurring checks when enabled,
+or no recurring checks when disabled. Update downloads are capped at 50 Mbps.
+
+Local Cargo builds and unpublished versions can check for updates and manually
+install a supported published release. Automatic installation is disabled for
+these builds, even if Auto install was previously enabled.
 
 | Theme | Identifier |
 | --- | --- |
@@ -54,32 +62,16 @@ enabled, or Never when disabled. Update downloads are capped at 50 Mbps.
 | Rose Quartz | `rose` |
 | Ruby | `red` |
 
-### YouTube authentication
+### YouTube playback
 
-Choose **Connect browser** in **Settings → YouTube authentication**, then enter
-the displayed address and pairing code in the **Stream247 YouTube Connect**
-Chrome extension. Click its toolbar icon to open the connection page in a new tab.
-Sign in to YouTube in that browser and choose **Pair and sync**. Codes
-expire after ten minutes and can be used once; one browser is paired at a time.
-The dashboard provides the extension download. See the
-[extension setup guide](browser-extension/README.md) for installation and HTTPS setup.
+YouTube playback uses yt-dlp without authentication. When YouTube reports that a
+video requires sign-in or account access (such as private, age-restricted, or
+members-only content), Stream247 logs the reason, skips that video, and moves to
+the next playlist item without retrying other formats. If every item requires
+authentication, it waits 30 seconds before refreshing the source.
 
-**Automatic sync is off by default.** Enable it in the extension to send changed
-YouTube cookies while the browser is running. **Sync now** is always available.
-Automatic sync retries connection failures and clears saved cookies after browser
-sign-out. **Disconnect** revokes the pairing and removes saved server cookies.
-Existing lookups and already resolved media may finish using the old credentials.
-
-Cookies may improve access to restricted or private content available to the
-signed-in account. Playback is not guaranteed: expired sessions, YouTube checks,
-server restrictions, and additional token requirements can still prevent it.
-The extension does not provide PO tokens or bypass account permissions.
-
-Cookies grant account access and are stored unencrypted with owner-only permissions
-in `youtube-auth/` alongside the server pairing credential. Use a trusted server,
-restrict dashboard access, and use HTTPS for connections from another device.
-Contents are never served or logged; sensitive values are redacted. Revoke affected
-account sessions if exposed—disconnecting alone does not revoke them.
+Browser pairing and cookie uploads are no longer supported. Previously saved
+files in `youtube-auth/` are unused and can be deleted from the server data directory.
 
 ### Additional options
 

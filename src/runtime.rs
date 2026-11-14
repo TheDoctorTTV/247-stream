@@ -33,8 +33,6 @@ pub struct App {
     lifecycle_lock: Mutex<()>,
     pub provision_lock: Mutex<()>,
     pub fallback_image_lock: Mutex<()>,
-    pub youtube_cookie_lock: Mutex<()>,
-    pub youtube_browser: Mutex<crate::youtube_browser::BrowserState>,
     pub app_job: Mutex<Value>,
     pub binary_job: Mutex<Value>,
     pub shutdown: AtomicBool,
@@ -57,15 +55,11 @@ impl App {
             lifecycle_lock: Mutex::new(()),
             provision_lock: Mutex::new(()),
             fallback_image_lock: Mutex::new(()),
-            youtube_cookie_lock: Mutex::new(()),
-            youtube_browser: Mutex::new(crate::youtube_browser::BrowserState::default()),
             app_job: Mutex::new(updates::empty_job()),
             binary_job: Mutex::new(updates::empty_job()),
             shutdown: AtomicBool::new(false),
             restart: AtomicBool::new(false),
         });
-        crate::youtube_cookie::initialize(&app)?;
-        crate::youtube_browser::initialize(&app)?;
         Ok(app)
     }
     pub fn settings(&self) -> Value {
@@ -426,10 +420,6 @@ impl App {
         anyhow::ensure!(
             !worker_active && !self.is_streaming(),
             "Stop the stream before installing, reinstalling, or downgrading the app"
-        );
-        anyhow::ensure!(
-            !self.development,
-            "Self-install is disabled for Cargo development binaries"
         );
         let current = std::env::current_exe()?.canonicalize()?;
         // Rename replaces the executable inode without modifying a running image.

@@ -213,7 +213,7 @@ button.tool-secondary:hover:enabled { background: var(--surface); border-color: 
 .debug-fault-row span { font-size: 12px; color: var(--muted); line-height: 1.6; }
 .debug-fault-row button { flex: 0 0 148px; }
 .debug-action-status:not(:empty) { margin-top: 16px; padding: 12px 14px; background: var(--surface); border-radius: 99px; overflow-wrap: anywhere; }
-.recovery-settings, .youtube-auth-settings { border-top: 1px solid var(--border); }
+.recovery-settings { border-top: 1px solid var(--border); }
 .recovery-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 28px; }
 .recovery-controls { display: grid; gap: 16px; }
 .recovery-requirements { display: grid; gap: 5px; }
@@ -279,13 +279,6 @@ button.number-step:disabled { opacity: .3; }
 .creator-link { display: inline-flex; align-items: center; gap: 7px; }
 .creator .creator-link img { width: 18px; height: 18px; border-radius: 0; filter: brightness(0) invert(1); }
 @media (max-width: 600px) { .playback-items { grid-template-columns: 1fr; gap: 18px; } }
-
-.browser-pairing { max-width: 620px; margin-top: 18px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
-.browser-pairing label { display: block; margin-bottom: 8px; color: var(--muted); }
-.browser-pairing .row { display: flex; gap: 10px; }
-#youtube_browser_code { font-family: monospace; }
-.browser-install-guide { margin-top: 18px; }
-.browser-install-guide summary { cursor: pointer; color: var(--muted); }
 
 .installed-tool-versions { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 0 0 16px; }
 .installed-tool-versions > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; }

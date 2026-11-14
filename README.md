@@ -8,7 +8,6 @@ RTMP/RTMPS destinations.
 - Choose resolution, frame rate, bitrate, and CPU or hardware encoding.
 - Enable title overlays, playlist shuffle, and custom transition or recovery media.
 - Manage app and binary updates, with optional automatic checks and installation.
-- Connect a browser for optional YouTube cookie syncing.
 - View live logs and preview sources in the Debug tab.
 
 ## Quick setup (Linux x86_64)

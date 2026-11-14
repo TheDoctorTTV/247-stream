@@ -850,6 +850,9 @@ impl Worker {
                             if self.control.stopped() || (skippable && self.control.skipped()) {
                                 return Ok(());
                             }
+                            if e.is::<super::YoutubeAuthenticationRequired>() {
+                                return Err(e);
+                            }
                             self.log(&format!("[WARN] Refreshing source URLs failed: {e:#}; retrying within the recovery limit."));
                             self.slate(2.0)?;
                         }

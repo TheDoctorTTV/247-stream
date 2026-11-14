@@ -53,153 +53,69 @@ fn input_type(url: &str) -> &'static str {
 struct Resolver {
     app: Arc<App>,
     binary: PathBuf,
-    settings: Value,
     control: Arc<Control>,
-    working_cookies: Arc<Mutex<Option<Vec<String>>>>,
 }
-impl Resolver {
-    fn cookie_sets(&self) -> Vec<Vec<String>> {
-        if !boolean(&self.settings, "yt_auth_enabled", false) {
-            return vec![vec![]];
-        }
-        let browser = text(&self.settings, "yt_auth_browser", "auto");
-        let browsers: Vec<&str> = if browser == "auto" {
-            vec![
-                "firefox", "chrome", "chromium", "brave", "edge", "vivaldi", "opera",
-            ]
-        } else {
-            vec![&browser]
-        };
-        let home = std::env::var("HOME").unwrap_or_default();
-        let custom = text(&self.settings, "yt_auth_profile", "").replacen('~', &home, 1);
-        let mut sets = Vec::new();
-        if let Some(working) = self.working_cookies.lock().unwrap().clone() {
-            sets.push(working);
-        }
-        for b in browsers {
-            let mut roots = Vec::new();
-            if !custom.is_empty() {
-                roots.push(custom.clone());
-            }
-            let candidates = match b {
-                "firefox" => vec![
-                    format!("{home}/.var/app/org.mozilla.firefox/.mozilla/firefox"),
-                    format!("{home}/snap/firefox/common/.mozilla/firefox"),
-                ],
-                "chrome" => vec![format!(
-                    "{home}/.var/app/com.google.Chrome/config/google-chrome"
-                )],
-                "chromium" => vec![
-                    format!("{home}/.var/app/org.chromium.Chromium/config/chromium"),
-                    format!("{home}/snap/chromium/common/chromium"),
-                ],
-                "brave" => vec![format!(
-                    "{home}/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser"
-                )],
-                "edge" => vec![format!(
-                    "{home}/.var/app/com.microsoft.Edge/config/microsoft-edge"
-                )],
-                "vivaldi" => vec![format!(
-                    "{home}/.var/app/com.vivaldi.Vivaldi/config/vivaldi"
-                )],
-                "opera" => vec![format!("{home}/.var/app/com.opera.Opera/config/opera")],
-                _ => vec![],
-            };
-            roots.extend(candidates.into_iter().filter(|p| Path::new(p).exists()));
-            let suffixes = if b == "firefox" {
-                vec![""]
-            } else {
-                vec!["", "+basictext", "+gnomekeyring"]
-            };
-            for suffix in suffixes {
-                for spec in std::iter::once(format!("{b}{suffix}"))
-                    .chain(roots.iter().map(|p| format!("{b}{suffix}:{p}")))
-                {
-                    let args = process::args(&["--cookies-from-browser", &spec]);
-                    if !sets.contains(&args) {
-                        sets.push(args);
-                    }
-                }
-            }
-        }
-        if boolean(&self.settings, "yt_auth_allow_unauth_fallback", true) {
-            sets.push(vec![]);
-        }
-        sets
+#[derive(Debug)]
+struct YoutubeAuthenticationRequired;
+impl std::fmt::Display for YoutubeAuthenticationRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("YouTube video requires sign-in or account access")
     }
+}
+impl std::error::Error for YoutubeAuthenticationRequired {}
+
+impl Resolver {
     fn run(&self, args: &[&str]) -> Result<String> {
+        if self.control.stopped() {
+            bail!("Stopped");
+        }
+        let (status, out, err) = process::capture(
+            &self.binary,
+            &process::args(args),
+            &self.app.dir,
+            Duration::from_secs(120),
+            Some(&self.control),
+        )?;
+        if status.success() {
+            return Ok(out);
+        }
         let youtube = args.iter().any(|arg| {
-            reqwest::Url::parse(arg)
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_owned))
-                .is_some_and(|host| {
+            reqwest::Url::parse(arg).ok().is_some_and(|url| {
+                url.host_str().is_some_and(|host| {
                     host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be"
                 })
+            })
         });
-        let uploaded = if youtube {
-            crate::youtube_cookie::snapshot(&self.app)?
-        } else {
-            None
-        };
-        let cookie_sets = if let Some(file) = &uploaded {
-            vec![vec![
-                "--cookies".to_owned(),
-                file.0.to_string_lossy().into_owned(),
-            ]]
-        } else {
-            self.cookie_sets()
-        };
-        let mut last = String::new();
-        for cookies in cookie_sets {
-            if self.control.stopped() {
-                bail!("Stopped");
-            }
-            let mut cmd = cookies.clone();
-            cmd.extend(process::args(args));
-            let (status, out, err) = process::capture(
-                &self.binary,
-                &cmd,
-                &self.app.dir,
-                Duration::from_secs(120),
-                Some(&self.control),
-            )?;
-            if status.success() {
-                if uploaded.is_none() {
-                    *self.working_cookies.lock().unwrap() = Some(cookies);
-                }
-                return Ok(out);
-            }
-            if uploaded.is_some() {
-                // Cookie jars may gain new credentials inside yt-dlp. Never echo
-                // authenticated subprocess errors, including those unknown values.
-                bail!("YouTube request failed using uploaded cookies; check or replace the cookie file");
-            }
-            last = err;
-            let lower = last.to_lowercase();
-            if cookies.is_empty()
-                || ![
-                    "cookie",
-                    "browser",
-                    "profile",
-                    "keyring",
-                    "permission denied",
-                    "database is locked",
-                    "failed to decrypt",
-                ]
-                .iter()
-                .any(|s| lower.contains(s))
-            {
-                break;
-            }
-            self.app.log(
-                "[WARN] Browser cookie authentication failed; trying the next configured fallback.",
-            );
+        let message = err.to_lowercase().replace('’', "'");
+        if youtube
+            && [
+                "sign in",
+                "sign-in required",
+                "log in",
+                "login required",
+                "authentication required",
+                "private video",
+                "members-only",
+                "members only",
+                "join this channel",
+            ]
+            .iter()
+            .any(|reason| message.contains(reason))
+        {
+            return Err(YoutubeAuthenticationRequired.into());
         }
-        bail!("yt-dlp error: {}", last.trim())
+        bail!("yt-dlp error: {}", err.trim())
+    }
+    fn video_output(&self, args: &[&str]) -> Result<Option<String>> {
+        match self.run(args) {
+            Ok(out) => Ok(Some(out)),
+            Err(error) if error.is::<YoutubeAuthenticationRequired>() => Err(error),
+            Err(_) => Ok(None),
+        }
     }
     fn urls(&self, id: &str) -> Result<(String, Option<String>)> {
         let url = format!("https://www.youtube.com/watch?v={id}");
-        if let Ok(out) = self.run(&["-g", "-f", "best", "--hls-prefer-native", &url]) {
+        if let Some(out) = self.video_output(&["-g", "-f", "best", "--hls-prefer-native", &url])? {
             if let Some(hls) = out.lines().find(|s| s.contains(".m3u8")) {
                 self.app.log(&format!("[INFO] Using HLS manifest for {id}"));
                 self.app
@@ -219,7 +135,7 @@ impl Resolver {
             } else {
                 vec!["-g", "-f", format, url.as_str()]
             };
-            if let Ok(out) = self.run(&args) {
+            if let Some(out) = self.video_output(&args)? {
                 let urls: Vec<&str> = out
                     .lines()
                     .map(str::trim)
@@ -242,8 +158,7 @@ impl Resolver {
     fn media(&self, id: &str) -> Result<Media> {
         let url = format!("https://www.youtube.com/watch?v={id}");
         let metadata = self
-            .run(&["-j", &url])
-            .ok()
+            .video_output(&["-j", &url])?
             .and_then(|s| {
                 s.lines()
                     .last()
@@ -251,7 +166,7 @@ impl Resolver {
             })
             .unwrap_or(Value::Null);
         let title = if metadata.is_null() {
-            self.run(&["--get-title", &url]).unwrap_or(url)
+            self.video_output(&["--get-title", &url])?.unwrap_or(url)
         } else {
             text(&metadata, "title", &url)
         };
@@ -347,9 +262,7 @@ impl Worker {
         let resolver = Resolver {
             app: Arc::clone(&app),
             binary: ytdlp,
-            settings: cfg.settings.clone(),
             control: Arc::clone(&control),
-            working_cookies: Arc::new(Mutex::new(None)),
         };
         let stats_supported = diagnostics::stats_supported(&ffmpeg, &app.dir, &control);
         if cfg.bridge() {
@@ -1111,16 +1024,6 @@ impl Worker {
             "[INFO] Output: {}p@{} ~{} video + {} audio",
             self.cfg.height, self.cfg.fps, self.cfg.bitrate, self.cfg.audio_bitrate
         ));
-        self.log(&format!(
-            "[INFO] yt-dlp auth: {}",
-            if crate::youtube_cookie::info(&self.app)["configured"].as_bool() == Some(true) {
-                "uploaded cookies".into()
-            } else if boolean(&self.cfg.settings, "yt_auth_enabled", false) {
-                text(&self.cfg.settings, "yt_auth_browser", "auto")
-            } else {
-                "none".into()
-            }
-        ));
         let kind = input_type(&self.cfg.source);
         self.app.debug(&format!(
             "Source type={kind}; FFmpeg={}, yt-dlp={}, per_track_stats={}",
@@ -1205,6 +1108,7 @@ impl Worker {
                     ids.shuffle(&mut rand::thread_rng());
                 }
                 let mut prefetched: Option<(String, Receiver<Result<Media>>)> = None;
+                let mut auth_skipped = 0;
                 for (idx, id) in ids.iter().enumerate() {
                     if self.control.stopped() {
                         break;
@@ -1253,6 +1157,13 @@ impl Worker {
                         if self.control.stopped() {
                             break;
                         }
+                        if e.is::<YoutubeAuthenticationRequired>() {
+                            auth_skipped += 1;
+                            self.log(&format!(
+                                "[WARN] Skipping video {id}: sign-in or account access required."
+                            ));
+                            continue;
+                        }
                         if attempted_play && self.enhanced.is_some() {
                             let dead = match self.bridge.as_mut() {
                                 Some(bridge) => bridge.process.0.try_wait()?.is_some(),
@@ -1274,6 +1185,14 @@ impl Worker {
                         } else {
                             self.control.pause(Duration::from_secs(2));
                         }
+                    }
+                }
+                if auth_skipped == ids.len() && !self.control.stopped() {
+                    self.log("[WARN] All videos require authentication. Refreshing the source in 30 seconds.");
+                    if self.cfg.bridge() {
+                        self.slate(30.0)?;
+                    } else {
+                        self.control.pause(Duration::from_secs(30));
                     }
                 }
                 Ok(())
@@ -1298,6 +1217,53 @@ impl Worker {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_auth_files_and_settings_do_not_affect_startup_or_resolver_arguments() {
+        struct TestDir(PathBuf);
+        impl Drop for TestDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TestDir(
+            std::env::temp_dir().join(format!("stream247-no-auth-{:016x}", rand::random::<u64>())),
+        );
+        fs::create_dir_all(dir.0.join("youtube-auth")).unwrap();
+        fs::write(dir.0.join("youtube-auth/cookies.txt"), "invalid cookies").unwrap();
+        fs::write(dir.0.join("youtube-auth/browser.json"), "invalid pairing").unwrap();
+        let legacy = json!({
+            "yt_auth_enabled": true,
+            "yt_auth_browser": "chrome",
+            "yt_auth_profile": "/missing/profile",
+            "yt_auth_allow_unauth_fallback": false
+        });
+        fs::write(dir.0.join("config.json"), legacy.to_string()).unwrap();
+        let app = App::new(dir.0.clone(), true).unwrap();
+        let cfg = StreamConfig::new(&app.raw_settings(), &dir.0);
+        for key in legacy.as_object().unwrap().keys() {
+            assert!(app.settings().get(key).is_none());
+            assert!(cfg.settings.get(key).is_none());
+        }
+        let resolver = Resolver {
+            app,
+            binary: PathBuf::from("/bin/sh"),
+            control: Arc::new(Control::default()),
+        };
+        let url = "https://www.youtube.com/watch?v=example";
+        let out = resolver
+            .run(&["-c", "printf '%s\\n' \"$@\"", "yt-dlp", "--get-url", url])
+            .unwrap();
+        assert_eq!(out, format!("--get-url\n{url}\n"));
+        let err = resolver.run(&["-c", "echo 'Sign in required' >&2; exit 1"]);
+        assert!(err.unwrap_err().to_string().contains("Sign in required"));
     }
 }
 

@@ -6,41 +6,48 @@ Latest chooses the highest supported version in that channel. An explicit
 selection must exist in that channel. The channel and requested version are
 saved in config.json; an empty requested version follows Latest.
 
-Before allowing installation, the updater verifies that the running version has
-an exact matching published release tag, ignoring a leading `v` or `V`. This
-lookup includes both release channels and paginates the GitHub release list;
-draft releases do not count. A version absent from published releases disables
-manual and automatic app installation with an explanation in the dashboard and
-app log. Check remains available so publishing the version can enable updating
-without restarting the app. A failed GitHub lookup never authorizes installation.
+Before allowing automatic installation, the updater verifies that the running
+version has an exact matching published release tag, ignoring a leading `v` or
+`V`. This lookup includes both release channels and paginates the GitHub release
+list; draft releases do not count. Unpublished versions can still check for
+updates and manually install a supported published release. A failed GitHub
+lookup never authorizes installation.
 
 | Installed vs selected | Automatic checks | Manual installation |
 | --- | --- | --- |
 | Installed is older | Install when automatic installation is enabled | Install the selected version |
 | Equal | No installation | Reinstall the selected version |
 | Installed is newer | No installation | Downgrade to the selected version |
-| Running version has no published tag | Disabled | Disabled |
+| Running version has no published tag | Check only; no automatic installation | Install the selected version |
+| Cargo development build | Check only; no automatic installation | Install the selected version |
 | Selected release lacks a supported executable asset | No installation | Explain the limitation; disabled |
 | GitHub check fails | Display/log the error; no installation | Display/log the error; no installation |
 
 Manual installation supports the existing minimum target `2.0-pre-release-2` and
 requires the selected version to exist in the selected channel. The Install
-button changes its label to Downgrade or Reinstall as appropriate. The separate
-Reinstall button is available when the selected version matches the installed
-version. Manual requests recheck eligibility on the server; disabling dashboard
+button changes its label to Downgrade or Reinstall as appropriate. Manual requests
+recheck eligibility on the server; disabling dashboard
 buttons is not the only enforcement.
 
-Startup checks respect check_updates_startup. A successful check, including a
-manual or dashboard periodic check, installs only a newer target when
-auto_app_updates is enabled. Reinstalling or downgrading always requires an
+The app always checks once at startup. After that, app_update_check_minutes
+controls recurring checks on an app timer; 0 (Never) disables recurring checks
+without suppressing the startup check. Dashboard refreshes do not start checks.
+The legacy check_updates_startup preference only supplies the recurring interval
+when no explicit interval is saved: hourly when enabled, Never when disabled.
+A successful check, including a startup, manual, or timed check, installs only a
+newer target when auto_app_updates is enabled. Auto install is disabled by default
+on a fresh install; when disabled, checks never install updates automatically.
+Reinstalling or downgrading always requires an
 explicit install request. The selected channel/version remains saved across the
-restart. Cargo executables run from a target directory have app updating disabled
-even if their version matches a published tag. Tool updates (FFmpeg/yt-dlp) are
+restart. Cargo executables run from a target directory allow manual installation
+but never automatic installation, even if Auto install was previously enabled.
+Manual installation replaces the running executable and restarts the app.
+Tool updates (FFmpeg/yt-dlp) are
 unaffected. A status GET never starts an application update operation.
 
-Release matching establishes version eligibility, not binary provenance: a
+Release matching establishes automatic-install eligibility, not binary provenance: a
 locally compiled executable copied outside Cargo's target directory with the
-same version as a published release passes the version gate.
+same version as a published release passes the automatic-install version gate.
 
 Jobs expose operation, phase, outcome and restart_expected independently of their
 running flag. Completed checks never reload the dashboard. The page reloads only

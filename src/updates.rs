@@ -100,8 +100,8 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
     if !selected.is_empty() && compare(selected, "2.0-pre-release-2") == Ordering::Less {
         bail!("Selected version is below the minimum supported in-app target");
     }
-    // Check all published tags, across both channels and every page. An unpublished
-    // package version must never replace itself with a release binary.
+    // Check all published tags to determine automatic-install eligibility.
+    // Manual installation remains available for unpublished local versions.
     let mut published = Vec::new();
     for page in 1.. {
         let data = get_json(&format!(
@@ -133,16 +133,6 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
         })
         .collect();
     releases.sort_by(|a, b| compare(&text(b, "tag_name", ""), &text(a, "tag_name", "")));
-    if !current_published {
-        return Ok(json!({
-            "current_version": VERSION, "current_published": false,
-            "updater_enabled": false,
-            "disabled_reason": "App updater disabled: the running version has no matching published GitHub release.",
-            "requested_version": selected, "channel": channel,
-            "asset_supported": false, "is_newer": false, "should_install": false,
-            "available_versions": releases.iter().map(|r| tag_version(&text(r, "tag_name", ""))).collect::<Vec<_>>()
-        }));
-    }
     let latest = *releases
         .first()
         .context("No supported release found for this channel")?;
@@ -172,7 +162,7 @@ pub fn release(channel: &str, selected: &str) -> Result<Value> {
         .to_owned();
     let name = text(&asset, "name", "");
     Ok(
-        json!({"current_version":VERSION,"current_published":true,"updater_enabled":true,"disabled_reason":"","latest_version":version,"selected_version":version,"requested_version":selected,"latest_channel_version":text(latest,"tag_name","").trim_start_matches(['v','V']),"is_newer":compare(&version,VERSION)==Ordering::Greater,"should_install":compare(&version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
+        json!({"current_version":VERSION,"current_published":current_published,"updater_enabled":true,"disabled_reason":"","latest_version":version,"selected_version":version,"requested_version":selected,"latest_channel_version":text(latest,"tag_name","").trim_start_matches(['v','V']),"is_newer":compare(&version,VERSION)==Ordering::Greater,"should_install":compare(&version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
     )
 }
 pub fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
@@ -594,11 +584,16 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                 ));
                 cloned.progress(true, "Checking GitHub releases...", 5);
                 let mut info = release(&channel, &selected)?;
-                if cloned.development {
-                    info["updater_enabled"] = json!(false);
-                    info["disabled_reason"] =
-                        json!("App updater disabled for a Cargo development executable.");
-                }
+                let auto_install_supported = !cloned.development
+                    && boolean(&info, "current_published", false);
+                info["auto_install_supported"] = json!(auto_install_supported);
+                info["auto_install_disabled_reason"] = json!(if cloned.development {
+                    "Automatic installation is disabled for Cargo development builds. Manual installation is available."
+                } else if !auto_install_supported {
+                    "Automatic installation is disabled for unpublished versions. Manual installation is available."
+                } else {
+                    ""
+                });
                 if !boolean(&info, "updater_enabled", false) {
                     let message = text(&info, "disabled_reason", "App updater disabled.");
                     cloned.app_job.lock().unwrap()["outcome"] = json!("disabled");
@@ -613,7 +608,7 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                 let downgrade = ordering == Ordering::Less;
                 let automatic = !install
                     && boolean(&cloned.settings(), "auto_app_updates", false)
-                    && !cloned.development
+                    && auto_install_supported
                     && !cloned.is_streaming();
                 let do_install = install || (automatic && newer);
                 let supported = boolean(&info, "asset_supported", false);
@@ -644,7 +639,7 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                         let mut job = cloned.app_job.lock().unwrap();
                         job["operation"] = json!("install");
                         job["phase"] = json!("downloading");
-                        job["restart_expected"] = json!(!cloned.development);
+                        job["restart_expected"] = json!(true);
                     }
                     cloned.log(&format!(
                         "[INFO] {} app {}: {VERSION} -> {target}.",
@@ -766,6 +761,8 @@ pub fn initial_status(app: &Arc<App>, is_app: bool) -> Value {
 }
 
 pub fn startup(app: Arc<App>) {
+    // Always check once at startup. Installation still requires auto_app_updates.
+    trigger(&app, true, false, &json!({}));
     // One timer per app, independent of dashboard refreshes or open browser tabs.
     let mut interval = config_interval(&app);
     let mut due = Instant::now() + Duration::from_secs(interval.max(1) * 60);

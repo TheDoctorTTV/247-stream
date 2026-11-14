@@ -227,29 +227,6 @@
           </div>
         </div>
       </section>
-      <section class="card youtube-auth-settings" aria-labelledby="youtube_cookie_heading">
-        <div class="tool-heading">
-          <h2 id="youtube_cookie_heading">YouTube authentication</h2>
-          <p>Connect your signed-in browser to sync YouTube cookies.</p>
-        </div>
-        <div class="tool-actions">
-          <button id="youtube_browser_connect" type="button" class="primary">Connect browser</button>
-          <button id="youtube_browser_disconnect" type="button" class="tool-secondary" disabled>Disconnect</button>
-          <a href="/downloads/stream247-youtube-connect.tar.gz" download>Download extension</a>
-        </div>
-        <div id="youtube_browser_status" class="statusline" role="status" aria-live="polite">Loading browser status…</div>
-        <div id="youtube_browser_pairing" class="browser-pairing" hidden>
-          <label for="youtube_browser_code">Pairing code</label>
-          <div class="row"><input id="youtube_browser_code" type="text" readonly autocomplete="off" spellcheck="false"><button id="youtube_browser_copy" type="button">Copy</button></div>
-          <p class="tool-caption">In the extension, enter this code and server address: <strong id="youtube_browser_address"></strong>. The code expires after 10 minutes. Automatic sync is off unless you enable it.</p>
-        </div>
-        <details class="browser-install-guide"><summary>Install the extension</summary>
-          <p class="tool-caption">Extract the download (7-Zip or WinRAR on Windows). In Chrome, open the Extensions page, enable Developer mode, and use Load unpacked to select the extracted folder. Click the extension's toolbar icon to open its connection page.</p>
-          <p class="tool-caption">For another device, open Stream247 through an HTTPS address before pairing.</p>
-        </details>
-        <p class="tool-caption">Cookies may help access restricted or private content available to your account. Playback is not guaranteed.</p>
-        <p id="youtube_cookie_warning" class="tool-caption">Cookies can grant access to your account. Store them only on a server you trust and restrict dashboard access.</p>
-      </section>
     </div>
     <div class="tab-panel" id="tab-sources">
       <div class="card">
@@ -398,7 +375,6 @@
               <div class="about-controls">
                 <button id="checkAppUpdateBtn">Check</button>
                 <button class="primary" id="downloadAppUpdateBtn">Install</button>
-                <button id="reinstallAppBtn" type="button">Reinstall</button>
               </div>
             </div>
             <div id="appUpdateStatus" class="statusline">App update status not loaded.</div>
@@ -422,7 +398,7 @@
               </div>
               <label class="check" style="margin: 0;"><input id="auto_app_updates" type="checkbox">Auto install</label>
               <div class="field" style="min-width: 200px; margin: 0;">
-                <label for="app_update_check_minutes">Automatic checks</label>
+                <label for="app_update_check_minutes">Checks after startup</label>
                 <select id="app_update_check_minutes">
                   <option value="0">Never</option>
                   <option value="30">Every 30 minutes</option>
@@ -453,11 +429,6 @@
             <div id="binariesProgressText" class="statusline"></div>
           </div>
         </div>
-        <ul class="about-list">
-          <li>Server bind is configured in <code>config.json</code>.</li>
-          <li>Install app updates for one-click update + restart.</li>
-          <li>Update binaries to refresh local yt-dlp and FFmpeg.</li>
-        </ul>
       </div>
     </div>
   </div>
