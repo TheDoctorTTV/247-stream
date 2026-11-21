@@ -1,0 +1,756 @@
+//! Tool provisioning and GitHub release-channel updates, using the dashboard's existing schema.
+use crate::{
+    config::{boolean, text},
+    process,
+    runtime::App,
+    state::now,
+    REPO, VERSION,
+};
+use anyhow::{bail, Context, Result};
+use reqwest::blocking::Client;
+use serde_json::{json, Value};
+use std::{
+    cmp::Ordering,
+    fs::{self, File},
+    io::{Read, Write},
+    path::Path,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
+
+pub fn client(timeout: Duration) -> Result<Client> {
+    Ok(Client::builder()
+        .user_agent(format!("Stream247/{VERSION}"))
+        .timeout(timeout)
+        .build()?)
+}
+fn get_json(url: &str) -> Result<Value> {
+    Ok(client(Duration::from_secs(20))?
+        .get(url)
+        .send()?
+        .error_for_status()?
+        .json()?)
+}
+fn version_parts(v: &str) -> (Vec<u64>, Vec<String>) {
+    let v = v.trim().trim_start_matches(['v', 'V']).to_lowercase();
+    let n = v
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(v.len());
+    let core = v[..n]
+        .trim_end_matches('.')
+        .split('.')
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let suffix = v[n..]
+        .replace("pre-release", "prerelease")
+        .replace("pre release", "prerelease");
+    let re = regex::Regex::new(r"[a-z]+|\d+").unwrap();
+    (
+        core,
+        re.find_iter(&suffix)
+            .map(|m| m.as_str().to_owned())
+            .collect(),
+    )
+}
+pub fn compare(a: &str, b: &str) -> Ordering {
+    let (ac, at) = version_parts(a);
+    let (bc, bt) = version_parts(b);
+    for i in 0..ac.len().max(bc.len()) {
+        let c = ac.get(i).unwrap_or(&0).cmp(bc.get(i).unwrap_or(&0));
+        if c != Ordering::Equal {
+            return c;
+        }
+    }
+    match (at.is_empty(), bt.is_empty()) {
+        (true, false) => return Ordering::Greater,
+        (false, true) => return Ordering::Less,
+        _ => {}
+    }
+    for (a, b) in at.iter().zip(bt.iter()) {
+        let c = match (a.parse::<u64>(), b.parse::<u64>()) {
+            (Ok(a), Ok(b)) => a.cmp(&b),
+            (Ok(_), Err(_)) => Ordering::Less,
+            (Err(_), Ok(_)) => Ordering::Greater,
+            _ => a.cmp(b),
+        };
+        if c != Ordering::Equal {
+            return c;
+        }
+    }
+    at.len().cmp(&bt.len())
+}
+fn installable(name: &str) -> bool {
+    !name.is_empty()
+        && ![
+            ".sh",
+            ".ps1",
+            ".bat",
+            ".cmd",
+            ".msi",
+            ".exe",
+            ".appimage",
+            ".zip",
+            ".tar.gz",
+            ".tgz",
+        ]
+        .iter()
+        .any(|ext| name.to_lowercase().ends_with(ext))
+}
+pub fn release(channel: &str, selected: Option<&str>) -> Result<Value> {
+    if selected.is_some_and(|version| compare(version, "2.0-pre-release-2") == Ordering::Less) {
+        bail!("Selected version is below the minimum supported in-app target");
+    }
+    // Enumerate published releases to compare channel status independently
+    // of the concrete version selected for manual installation.
+    let mut published = Vec::new();
+    for page in 1.. {
+        let data = get_json(&format!(
+            "https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}"
+        ))?;
+        let entries = data
+            .as_array()
+            .context("Invalid GitHub releases response")?;
+        let count = entries.len();
+        published.extend(
+            entries
+                .iter()
+                .filter(|r| !boolean(r, "draft", false))
+                .cloned(),
+        );
+        if count < 100 {
+            break;
+        }
+    }
+    let mut releases: Vec<&Value> = published
+        .iter()
+        .filter(|r| {
+            boolean(r, "prerelease", false) == (channel == "prerelease")
+                && compare(&text(r, "tag_name", ""), "2.0-pre-release-2") != Ordering::Less
+        })
+        .collect();
+    releases.sort_by(|a, b| compare(&text(b, "tag_name", ""), &text(a, "tag_name", "")));
+    let newest_version = text(
+        releases.first().context("No supported release found for this channel")?,
+        "tag_name",
+        "",
+    )
+    .trim_start_matches(['v', 'V'])
+    .to_owned();
+    let chosen = match selected {
+        Some(version) => releases
+            .iter()
+            .copied()
+            .find(|r| compare(&text(r, "tag_name", ""), version) == Ordering::Equal)
+            .context("Selected version was not found in this channel")?,
+        None => *releases
+            .first()
+            .context("No supported release found for this channel")?,
+    };
+    let mut assets = chosen["assets"].as_array().cloned().unwrap_or_default();
+    assets.sort_by_key(|a| {
+        let n = text(a, "name", "").to_lowercase();
+        (
+            (!installable(&n)) as u8,
+            (!n.ends_with(".tar.gz") && !n.ends_with(".zip") && !n.ends_with(".tgz")) as u8,
+            (!n.contains("linux")) as u8,
+            (!n.contains("server")) as u8,
+            (!n.contains("stream247")) as u8,
+        )
+    });
+    let asset = assets.first().cloned().unwrap_or(Value::Null);
+    let version = text(chosen, "tag_name", "")
+        .trim_start_matches(['v', 'V'])
+        .to_owned();
+    let name = text(&asset, "name", "");
+    Ok(
+        json!({"current_version":VERSION,"updater_enabled":true,"disabled_reason":"","selected_version":version,"newest_version":newest_version,"update_available":compare(&newest_version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
+    )
+}
+pub fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
+    let temp = path.with_extension("download-part");
+    let result = (|| -> Result<()> {
+        let mut response = client(Duration::from_secs(1800))?
+            .get(url)
+            .send()?
+            .error_for_status()?;
+        let total = response.content_length().unwrap_or(0);
+        let mut done = 0;
+        let mut file = File::create(&temp)?;
+        let mut buffer = [0u8; 65536];
+        let mut last = Instant::now() - Duration::from_secs(1);
+        loop {
+            let n = response.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buffer[..n])?;
+            done += n as u64;
+            if last.elapsed() >= Duration::from_millis(200) {
+                progress(done, total);
+                last = Instant::now();
+            }
+        }
+        if total > 0 && done != total {
+            bail!("Incomplete download: {done}/{total} bytes");
+        }
+        file.sync_all()?;
+        drop(file);
+        progress(done, total);
+        fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temp);
+    }
+    result
+}
+pub fn tool_version(path: Option<&Path>, tool: &str, dir: &Path) -> Option<String> {
+    let path = path?;
+    let flag = if tool == "ffmpeg" {
+        "-version"
+    } else {
+        "--version"
+    };
+    let (status, out, _) = process::capture(
+        path,
+        &process::args(&[flag]),
+        dir,
+        Duration::from_secs(8),
+        None,
+    )
+    .ok()?;
+    if !status.success() {
+        return None;
+    }
+    if tool == "ffmpeg" {
+        let re = regex::Regex::new(r"ffmpeg version\s+([^\s]+)").ok()?;
+        let raw = re.captures(&out)?.get(1)?.as_str();
+        let re = regex::Regex::new(r"\d+\.\d+(?:\.\d+)?").ok()?;
+        Some(re.find(raw).map(|m| m.as_str()).unwrap_or(raw).to_owned())
+    } else {
+        out.lines().next().map(|s| s.trim().to_owned())
+    }
+}
+pub const FFMPEG_MIN_MAJOR: u32 = 8;
+pub fn ffmpeg_version_supported(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|v| v.parse::<u32>().ok())
+        .is_some_and(|major| major >= FFMPEG_MIN_MAJOR)
+}
+struct FfmpegRelease {
+    version: String,
+    name: String,
+    url: String,
+}
+/// Use stable release-branch, non-shared GPL builds (libx264 is required).
+/// Discover the asset instead of constructing a URL that may not exist.
+fn ffmpeg_release() -> Result<FfmpegRelease> {
+    let platform = match std::env::consts::ARCH {
+        "x86_64" => "linux64",
+        "aarch64" => "linuxarm64",
+        _ => bail!("Automatic FFmpeg download supports Linux x86_64 and aarch64"),
+    };
+    let data =
+        get_json("https://api.github.com/repos/FFmpeg-Builds/FFmpeg-Builds/releases/latest")?;
+    let assets = data["assets"]
+        .as_array()
+        .context("Invalid FFmpeg build release metadata")?;
+    let pattern = regex::Regex::new(&format!(
+        r"^ffmpeg-n(\d+\.\d+(?:\.\d+)?)-latest-{platform}-gpl-(\d+\.\d+(?:\.\d+)?)\.tar\.xz$"
+    ))?;
+    let mut choices = Vec::new();
+    for asset in assets {
+        let name = text(asset, "name", "");
+        let Some(captures) = pattern.captures(&name) else {
+            continue;
+        };
+        let version = captures[1].to_owned();
+        if captures[1] != captures[2] || !ffmpeg_version_supported(&version) {
+            continue;
+        }
+        let url = text(asset, "browser_download_url", "");
+        anyhow::ensure!(
+            url.starts_with("https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/"),
+            "Unexpected FFmpeg build download URL"
+        );
+        choices.push(FfmpegRelease { version, name, url });
+    }
+    choices.sort_by(|a, b| compare(&a.version, &b.version));
+    choices
+        .pop()
+        .context("No stable FFmpeg 8+ GPL build found for this architecture")
+}
+pub fn binaries_status(dir: &Path) -> Value {
+    let mut result = json!({});
+    let mut all = true;
+    let mut any = false;
+    for tool in ["yt-dlp", "ffmpeg"] {
+        let path = process::find(dir, tool);
+        let current = tool_version(path.as_deref(), tool, dir);
+        let latest = if tool == "yt-dlp" {
+            get_json("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest")
+                .ok()
+                .map(|v| text(&v, "tag_name", "").trim_start_matches('v').to_owned())
+        } else {
+            ffmpeg_release().ok().map(|release| release.version)
+        };
+        let below_minimum = tool == "ffmpeg"
+            && current
+                .as_deref()
+                .is_some_and(|v| !ffmpeg_version_supported(v));
+        let status = if below_minimum {
+            "update_available"
+        } else {
+            match (&current, &latest) {
+                (Some(a), Some(b)) => {
+                    if compare(a, b) == Ordering::Less {
+                        "update_available"
+                    } else {
+                        "up_to_date"
+                    }
+                }
+                _ => "unknown",
+            }
+        };
+        all &= status == "up_to_date";
+        any |= status == "update_available";
+        result[tool] =
+            json!({"path":path,"current_version":current,"latest_version":latest,"status":status});
+    }
+    result["all_up_to_date"] = json!(all);
+    result["any_update_available"] = json!(any);
+    result
+}
+fn healthy(path: &Path, dir: &Path) -> bool {
+    process::capture(
+        path,
+        &process::args(&[
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=160x90:r=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo",
+            "-t",
+            "0.25",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-f",
+            "null",
+            "-",
+        ]),
+        dir,
+        Duration::from_secs(8),
+        None,
+    )
+    .is_ok_and(|(s, _, _)| s.success())
+}
+fn usable_ffmpeg(path: &Path, dir: &Path) -> bool {
+    tool_version(Some(path), "ffmpeg", dir)
+        .as_deref()
+        .is_some_and(ffmpeg_version_supported)
+        && healthy(path, dir)
+}
+pub fn ensure_binaries(app: &App, force: bool) -> Result<()> {
+    if !cfg!(target_os = "linux") {
+        bail!("Automatic tool provisioning currently supports Linux");
+    }
+    for (tool, base, span) in [("yt-dlp", 10, 35), ("ffmpeg", 60, 30)] {
+        let path = app.dir.join(tool);
+        if !force && path.exists() && (tool != "ffmpeg" || usable_ffmpeg(&path, &app.dir)) {
+            continue;
+        }
+        app.progress(false, &format!("Downloading {tool}..."), base);
+        let staged = app.dir.join(format!("{tool}.new"));
+        let result = (|| -> Result<()> {
+            if tool == "yt-dlp" {
+                let asset = match std::env::consts::ARCH {
+                    "x86_64" => "yt-dlp_linux",
+                    "aarch64" => "yt-dlp_linux_aarch64",
+                    _ => bail!("Unsupported yt-dlp architecture"),
+                };
+                download(
+                    &format!("https://github.com/yt-dlp/yt-dlp/releases/latest/download/{asset}"),
+                    &staged,
+                    |done, total| {
+                        if total > 0 {
+                            app.progress(
+                                false,
+                                &format!("Downloading {tool}... {}%", done * 100 / total),
+                                base + (done * span / total) as i64,
+                            );
+                        }
+                    },
+                )?;
+                process::chmod(&staged)?;
+                anyhow::ensure!(
+                    tool_version(Some(&staged), tool, &app.dir).is_some(),
+                    "Downloaded yt-dlp is not executable"
+                );
+            } else {
+                let release = ffmpeg_release()?;
+                app.log(&format!(
+                    "[INFO] Acquiring stable FFmpeg {} ({}) from FFmpeg-Builds.",
+                    release.version, release.name
+                ));
+                let archive = app.dir.join("ffmpeg-latest.tar.xz");
+                download(&release.url, &archive, |done, total| {
+                    if total > 0 {
+                        app.progress(
+                            false,
+                            &format!("Downloading ffmpeg... {}%", done * 100 / total),
+                            base + (done * span / total) as i64,
+                        );
+                    }
+                })?;
+                let extracted = (|| -> Result<()> {
+                    let mut tar =
+                        tar::Archive::new(xz2::read::XzDecoder::new(File::open(&archive)?));
+                    let mut found = false;
+                    for entry in tar.entries()? {
+                        let mut entry = entry?;
+                        if entry.header().entry_type().is_file()
+                            && entry.path()?.file_name().is_some_and(|s| s == "ffmpeg")
+                        {
+                            let mut file = File::create(&staged)?;
+                            std::io::copy(&mut entry, &mut file)?;
+                            found = true;
+                            break;
+                        }
+                    }
+                    anyhow::ensure!(found, "ffmpeg not found in downloaded archive");
+                    process::chmod(&staged)?;
+                    let version = tool_version(Some(&staged), "ffmpeg", &app.dir)
+                        .context("Downloaded FFmpeg could not report its version")?;
+                    anyhow::ensure!(
+                        ffmpeg_version_supported(&version),
+                        "Downloaded FFmpeg {version} does not meet the FFmpeg 8+ requirement"
+                    );
+                    anyhow::ensure!(
+                        compare(&version, &release.version) != Ordering::Less,
+                        "Downloaded FFmpeg version does not match the selected release branch"
+                    );
+                    anyhow::ensure!(
+                        healthy(&staged, &app.dir),
+                        "Downloaded FFmpeg failed its startup/encoding probe"
+                    );
+                    app.log(&format!("[INFO] Acquired FFmpeg {version}; version and startup/encoding probes passed."));
+                    Ok(())
+                })();
+                let _ = fs::remove_file(archive);
+                extracted?;
+            }
+            fs::rename(&staged, &path)?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let _ = fs::remove_file(&staged);
+            app.log(&format!("[WARN] Could not refresh {tool}: {e}"));
+            // A failed update leaves the previous local binary in place.
+            if tool == "ffmpeg" && !usable_ffmpeg(&path, &app.dir) {
+                let system = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                    .map(|p| p.join(tool))
+                    .find(|p| p != &path && p.is_file() && usable_ffmpeg(p, &app.dir));
+                if let Some(system) = system {
+                    app.log("[WARN] FFmpeg download failed; using a compatible, verified FFmpeg 8+ from PATH.");
+                    fs::copy(system, &staged)?;
+                    process::chmod(&staged)?;
+                    fs::rename(&staged, &path)?;
+                } else {
+                    bail!("No usable FFmpeg 8+ available; previous binary was preserved: {e}");
+                }
+            } else if (tool == "ffmpeg" && force) || process::find(&app.dir, tool).is_none() {
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+fn instance_id() -> &'static str {
+    static INSTANCE: OnceLock<String> = OnceLock::new();
+    INSTANCE
+        .get_or_init(|| format!("{}-{}", std::process::id(), now()))
+        .as_str()
+}
+
+pub fn empty_job() -> Value {
+    json!({
+        "running":false,"operation":"idle","phase":"idle","outcome":"",
+        "instance_id":instance_id(),"restart_expected":false,
+        "last_result":null,"last_error":"","started_at":0.0,"finished_at":0.0,
+        "progress_percent":0,"progress_message":"","downloaded_path":"",
+        "selected_version":"","selected_channel":""
+    })
+}
+
+pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value) -> Value {
+    let settings = app.settings();
+    let channel = text(
+        payload,
+        "channel",
+        &text(&settings, "app_update_channel", "release"),
+    );
+    let channel = if channel == "prerelease" {
+        "prerelease"
+    } else {
+        "release"
+    }
+    .to_owned();
+    // Checks discover the highest numbered release unless a version is requested.
+    // Installation always requires a concrete version from the version menu.
+    let selected = payload
+        .get("selected_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned);
+    {
+        let lock = if app_update {
+            &app.app_job
+        } else {
+            &app.binary_job
+        };
+        let mut job = lock.lock().unwrap();
+        if boolean(&job, "running", false) {
+            return job.clone();
+        }
+        if app_update && install && app.is_streaming() {
+            let message = "Stop the stream before installing, reinstalling, or downgrading the app";
+            job["phase"] = json!("blocked");
+            job["last_error"] = json!(message);
+            job["progress_message"] = json!(message);
+            job["restart_expected"] = json!(false);
+            return job.clone();
+        }
+        *job = empty_job();
+        job["running"] = json!(true);
+        job["operation"] = json!(if app_update {
+            if install {
+                "install"
+            } else {
+                "check"
+            }
+        } else if install {
+            "binaries_update"
+        } else {
+            "binaries_status"
+        });
+        job["phase"] = json!("checking");
+        job["started_at"] = json!(now());
+        job["selected_channel"] = json!(channel);
+        job["selected_version"] = json!(selected);
+        job["progress_message"] = json!("Checking versions...");
+    }
+    let cloned = Arc::clone(app);
+    std::thread::spawn(move || {
+        let result = (|| -> Result<Value> {
+            if app_update {
+                cloned.log(&format!(
+                    "[INFO] App update check: current {VERSION}, channel {channel}, selection {}.",
+                    selected.as_deref().unwrap_or("highest numbered release")
+                ));
+                cloned.progress(true, "Checking GitHub releases...", 5);
+                anyhow::ensure!(
+                    !install || selected.is_some(),
+                    "Choose a version before installing the app"
+                );
+                let info = release(&channel, selected.as_deref())?;
+                let resolved_version = text(&info, "selected_version", "");
+                cloned.remember_update_selection(&channel, &resolved_version)?;
+                cloned.app_job.lock().unwrap()["selected_version"] = json!(resolved_version);
+                if !boolean(&info, "updater_enabled", false) {
+                    let message = text(&info, "disabled_reason", "App updater disabled.");
+                    cloned.app_job.lock().unwrap()["outcome"] = json!("disabled");
+                    cloned.progress(true, &message, 100);
+                    cloned.log(&format!("[INFO] {message}"));
+                    return Ok(info);
+                }
+                let target = text(&info, "selected_version", "");
+                let ordering = compare(&target, VERSION);
+                let newest = text(&info, "newest_version", "");
+                let update_ordering = compare(&newest, VERSION);
+                let newer = update_ordering == Ordering::Greater;
+                let reinstall = ordering == Ordering::Equal;
+                let downgrade = ordering == Ordering::Less;
+                let supported = boolean(&info, "asset_supported", false);
+                {
+                    let mut job = cloned.app_job.lock().unwrap();
+                    job["last_result"] = info.clone();
+                    job["outcome"] = json!(if newer {
+                        "update_available"
+                    } else if update_ordering == Ordering::Less {
+                        "ahead_of_channel"
+                    } else {
+                        "up_to_date"
+                    });
+                }
+                cloned.log(&format!("[INFO] App update check complete: current {VERSION}, selected {target}, newest {newest}, update_available={newer}, asset_supported={supported}."));
+                if install && supported {
+                    let name = text(&info, "asset_name", "");
+                    anyhow::ensure!(
+                        Path::new(&name).file_name().and_then(|s| s.to_str())
+                            == Some(name.as_str()),
+                        "Invalid release asset name"
+                    );
+                    let dir = cloned.dir.join("updates");
+                    fs::create_dir_all(&dir)?;
+                    let staged = dir.join(name);
+                    {
+                        let mut job = cloned.app_job.lock().unwrap();
+                        job["operation"] = json!("install");
+                        job["phase"] = json!("downloading");
+                        job["restart_expected"] = json!(true);
+                    }
+                    cloned.log(&format!(
+                        "[INFO] Manual app {}: {VERSION} -> {target}.",
+                        if reinstall {
+                            "reinstall"
+                        } else if downgrade {
+                            "downgrade"
+                        } else {
+                            "update"
+                        }
+                    ));
+                    download(&text(&info, "download_url", ""), &staged, |done, total| {
+                        if total > 0 {
+                            cloned.progress(
+                                true,
+                                "Downloading app update...",
+                                12 + (done * 80 / total) as i64,
+                            );
+                        }
+                    })?;
+                    process::chmod(&staged)?;
+                    cloned.app_job.lock().unwrap()["downloaded_path"] = json!(staged);
+                    cloned.progress(true, "Installing update and restarting...", 95);
+                    cloned.app_job.lock().unwrap()["phase"] = json!("installing");
+                    cloned.install_update(&staged)?;
+                    let mut job = cloned.app_job.lock().unwrap();
+                    job["phase"] = json!("installed");
+                    job["outcome"] = json!("installed");
+                    job["progress_message"] = json!("Update installed. Restarting...");
+                } else {
+                    let message = if install && !supported {
+                        "The selected release has no self-installable asset for this platform.".to_owned()
+                    } else if newer {
+                        format!("Update available: {newest}")
+                    } else if update_ordering == Ordering::Less {
+                        "Running a newer version than this channel".to_owned()
+                    } else {
+                        "Up to date".to_owned()
+                    };
+                    cloned.progress(true, &message, 100);
+                    cloned.log(&format!("[INFO] {message}"));
+                }
+                Ok(info)
+            } else {
+                if install {
+                    let _guard = cloned.provision_lock.lock().unwrap();
+                    anyhow::ensure!(
+                        !cloned.is_streaming(),
+                        "Stop the stream before updating tool binaries"
+                    );
+                    ensure_binaries(&cloned, true)?;
+                }
+                Ok(binaries_status(&cloned.dir))
+            }
+        })();
+        let error = result.as_ref().err().map(|e| format!("{e:#}"));
+        {
+            let lock = if app_update {
+                &cloned.app_job
+            } else {
+                &cloned.binary_job
+            };
+            let mut job = lock.lock().unwrap();
+            job["running"] = json!(false);
+            job["finished_at"] = json!(now());
+            match result {
+                Ok(info) => {
+                    job["last_result"] = info;
+                    job["progress_percent"] = json!(100);
+                    if !["installed", "downloaded"].contains(&text(&job, "phase", "").as_str()) {
+                        job["phase"] = json!("complete");
+                    }
+                    if !app_update {
+                        job["progress_message"] = json!(if install {
+                            "Binary update complete."
+                        } else {
+                            "Binary check complete."
+                        });
+                    }
+                }
+                Err(e) => {
+                    job["phase"] = json!("failed");
+                    job["last_error"] = json!(format!("{e:#}"));
+                    job["progress_message"] = json!("Update operation failed.");
+                    job["restart_expected"] = json!(false);
+                }
+            }
+        }
+        if let Some(error) = error {
+            cloned.log(&format!("[ERROR] Update operation failed: {error}"));
+        }
+    });
+    let lock = if app_update {
+        &app.app_job
+    } else {
+        &app.binary_job
+    };
+    let snapshot = lock.lock().unwrap().clone();
+    snapshot
+}
+
+pub fn initial_status(app: &Arc<App>, is_app: bool) -> Value {
+    let lock = if is_app {
+        &app.app_job
+    } else {
+        &app.binary_job
+    };
+    let job = lock.lock().unwrap().clone();
+    // Reading app status never starts an installation or a new check.
+    if !is_app
+        && !boolean(&job, "running", false)
+        && job["last_result"].is_null()
+        && text(&job, "last_error", "").is_empty()
+    {
+        return trigger(app, false, false, &json!({}));
+    }
+    job
+}
+
+pub fn startup(app: Arc<App>) {
+    // Always check once at startup; checks never install application updates.
+    trigger(&app, true, false, &json!({}));
+    // One timer per app, independent of dashboard refreshes or open browser tabs.
+    let mut interval = config_interval(&app);
+    let mut due = Instant::now() + Duration::from_secs(interval.max(1) * 60);
+    while !app.shutdown.load(std::sync::atomic::Ordering::Acquire) {
+        std::thread::sleep(Duration::from_secs(1));
+        let configured = config_interval(&app);
+        if configured != interval {
+            interval = configured;
+            due = Instant::now() + Duration::from_secs(interval.max(1) * 60);
+        }
+        if interval > 0 && Instant::now() >= due {
+            trigger(&app, true, false, &json!({}));
+            due = Instant::now() + Duration::from_secs(interval * 60);
+        }
+    }
+}
+
+fn config_interval(app: &App) -> u64 {
+    crate::config::integer(&app.settings(), "app_update_check_minutes", 60) as u64
+}

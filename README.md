@@ -1,54 +1,20 @@
 # Stream247
 
-Stream247 is a headless 24/7 streamer/relay with a built-in web dashboard.
+A headless streamer and relay with a built-in web dashboard.
+Loop YouTube playlists and videos, relay Twitch or HLS streams, and broadcast to
+RTMP/RTMPS destinations.
 
-It can:
-- Loop a YouTube playlist or single YouTube video
-- Relay a Twitch channel URL
-- Relay a direct HLS `.m3u8` URL
-- Push output to any RTMP/RTMPS ingest (YouTube Live, Twitch, Owncast, Restream, custom RTMP servers)
+- Start, stop, restart, and skip streams from the dashboard.
+- Choose resolution, frame rate, bitrate, and CPU or hardware encoding.
+- Enable title overlays, playlist shuffle, and custom transition or recovery media.
+- Manage app and binary updates, with scheduled app checks and manual installation.
+- View live logs and preview sources in the Debug tab.
 
-## What the app includes now
+## Quick setup (Linux x86_64)
 
-- Web dashboard to start/stop/skip streams and live-edit settings
-- Source support: YouTube playlist/video, Twitch URL, direct HLS URL
-- Output controls: resolution (480p to 2160p), 30/60 FPS, bitrate, stream buffer mode
-- Encoder selection: auto or explicit (`libx264`, NVENC, QSV, AMF, VAAPI)
-- Optional title overlay and playlist shuffle
-- YouTube auth options (`yt-dlp` browser cookie import + optional profile path)
-- In-app binary updates for `yt-dlp` and `ffmpeg`
-- In-app app update check/install (release or prerelease channel)
-- Optional config persistence for source + stream key
-- Web console logs (app/other output + ffmpeg output)
+Requires `curl`. Run from the directory where you want Stream247 installed.
 
-## Run
-
-### From source
-
-```bash
-python3 Stream247.py
-```
-
-### From built binary
-
-- Linux: `dist/stream247-server`
-
-When running, open:
-
-- `http://127.0.0.1:7788`
-
-If `config.json` exists, host/port are read from:
-- `web_server_host` (default `0.0.0.0`)
-- `web_server_port` (default `7788`)
-
-### Quick install (Linux x86_64)
-
-Run either command from the directory where you want Stream247 installed.
-The helper downloads the latest package for your chosen channel, extracts it
-into the current directory, and runs the included installer. Requires `curl`
-and standard Linux utilities; no `jq` or manual release tags.
-
-**Release (recommended)**
+**Release**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TheDoctorTTV/247-stream/HEAD/install.sh | bash
@@ -60,82 +26,40 @@ curl -fsSL https://raw.githubusercontent.com/TheDoctorTTV/247-stream/HEAD/instal
 curl -fsSL https://raw.githubusercontent.com/TheDoctorTTV/247-stream/HEAD/install.sh | bash -s -- prerelease
 ```
 
-Open **http://SERVER_IP:7788**. New installations follow the chosen update
-channel; existing configuration is preserved. To uninstall, run
-`./uninstall_systemd_user_service.sh` from the installation directory.
+Open the dashboard at **http://0.0.0.0:7788**.
 
-For startup at boot without logging in, run once:
+## Build from source
+
+Requires stable Rust/Cargo, a linker, `pkg-config`, and liblzma development headers.
+On Debian: `build-essential pkg-config liblzma-dev`.
 
 ```bash
-sudo loginctl enable-linger "$USER"
+./build.sh
+./package_release.sh
 ```
 
-## Configuration
+Creates `releases/stream247-server` and packages it as
+`stream247-linux-x86_64.tar.gz`.
 
-`config.json` is read from the app runtime directory.
-
-Common fields:
-- `playlist_url`
-- `rtmp_base`
-- `stream_key`
-- `resolution`
-- `framerate`
-- `video_bitrate`
-- `buffer_mode`
-- `encoder_preference`
-- `overlay_titles`
-- `shuffle`
-- `log_to_file`
-- `remember`
-- `yt_auth_enabled`
-- `yt_auth_browser`
-- `yt_auth_profile`
-- `check_updates_startup`
-- `auto_app_updates`
-- `app_update_channel`
-- `update_download_cap_mbps`
-
-A current example is available at `dist/config.json` after building/running.
-
-## Build
-
-### Linux
+To run directly from source:
 
 ```bash
-./build_linux.sh
+cargo run --bin stream247-server
 ```
 
-Build output:
-- Linux: `dist/stream247-server`
+## Documentation
 
-The build bundles web dashboard assets from `web/` (`index.html`, `style.css`, `app.js`) into the binary.
+See [configuration and logging](docs.md) for settings and detailed guides.
 
-### Linux systemd user service (recommended for 24/7)
+## Uninstall
 
-After building:
-
-```bash
-./scripts/install_systemd_user_service.sh
-```
-
-This installs and starts `~/.config/systemd/user/stream247.service` with:
-- `ExecStart` pointing to `dist/stream247-server`
-- `Restart=always`
-- `STREAM247_SYSTEMD=1` so in-app updates hand restart control to `systemd`
-
-For startup on boot without logging in, enable linger once:
+Run from the installation directory:
 
 ```bash
-sudo loginctl enable-linger "$USER"
+./uninstall_systemd_user_service.sh
 ```
 
 ## Notes
-
-- Stream247 is web-dashboard first; streaming starts only after clicking **Start Stream**.
-- Dashboard binds to `0.0.0.0` by default; secure network access yourself (firewall/VPN/reverse proxy).
-- YouTube/Twitch source retrieval depends on `yt-dlp`.
-- Keep platform bitrate/resolution limits in mind for your destination ingest.
-
-## Creator
-
-**TheDoctorTTV**
+- The dashboard binds to `0.0.0.0` by default; restrict access with a firewall, VPN, or reverse proxy.
+- Source retrieval uses `yt-dlp`.
+- Follow your destination's bitrate and resolution limits.

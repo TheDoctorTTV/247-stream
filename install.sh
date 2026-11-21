@@ -120,7 +120,7 @@ for file in stream247-server install_systemd_user_service.sh uninstall_systemd_u
     echo "Package is missing $file." >&2; exit 1;
   }
 done
-# Both legacy stream247-linux/ and newer releases/ packages have one top directory.
+# Current stream247/ and older releases/ or stream247-linux/ packages have one top directory.
 tar -xzf "$WORK_DIR/package.tar.gz" -C "$INSTALL_DIR" --strip-components=1
 cd "$INSTALL_DIR"
 chmod +x stream247-server install_systemd_user_service.sh uninstall_systemd_user_service.sh
