@@ -199,6 +199,7 @@ pub fn normalize(v: &Value) -> Value {
             "theme",
             &[
                 "blue", "purple", "red", "mono", "emerald", "teal", "amber", "rose", "orange",
+                "midnight",
             ][..],
             "purple",
         ),

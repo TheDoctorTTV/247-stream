@@ -182,3 +182,5 @@ stream247-linux-x86_64.tar.gz
 
 # Uploaded YouTube credentials and private resolver copies
 **/youtube-auth/
+
+.claude

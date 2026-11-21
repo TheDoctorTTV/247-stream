@@ -83,6 +83,7 @@ fn handle(mut request: Request, app: Arc<App>) {
                 .join("\n")
                 .into_bytes(),
             )),
+            "/assets/logo.png" => Some(("image/png", include_bytes!("../web/logo.png").to_vec())),
             "/favicon.ico" | "/icon.ico" => {
                 Some(("image/x-icon", include_bytes!("../icon.ico").to_vec()))
             }

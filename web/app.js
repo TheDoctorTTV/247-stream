@@ -977,7 +977,36 @@
       const logs = Array.isArray(arr) ? arr : [];
       const text = logs.join("\n");
       const wasAtBottom = (el.scrollTop + el.clientHeight + 20 >= el.scrollHeight);
-      el.textContent = text || "No logs yet.";
+      if (el.dataset.rendered === text && text) {
+        // Unchanged; keep the existing nodes (and any text selection).
+      } else if (!logs.length) {
+        el.dataset.rendered = "";
+        el.textContent = "No logs yet.";
+      } else {
+        // Lines look like "[YYYY-MM-DD HH:MM:SS.mmm +zz:zz] LEVEL   message".
+        const frag = document.createDocumentFragment();
+        logs.forEach((line, i) => {
+          const m = /^\[\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})[^\]]*\]\s+(\S+)(\s+)([\s\S]*)$/.exec(String(line));
+          const row = document.createElement("span");
+          row.className = "log-line";
+          if (m) {
+            const time = document.createElement("span");
+            time.className = "log-time";
+            time.title = String(line).slice(1, String(line).indexOf("]"));
+            time.textContent = m[1];
+            const level = document.createElement("span");
+            level.className = "log-level log-" + m[2].toLowerCase();
+            level.textContent = m[2];
+            row.append(time, " ", level, m[3], m[4]);
+          } else {
+            row.textContent = String(line);
+          }
+          frag.append(row);
+          if (i < logs.length - 1) frag.append("\n");
+        });
+        el.replaceChildren(frag);
+        el.dataset.rendered = text;
+      }
       if (forceScroll || wasAtBottom) {
         el.scrollTop = el.scrollHeight;
       }
@@ -1185,22 +1214,38 @@
     function applyTheme(themeName) {
       let theme = String(themeName || "purple").trim().toLowerCase();
       if (theme === "current") theme = "purple";
-      const allowed = new Set(["blue", "purple", "red", "mono", "emerald", "teal", "amber", "rose", "orange"]);
+      const allowed = new Set(["blue", "purple", "red", "mono", "emerald", "teal", "amber", "rose", "orange", "midnight"]);
       const safeTheme = allowed.has(theme) ? theme : "purple";
       const root = document.documentElement;
       root.setAttribute("data-theme", safeTheme);
       document.body.setAttribute("data-theme", safeTheme);
       if (themeSelect) themeSelect.value = safeTheme;
+      for (const card of document.querySelectorAll("[data-theme-option]")) {
+        const selected = card.dataset.themeOption === safeTheme;
+        card.setAttribute("aria-checked", selected ? "true" : "false");
+        card.tabIndex = selected ? 0 : -1;
+      }
     }
 
     function initThemeSelector() {
       if (!themeSelect) return;
       applyTheme(String(themeSelect.value || "purple"));
-      themeSelect.addEventListener("change", () => {
-        const selected = String(themeSelect.value || "purple").trim().toLowerCase();
-        applyTheme(selected);
+      const cards = Array.from(document.querySelectorAll("[data-theme-option]"));
+      const choose = (card) => {
+        applyTheme(card.dataset.themeOption);
         queueAutoSave(180);
-      });
+      };
+      for (const card of cards) {
+        card.addEventListener("click", () => choose(card));
+        card.addEventListener("keydown", (ev) => {
+          const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[ev.key];
+          if (!step) return;
+          ev.preventDefault();
+          const next = cards[(cards.indexOf(card) + step + cards.length) % cards.length];
+          choose(next);
+          next.focus();
+        });
+      }
     }
 
     function setupMediaUpload(prefix, endpoint, label, emptyMessage) {
@@ -1866,7 +1911,7 @@
       const logBox = document.querySelector("#tab-console .subtab-panel.active pre");
       copyConsoleBtn.disabled = true;
       clearTimeout(consoleCopyStatusTimer);
-      const ok = await copyTextToClipboard(logBox ? logBox.textContent : "");
+      const ok = await copyTextToClipboard(logBox ? (logBox.dataset.rendered || logBox.textContent) : "");
       copyConsoleBtn.disabled = false;
       copyConsoleBtn.focus({ preventScroll: true });
       consoleCopyStatus.textContent = ok ? "Copied!" : "Unable to copy console.";
