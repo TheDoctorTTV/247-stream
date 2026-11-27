@@ -4,7 +4,7 @@ A headless streamer and relay with a built-in web dashboard.
 Loop YouTube playlists and videos, relay Twitch or HLS streams, and broadcast to
 RTMP/RTMPS destinations.
 
-- Start, stop, restart, and skip streams from the dashboard.
+- Start, pause, stop, restart, and skip streams from the dashboard.
 - Send the output to OBS or other streaming software over your local or private network.
 - Choose resolution, frame rate, bitrate, and CPU or hardware encoding.
 - Enable title overlays, playlist shuffle, and custom transition or recovery media.

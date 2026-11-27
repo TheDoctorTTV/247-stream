@@ -247,12 +247,14 @@ impl App {
             let mut state = self.state.lock().unwrap();
             state.files(&self.dir, &settings, true)?;
             state.streaming = true;
+            state.paused = false;
             state.status = "Starting".into();
             state.meta = json!({"mode":if local_preview{"local_preview"}else if local_output{"local_output"}else{"headless"},"source":cfg.source,"resolution":format!("{}p",cfg.height),"fps":cfg.fps.to_string()});
         }
         let control = Arc::new(Control {
             local_preview,
             local_output,
+            pausable: cfg.bridge(),
             preview_id: if local_preview {
                 crate::state::now().to_bits()
             } else {
@@ -289,6 +291,7 @@ impl App {
             {
                 let mut state = app.state.lock().unwrap();
                 state.streaming = false;
+                state.paused = false;
                 state.status = "Stopped".into();
                 state.updated = crate::state::now();
             }
@@ -424,6 +427,33 @@ impl App {
             running.control.skip.store(true, Ordering::Release);
         }
         self.log("[INFO] Skip requested — advancing to next item...");
+    }
+    /// Pause or resume the running broadcast. The output stays connected and
+    /// shows recovery media; resuming continues the current item where it paused.
+    pub fn set_paused(&self, paused: bool) -> Result<()> {
+        let running = self.worker.lock().unwrap();
+        let worker = running
+            .as_ref()
+            .filter(|w| !w.thread.is_finished() && !w.control.stopped())
+            .context("No stream is running")?;
+        anyhow::ensure!(
+            !worker.control.local_preview,
+            "Use the Debug tab to control a local test"
+        );
+        anyhow::ensure!(
+            worker.control.pausable,
+            "Pause needs a persistent output; enable persistent output for this destination"
+        );
+        if worker.control.paused.swap(paused, Ordering::AcqRel) == paused {
+            return Ok(());
+        }
+        self.state.lock().unwrap().paused = paused;
+        self.log(if paused {
+            "[INFO] Pause requested — holding the output on recovery media..."
+        } else {
+            "[INFO] Resume requested — continuing the current item..."
+        });
+        Ok(())
     }
     pub fn join_worker(&self) {
         let running = self.worker.lock().unwrap().take();

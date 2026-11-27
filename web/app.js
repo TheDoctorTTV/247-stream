@@ -6,6 +6,20 @@
     const restartBtn = document.getElementById("restartBtn");
     let actionPending = false;
     const stopBtn = document.getElementById("stopBtn");
+    const pauseBtn = document.getElementById("pauseBtn");
+    let streamPaused = false;
+    let streamMode = "";
+
+    // Icons come from the inline Tabler sprite (web/vendor/tabler-icons.svg).
+    function iconSvg(name) {
+      return '<svg class="icon" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+    }
+
+    function setIconButton(button, name, label) {
+      button.innerHTML = iconSvg(name);
+      button.title = label;
+      button.setAttribute("aria-label", label);
+    }
     const skipBtn = document.getElementById("skipBtn");
     const refreshBtn = document.getElementById("refreshBtn");
     const reloadSettingsBtn = document.getElementById("reloadSettingsBtn");
@@ -281,9 +295,9 @@
         url.title = String(entry.rtmp_base || "");
 
         const copyBtn = document.createElement("button");
-        copyBtn.className = "source-copy";
+        copyBtn.className = "source-copy icon-btn";
         copyBtn.type = "button";
-        copyBtn.textContent = "Copy URL";
+        setIconButton(copyBtn, "copy", "Copy URL");
         copyBtn.addEventListener("click", async () => {
           const ok = await copyTextToClipboard(entry.rtmp_base);
           setSettingsStatus(ok ? "Copied platform URL to clipboard." : "Failed to copy platform URL.", ok ? "ok" : "err");
@@ -293,7 +307,8 @@
         removeBtn.className = "source-remove";
         removeBtn.disabled = streamSettingsLocked();
         removeBtn.type = "button";
-        removeBtn.textContent = "Remove";
+        removeBtn.classList.add("icon-btn");
+        setIconButton(removeBtn, "trash", "Remove");
         removeBtn.addEventListener("click", () => {
           const nextServices = streamUrlServicesState.filter((_, i) => i !== idx);
           setStreamUrlServicesState(nextServices);
@@ -621,9 +636,9 @@
         url.title = entry.url;
 
         const copyBtn = document.createElement("button");
-        copyBtn.className = "source-copy";
+        copyBtn.className = "source-copy icon-btn";
         copyBtn.type = "button";
-        copyBtn.textContent = "Copy URL";
+        setIconButton(copyBtn, "copy", "Copy URL");
         copyBtn.addEventListener("click", async () => {
           const ok = await copyTextToClipboard(entry.url);
           if (ok) {
@@ -637,7 +652,8 @@
         removeBtn.className = "source-remove";
         removeBtn.disabled = streamSettingsLocked();
         removeBtn.type = "button";
-        removeBtn.textContent = "Remove";
+        removeBtn.classList.add("icon-btn");
+        setIconButton(removeBtn, "trash", "Remove");
         removeBtn.addEventListener("click", () => {
           const nextSources = sourcesState.filter((_, i) => i !== idx);
           const selected = String(sourceSelect.value || "").trim();
@@ -740,9 +756,9 @@
         keyText.title = "Ends with " + String(entry.key || "").slice(-4);
 
         const copyBtn = document.createElement("button");
-        copyBtn.className = "source-copy";
+        copyBtn.className = "source-copy icon-btn";
         copyBtn.type = "button";
-        copyBtn.textContent = "Copy Key";
+        setIconButton(copyBtn, "copy", "Copy Key");
         copyBtn.addEventListener("click", async () => {
           const ok = await copyTextToClipboard(entry.key);
           if (ok) {
@@ -756,7 +772,8 @@
         removeBtn.className = "source-remove";
         removeBtn.disabled = streamSettingsLocked();
         removeBtn.type = "button";
-        removeBtn.textContent = "Remove";
+        removeBtn.classList.add("icon-btn");
+        setIconButton(removeBtn, "trash", "Remove");
         removeBtn.addEventListener("click", () => {
           const nextKeys = streamKeysState.filter((_, i) => i !== idx);
           const selected = String(streamKeySelect.value || "").trim();
@@ -1024,6 +1041,13 @@
         appInstallPending || (appUpdateRunning && lastAppUpdateInfo?.operation === "install");
       restartBtn.disabled = !streamStateKnown || actionPending || !streamActive;
       stopBtn.disabled = !streamStateKnown || actionPending || !streamActive;
+      // Pause holds the output on recovery media; local Debug tests use their own controls.
+      pauseBtn.disabled = !streamStateKnown || actionPending || !streamActive || streamMode === "local_preview";
+      const pauseLabel = streamPaused ? "Resume" : "Pause";
+      if (pauseBtn.getAttribute("aria-label") !== pauseLabel) {
+        setIconButton(pauseBtn, streamPaused ? "play" : "pause", pauseLabel);
+      }
+      pauseBtn.classList.toggle("primary", streamPaused);
       const canSkip = sourceSupportsSkip(streamActive ? runtimeSourceUrl : sourceSelect.value);
       skipBtn.hidden = !canSkip;
       skipBtn.disabled = !canSkip || !streamStateKnown || actionPending || !streamActive;
@@ -1121,6 +1145,8 @@
         const streaming = !!s.streaming;
         streamStateKnown = true;
         streamActive = streaming;
+        streamPaused = streaming && !!s.paused;
+        streamMode = String((s.meta && s.meta.mode) || "");
         syncStreamSettingsLock();
         stateText.textContent = s.status || "Unknown";
         stateText.className = "status" + (streaming ? " on" : "");
@@ -1376,7 +1402,8 @@
       function buttons() {
         fileInput.disabled = busy;
         upload.disabled = busy;
-        upload.textContent = busy ? "Uploading…" : "Upload media";
+        upload.title = busy ? "Uploading…" : "Upload media";
+        upload.setAttribute("aria-label", upload.title);
         upload.setAttribute("aria-busy", String(busy));
         remove.disabled = busy || !configured;
       }
@@ -1486,6 +1513,7 @@
     }
     const loadRecoveryMedia = setupMediaUpload("fallback_image", "/api/fallback-image", "Recovery media", "Recovery uses a black screen.");
     const loadTransitionMedia = setupMediaUpload("transition_media", "/api/transition-media", "Transition media", "Track changes use the recovery fallback.");
+    const loadStandbyMedia = setupMediaUpload("standby_media", "/api/standby-media", "Standby media", "Pausing shows a black screen.");
 
     const debugTab = document.getElementById("tab-debug");
     const debugTabButton = document.querySelector('[data-tab="tab-debug"]');
@@ -2216,6 +2244,7 @@
     startBtn.addEventListener("click", () => api("/api/start"));
     restartBtn.addEventListener("click", restartStream);
     stopBtn.addEventListener("click", () => api("/api/stop"));
+    pauseBtn.addEventListener("click", () => api(streamPaused ? "/api/resume" : "/api/pause"));
     skipBtn.addEventListener("click", () => api("/api/skip"));
     refreshBtn.addEventListener("click", () => refreshState(true));
     reloadSettingsBtn.addEventListener("click", () => loadSettings());
@@ -2581,6 +2610,7 @@
     loadLocalOutputAddresses();
     loadRecoveryMedia();
     loadTransitionMedia();
+    loadStandbyMedia();
     loadDebugStatus();
     loadBinariesStatus();
     refreshState(true);

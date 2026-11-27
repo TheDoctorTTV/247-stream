@@ -81,6 +81,7 @@ enum SourceEnd {
     Complete,
     Advance,
     Cancelled,
+    Paused { position: f64 },
     Retry { reason: String, position: f64 },
 }
 impl Worker {
@@ -299,17 +300,25 @@ impl Worker {
         let h = self.cfg.height;
         let w = ((h * 16 / 9) + 1) / 2 * 2;
         let transition = self.transition_duration.is_some();
-        self.filler_image = crate::fallback_image::revision(&self.app);
+        // Paused broadcasts show standby media, falling back to black (not recovery media).
+        let standby = !transition && self.control.is_paused();
+        let role = if standby {
+            crate::fallback_image::Role::Standby
+        } else {
+            crate::fallback_image::Role::Recovery
+        };
+        let label = if standby { "Standby" } else { "Recovery" };
+        self.filler_standby = standby;
+        self.filler_image = crate::fallback_image::revision(&self.app, role);
         self.filler_image_checked = Instant::now();
         let asset = if transition {
             self.transition_asset.take()
         } else if self.filler_image.is_some() && self.filler_image_failed != self.filler_image {
-            match crate::fallback_image::snapshot(&self.app, crate::fallback_image::Role::Recovery)
-            {
+            match crate::fallback_image::snapshot(&self.app, role) {
                 Ok(asset) => asset,
                 Err(e) => {
                     self.log(&format!(
-                        "[WARN] Recovery media unavailable: {e:#}; using black video."
+                        "[WARN] {label} media unavailable: {e:#}; using black video."
                     ));
                     self.filler_image_failed = self.filler_image;
                     None
@@ -340,7 +349,10 @@ impl Worker {
             "-i",
             "anullsrc=cl=stereo:r=44100",
         ]));
-        let clip_audio = transition && asset.as_ref().is_some_and(|a| a.video() && a.audio);
+        // Transition and standby videos play their own audio (standby loops it);
+        // recovery media is always silent.
+        let clip_audio =
+            (transition || standby) && asset.as_ref().is_some_and(|a| a.video() && a.audio);
         if clip_audio {
             args.extend(process::args(&["-filter_complex", "[0:a:0]asetpts=PTS-STARTPTS,apad[clip];[clip][1:a:0]amix=inputs=2:duration=longest:normalize=0[audio]"]));
         }
@@ -396,12 +408,18 @@ impl Worker {
             &args,
             if transition {
                 "transition"
+            } else if standby {
+                "standby"
             } else {
                 "keepalive"
             },
         )?;
         self.log(if transition {
             "[INFO] Transition active; preparing the next source within the existing output session."
+        } else if standby && asset.is_some() {
+            "[INFO] Standby active: standby media while paused; persistent output retained."
+        } else if standby {
+            "[INFO] Standby active: black video and silent audio while paused; persistent output retained."
         } else if asset.is_some() {
             "[INFO] Playout fallback active: recovery media and silent audio; persistent output retained."
         } else {
@@ -421,7 +439,16 @@ impl Worker {
             && self.filler_image_checked.elapsed() >= Duration::from_secs(1)
         {
             self.filler_image_checked = Instant::now();
-            if crate::fallback_image::revision(&self.app) != self.filler_image {
+            // Switch to standby when paused, and restart when the shown media
+            // changes. On resume, standby stays until the source hands off.
+            let role = if self.filler_standby {
+                crate::fallback_image::Role::Standby
+            } else {
+                crate::fallback_image::Role::Recovery
+            };
+            if (self.control.is_paused() && !self.filler_standby)
+                || crate::fallback_image::revision(&self.app, role) != self.filler_image
+            {
                 self.stop_filler();
                 self.filler_image_failed = None;
             }
@@ -469,7 +496,11 @@ impl Worker {
                 self.log("[WARN] Transition decoder failed; continuing with recovery fallback.");
             } else {
                 self.filler_image_failed = self.filler_image;
-                self.log("[WARN] Recovery media decoder failed; using black video until the media changes.");
+                self.log(if self.filler_standby {
+                    "[WARN] Standby media decoder failed; using black video until the media changes."
+                } else {
+                    "[WARN] Recovery media decoder failed; using black video until the media changes."
+                });
             }
             self.stop_filler();
             return self.pump_filler();
@@ -622,6 +653,7 @@ impl Worker {
         // warms up; the normal readiness handoff below then switches producers.
         while !self.transition_ready()
             && !self.control.stopped()
+            && !self.control.is_paused()
             && !(skippable && self.control.skipped())
         {
             self.pump_filler()?;
@@ -632,6 +664,12 @@ impl Worker {
             self.stop_filler();
             self.pump_filler()?;
             return Ok(SourceEnd::Cancelled);
+        }
+        if self.control.is_paused() {
+            // Replace any transition with recovery media while paused.
+            self.stop_filler();
+            self.pump_filler()?;
+            return Ok(SourceEnd::Paused { position: seek });
         }
         self.pump_filler()?;
         let args = self.ffmpeg_args(media, true, seek);
@@ -652,6 +690,11 @@ impl Worker {
         let outcome = loop {
             if self.control.stopped() || (skippable && self.control.skipped()) {
                 break SourceEnd::Cancelled;
+            }
+            if self.control.is_paused() {
+                break SourceEnd::Paused {
+                    position: checkpoint,
+                };
             }
             if active {
                 let advance = self.control.fault.lock().unwrap().advance.take();
@@ -774,6 +817,20 @@ impl Worker {
         self.stop_producer(source, false);
         Ok(outcome)
     }
+    /// Keep the output on recovery media until the broadcast is resumed,
+    /// stopped or (for playlist items) skipped.
+    fn hold_paused(&mut self, skippable: bool) -> Result<()> {
+        self.app.status("Paused");
+        while self.control.is_paused()
+            && !self.control.stopped()
+            && !(skippable && self.control.skipped())
+        {
+            self.pump_filler()?;
+            self.report_processes(None);
+            thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
     pub(super) fn play_resilient(&mut self, media: &Media, skippable: bool) -> Result<()> {
         if !self.stats_supported {
             self.log("[WARN] FFmpeg per-track stats unavailable: transport/exit recovery remains enabled, but audio-only stall detection requires a full FFmpeg 8+ build.");
@@ -790,6 +847,43 @@ impl Worker {
                     return Ok(());
                 }
                 SourceEnd::Cancelled | SourceEnd::Advance => return Ok(()),
+                SourceEnd::Paused { position: paused_at } => {
+                    let live = current.duration.is_none();
+                    if live {
+                        self.log("[INFO] Broadcast paused; the live source is released and will be rejoined on resume.");
+                    } else {
+                        self.log(&format!("[INFO] Broadcast paused at content position {paused_at:.3}s; output session retained."));
+                    }
+                    self.hold_paused(skippable)?;
+                    if self.control.stopped() || (skippable && self.control.skipped()) {
+                        return Ok(());
+                    }
+                    // Resume slightly early so no content is lost at the handoff;
+                    // live sources rejoin at their live edge.
+                    position = if live { 0.0 } else { (paused_at - 0.25).max(0.0) };
+                    attempt = 0;
+                    self.log("[INFO] Broadcast resumed; reopening the current item.");
+                    self.app.status(if self.bridge.is_some() {
+                        "Resuming"
+                    } else {
+                        "Preparing source…"
+                    });
+                    // Signed URLs can expire during a long pause.
+                    match self.refresh_media(current.clone(), skippable) {
+                        Ok(media) => current = media,
+                        Err(e) => {
+                            if self.control.stopped() || (skippable && self.control.skipped()) {
+                                return Ok(());
+                            }
+                            if e.is::<super::YoutubeAuthenticationRequired>() {
+                                return Err(e);
+                            }
+                            self.log(&format!(
+                                "[WARN] Refreshing source URLs after pause failed: {e:#}; trying the previous URLs."
+                            ));
+                        }
+                    }
+                }
                 SourceEnd::Retry {
                     reason,
                     position: checkpoint,

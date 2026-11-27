@@ -134,6 +134,10 @@ impl Drop for OwnedChild {
 pub struct Control {
     pub stop: AtomicBool,
     pub skip: AtomicBool,
+    /// Broadcast pause: the source is released and recovery media keeps the output live.
+    pub paused: AtomicBool,
+    /// Pause needs a persistent output to hold while the source is released.
+    pub pausable: bool,
     pub local_preview: bool,
     pub local_output: bool,
     pub preview_id: u64,
@@ -149,6 +153,9 @@ impl Control {
     }
     pub fn skipped(&self) -> bool {
         self.skip.load(Ordering::Acquire)
+    }
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
     }
     pub fn pause(&self, duration: Duration) {
         let end = Instant::now() + duration;

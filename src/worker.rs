@@ -238,6 +238,8 @@ pub struct Worker {
     filler_image: Option<crate::fallback_image::Stamp>,
     filler_image_failed: Option<crate::fallback_image::Stamp>,
     filler_image_checked: Instant,
+    /// Whether the running filler shows standby (paused) rather than recovery media.
+    filler_standby: bool,
     transition_asset: Option<crate::fallback_image::Asset>,
     transition_duration: Option<f64>,
     transition_started: Option<Instant>,
@@ -281,6 +283,7 @@ impl Worker {
             filler_image: None,
             filler_image_failed: None,
             filler_image_checked: Instant::now(),
+            filler_standby: false,
             transition_asset: None,
             transition_duration: None,
             transition_started: None,

@@ -89,6 +89,7 @@ fn handle(mut request: Request, app: Arc<App>) {
     let media_role = match path.strip_suffix("/info").unwrap_or(&path) {
         "/api/fallback-image" => Some(Role::Recovery),
         "/api/transition-media" => Some(Role::Transition),
+        "/api/standby-media" => Some(Role::Standby),
         _ => None,
     };
     if method == "GET" && media_role.is_some() && !path.ends_with("/info") {
@@ -107,6 +108,7 @@ fn handle(mut request: Request, app: Arc<App>) {
                     .replace("{APP_NAME}", APP_NAME)
                     .replace("{APP_VERSION}", VERSION)
                     .replace("{GITHUB_REPO}", REPO)
+                    .replace("{ICON_SPRITE}", include_str!("../web/vendor/tabler-icons.svg"))
                     .into_bytes(),
             )),
             "/assets/style.css" => Some((
@@ -129,6 +131,10 @@ fn handle(mut request: Request, app: Arc<App>) {
                 ]
                 .join("\n")
                 .into_bytes(),
+            )),
+            "/assets/vendor/tabler-icons-LICENSE.txt" => Some((
+                "text/plain; charset=utf-8",
+                include_bytes!("../web/vendor/tabler-icons-LICENSE.txt").to_vec(),
             )),
             "/assets/logo.png" => Some(("image/png", include_bytes!("../web/logo.png").to_vec())),
             "/favicon.ico" | "/icon.ico" => {
@@ -228,6 +234,14 @@ fn handle(mut request: Request, app: Arc<App>) {
             ("POST", "/api/stop") => {
                 app.stop();
                 json!({"ok":true})
+            }
+            ("POST", "/api/pause") => {
+                app.set_paused(true)?;
+                json!({"ok":true,"paused":true})
+            }
+            ("POST", "/api/resume") => {
+                app.set_paused(false)?;
+                json!({"ok":true,"paused":false})
             }
             ("POST", "/api/skip") => {
                 app.skip();

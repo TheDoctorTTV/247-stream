@@ -22,8 +22,8 @@ beside the packaged executable, or in the current directory when using
 | `overlay_titles`, `shuffle` | Title overlays and playlist shuffle |
 | `remember_current_video` | Restart the last playing YouTube video from the beginning on the next stream start (default: off) |
 
-Recovery and transition media are uploaded through Settings; see
-[Recovery and transitions](#recovery-and-transitions).
+Recovery, transition and standby media are uploaded through Settings; see
+[Recovery, transition and standby media](#recovery-transition-and-standby-media).
 
 ### Remember current video
 
@@ -146,10 +146,24 @@ the stream.
 To start the installed user service at boot without logging in:
 `sudo loginctl enable-linger "$USER"`.
 
-## Recovery and transitions
+## Pausing a broadcast
 
-Upload separate **Recovery media** and **Transition media** in Settings:
-PNG/JPG/WebP images, GIF, MP4 or WebM, up to 10 MiB each. Media fits the output
+**Pause** on the Stream tab holds the broadcast without ending it. The current
+source is released, the output stays connected and shows **Standby media**, and the
+status reads **Paused**. Without standby media, pausing shows black video with
+silent audio. **Resume** reopens the
+current video a fraction of a second before where it paused; Twitch and HLS relays
+rejoin the live stream instead. Skip while paused moves to the next item, which
+starts when you resume. Stop ends the broadcast as usual.
+
+Pause needs a persistent output, which all RTMP destinations and streaming software
+output use. It is unavailable for YouTube when `youtube_persistent_output` is off,
+and for local Debug tests.
+
+## Recovery, transition and standby media
+
+Upload separate **Recovery media**, **Transition media** and **Standby media** in
+Settings: PNG/JPG/WebP images, GIF, MP4 or WebM, up to 10 MiB each. Media fits the output
 with black padding; 1920 × 1080 is recommended. Recovery media loops silently
 during interruptions; without it, fallback is black video with silence. Initial
 startup waits for actual source audio and video before opening the output.
@@ -165,6 +179,13 @@ while persistent output stays connected. Finite YouTube videos resume near the
 last common audio/video checkpoint; live sources reconnect at the live position.
 After three failed recovery attempts, playlist playback skips the item; live
 relays retry after a cooldown. Recovery and transitions require persistent output.
+
+Standby media is shown while the broadcast is [paused](#pausing-a-broadcast).
+Videos and GIFs loop and images stay on screen. A video's own audio plays and loops;
+media without audio plays silence. Standby never falls back to recovery media: with
+no standby media, pausing shows black video. Replacing or removing it applies
+immediately, even during a pause. On resume, standby stays on screen until the
+video is ready to continue.
 
 ## Debug
 

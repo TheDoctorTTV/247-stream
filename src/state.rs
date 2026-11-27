@@ -18,6 +18,7 @@ pub fn now() -> f64 {
 }
 pub struct State {
     pub streaming: bool,
+    pub paused: bool,
     pub status: String,
     pub meta: Value,
     pub updated: f64,
@@ -33,6 +34,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             streaming: false,
+            paused: false,
             status: "Idle".into(),
             meta: json!({"mode":"headless"}),
             updated: now(),
@@ -48,7 +50,7 @@ impl Default for State {
 }
 impl State {
     pub fn snapshot(&self) -> Value {
-        json!({"app_name":APP_NAME,"app_version":VERSION,"streaming":self.streaming,"status":self.status,"updated_at":self.updated,"meta":self.meta,"logs":self.logs,"logs_other":self.other,"logs_ffmpeg":self.ffmpeg})
+        json!({"app_name":APP_NAME,"app_version":VERSION,"streaming":self.streaming,"paused":self.paused,"status":self.status,"updated_at":self.updated,"meta":self.meta,"logs":self.logs,"logs_other":self.other,"logs_ffmpeg":self.ffmpeg})
     }
     pub fn register_secret(&mut self, secret: &str) {
         if !secret.is_empty() {

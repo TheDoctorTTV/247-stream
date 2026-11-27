@@ -10,6 +10,7 @@
 </head>
 
 <body>
+{ICON_SPRITE}
   <div class="wrap">
     <header class="app-header">
       <h1>Stream 24/7 <span class="app-version">v{APP_VERSION}</span></h1>
@@ -48,9 +49,7 @@
               <label for="local_output_url">Streaming Software URL</label>
               <div class="copy-field">
                 <input id="local_output_url" type="text" readonly title="Click to copy" aria-describedby="localOutputHint">
-                <button id="local_output_copy" class="copy-icon-btn" type="button" aria-label="Copy URL" title="Copy URL">
-                  <svg class="icon-copy" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="13" rx="3"/><path d="M16 8V6a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v9a3 3 0 0 0 3 3h1"/></svg>
-                  <svg class="icon-check" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+                <button id="local_output_copy" class="copy-icon-btn" type="button" aria-label="Copy URL" title="Copy URL"><svg class="icon icon-copy" aria-hidden="true"><use href="#i-copy"/></svg><svg class="icon icon-check" aria-hidden="true"><use href="#i-check"/></svg>
                 </button>
               </div>
               <div id="localOutputHint" class="statusline field-hint">Add a Media Source in your streaming software with this URL. Change the address in Settings.</div>
@@ -108,22 +107,17 @@
           <div><dt>Next</dt><dd id="nextItem">—</dd></div>
         </dl>
         <div class="stream-actions" aria-label="Stream controls">
-          <button class="primary" id="startBtn">Start</button>
-          <button id="restartBtn" disabled>Restart</button>
-          <button id="skipBtn" hidden disabled>Skip</button>
-          <button id="stopBtn" disabled>Stop</button>
+          <button class="primary icon-btn" id="startBtn" type="button" title="Start" aria-label="Start"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg></button>
+          <button class="icon-btn" id="pauseBtn" type="button" title="Pause" aria-label="Pause" disabled><svg class="icon" aria-hidden="true"><use href="#i-pause"/></svg></button>
+          <button class="icon-btn" id="restartBtn" type="button" title="Restart" aria-label="Restart" disabled><svg class="icon" aria-hidden="true"><use href="#i-restart"/></svg></button>
+          <button class="icon-btn" id="skipBtn" type="button" title="Skip" aria-label="Skip" hidden disabled><svg class="icon" aria-hidden="true"><use href="#i-skip"/></svg></button>
+          <button class="icon-btn" id="stopBtn" type="button" title="Stop" aria-label="Stop" disabled><svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg></button>
         </div>
         <div class="stream-utilities">
           <div id="settingsStatus" class="statusline" role="status" aria-live="polite"></div>
           <div class="stream-utility-actions">
-            <button id="reloadSettingsBtn" type="button" title="Reload saved settings">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></svg>
-              Reload settings
-            </button>
-            <button id="refreshBtn" type="button" title="Refresh stream status">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17"/></svg>
-              Refresh status
-            </button>
+            <button id="reloadSettingsBtn" type="button" title="Reload saved settings" class="icon-btn" aria-label="Reload saved settings"><svg class="icon" aria-hidden="true"><use href="#i-reload-settings"/></svg></button>
+            <button id="refreshBtn" type="button" title="Refresh stream status" class="icon-btn" aria-label="Refresh stream status"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
           </div>
         </div>
       </div>
@@ -207,8 +201,8 @@
             </div>
             <input id="fallback_image_file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,.mp4,.webm,.gif" aria-label="Recovery media" hidden>
             <div class="tool-actions">
-              <button id="fallback_image_upload" type="button" class="primary" aria-describedby="fallback_image_hint">Upload media</button>
-              <button id="fallback_image_remove" type="button" class="tool-secondary" disabled>Remove</button>
+              <button id="fallback_image_upload" type="button" class="primary icon-btn" title="Upload media" aria-label="Upload media" aria-describedby="fallback_image_hint"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg></button>
+              <button id="fallback_image_remove" type="button" class="tool-secondary icon-btn danger" title="Remove media" aria-label="Remove media" disabled><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg></button>
             </div>
             <div id="fallback_image_status" class="statusline" role="status" aria-live="polite">Loading recovery media…</div>
             <p class="tool-caption">Fits without cropping. Changes apply during active recovery without restarting the stream.</p>
@@ -234,11 +228,38 @@
             </div>
             <input id="transition_media_file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,.mp4,.webm,.gif" aria-label="Transition media" hidden>
             <div class="tool-actions">
-              <button id="transition_media_upload" type="button" class="primary" aria-describedby="transition_media_hint">Upload media</button>
-              <button id="transition_media_remove" type="button" class="tool-secondary" disabled>Remove</button>
+              <button id="transition_media_upload" type="button" class="primary icon-btn" title="Upload media" aria-label="Upload media" aria-describedby="transition_media_hint"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg></button>
+              <button id="transition_media_remove" type="button" class="tool-secondary icon-btn danger" title="Remove media" aria-label="Remove media" disabled><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg></button>
             </div>
             <div id="transition_media_status" class="statusline" role="status" aria-live="polite">Loading transition media…</div>
             <p class="tool-caption">The next track loads during the transition. If it needs longer, videos and GIFs keep looping, or the image stays visible. Replacements apply at the next transition.</p>
+          </div>
+        </div>
+      </section>
+      <section class="card recovery-settings" aria-labelledby="standby_heading">
+        <div class="tool-heading">
+          <h2 id="standby_heading">Standby media</h2>
+          <p>Shown while the broadcast is paused. Videos and GIFs loop, and video audio plays; media without audio plays silence.</p>
+        </div>
+        <div class="recovery-layout">
+          <div class="media-frame recovery-frame">
+            <div id="standby_media_empty" class="media-empty"><strong>No standby media</strong><span>Pausing shows a black screen.</span></div>
+            <img id="standby_media_preview" class="fallback-image-preview" alt="Saved standby media" hidden>
+            <video id="standby_media_video" class="fallback-image-preview" controls playsinline preload="metadata" aria-label="Saved standby media video" hidden></video>
+          </div>
+          <div class="recovery-controls">
+            <div class="recovery-requirements">
+              <strong>Images, GIFs or videos</strong>
+              <span class="tool-caption">Recommended: 1920 × 1080 px · Fits any aspect ratio</span>
+              <span id="standby_media_hint" class="tool-caption">PNG, JPG, WebP, GIF, MP4 or WebM · Up to 10 MiB</span>
+            </div>
+            <input id="standby_media_file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,.mp4,.webm,.gif" aria-label="Standby media" hidden>
+            <div class="tool-actions">
+              <button id="standby_media_upload" type="button" class="primary icon-btn" title="Upload media" aria-label="Upload media" aria-describedby="standby_media_hint"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg></button>
+              <button id="standby_media_remove" type="button" class="tool-secondary icon-btn danger" title="Remove media" aria-label="Remove media" disabled><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg></button>
+            </div>
+            <div id="standby_media_status" class="statusline" role="status" aria-live="polite">Loading standby media…</div>
+            <p class="tool-caption">The output stays live while paused. Replacing or removing the media applies right away, even during a pause.</p>
           </div>
         </div>
       </section>
@@ -254,7 +275,7 @@
           <label for="source_add_input">Add Source URL</label>
           <div class="row">
             <input id="source_add_input" type="text" placeholder="https://www.youtube.com/playlist?list=...">
-            <button id="source_add_btn" class="primary" type="button">Add</button>
+            <button id="source_add_btn" class="primary icon-btn" type="button" title="Add source" aria-label="Add source"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
           </div>
         </div>
         <div class="field" style="margin-top: 10px;">
@@ -275,7 +296,7 @@
           <label for="stream_key_add_input">Add Stream Key</label>
           <div class="row">
             <input id="stream_key_add_input" type="password" placeholder="Paste your stream key">
-            <button id="stream_key_add_btn" class="primary" type="button">Add</button>
+            <button id="stream_key_add_btn" class="primary icon-btn" type="button" title="Add stream key" aria-label="Add stream key"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
           </div>
         </div>
         <div class="field" style="margin-top: 10px;">
@@ -296,7 +317,7 @@
           <label for="stream_platform_add_input">Platform RTMP URL</label>
           <div class="row">
             <input id="stream_platform_add_input" type="text" placeholder="rtmp://example.com/live">
-            <button id="stream_platform_add_btn" class="primary" type="button">Add</button>
+            <button id="stream_platform_add_btn" class="primary icon-btn" type="button" title="Add platform" aria-label="Add platform"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
           </div>
         </div>
         <div class="field" style="margin-top: 10px;">
@@ -456,8 +477,7 @@
           <h2 id="changelogTitle">Changelog</h2>
           <p id="changelogSubtitle" class="modal-subtitle"></p>
         </div>
-        <button id="changelogClose" class="modal-close" type="button" aria-label="Close changelog">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        <button id="changelogClose" class="modal-close" type="button" aria-label="Close changelog"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
         </button>
       </div>
       <div id="changelogBody" class="modal-body changelog" tabindex="0"></div>
