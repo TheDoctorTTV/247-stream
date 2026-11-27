@@ -1,5 +1,7 @@
 //! HTTP compatibility layer for the existing dashboard assets and JSON endpoints.
-use crate::{config, debug, fallback_image, runtime::App, updates, APP_NAME, REPO, VERSION};
+use crate::{
+    config, debug, fallback_image, output, runtime::App, updates, APP_NAME, REPO, VERSION,
+};
 use anyhow::{Context, Result};
 use fallback_image::Role;
 use serde_json::{json, Value};
@@ -20,6 +22,51 @@ fn respond(request: Request, status: u16, kind: &str, bytes: Vec<u8>) {
 fn handle(mut request: Request, app: Arc<App>) {
     let path = request.url().split('?').next().unwrap_or("/").to_owned();
     let method = request.method().as_str().to_owned();
+    if path.starts_with("/api/output/") {
+        // Only private clients may pull the stream; see output::client_allowed.
+        let allowed = request
+            .remote_addr()
+            .is_some_and(|addr| output::client_allowed(addr.ip()));
+        if !allowed {
+            respond(
+                request,
+                403,
+                "text/plain",
+                b"Local output is only available on private networks".to_vec(),
+            );
+            return;
+        }
+        if method != "GET" && method != "HEAD" {
+            respond(request, 405, "text/plain", b"Method not allowed".to_vec());
+            return;
+        }
+        if !app.local_output_active() {
+            respond(
+                request,
+                404,
+                "text/plain",
+                b"Local output is not running".to_vec(),
+            );
+            return;
+        }
+        let name = path.trim_start_matches("/api/output/");
+        match output::hls_asset(&output::dir(&app), name) {
+            Ok(Some((kind, bytes))) => respond(request, 200, kind, bytes),
+            Ok(None) => respond(
+                request,
+                404,
+                "text/plain",
+                b"Local output is not ready".to_vec(),
+            ),
+            Err(_) => respond(
+                request,
+                400,
+                "text/plain",
+                b"Local output asset unavailable".to_vec(),
+            ),
+        }
+        return;
+    }
     if method == "GET" && path.starts_with("/api/debug/preview/") {
         let name = path.trim_start_matches("/api/debug/preview/");
         match debug::preview_asset(&app, name) {
@@ -42,6 +89,7 @@ fn handle(mut request: Request, app: Arc<App>) {
     let media_role = match path.strip_suffix("/info").unwrap_or(&path) {
         "/api/fallback-image" => Some(Role::Recovery),
         "/api/transition-media" => Some(Role::Transition),
+        "/api/standby-media" => Some(Role::Standby),
         _ => None,
     };
     if method == "GET" && media_role.is_some() && !path.ends_with("/info") {
@@ -60,6 +108,7 @@ fn handle(mut request: Request, app: Arc<App>) {
                     .replace("{APP_NAME}", APP_NAME)
                     .replace("{APP_VERSION}", VERSION)
                     .replace("{GITHUB_REPO}", REPO)
+                    .replace("{ICON_SPRITE}", include_str!("../web/vendor/tabler-icons.svg"))
                     .into_bytes(),
             )),
             "/assets/style.css" => Some((
@@ -82,6 +131,10 @@ fn handle(mut request: Request, app: Arc<App>) {
                 ]
                 .join("\n")
                 .into_bytes(),
+            )),
+            "/assets/vendor/tabler-icons-LICENSE.txt" => Some((
+                "text/plain; charset=utf-8",
+                include_bytes!("../web/vendor/tabler-icons-LICENSE.txt").to_vec(),
             )),
             "/assets/logo.png" => Some(("image/png", include_bytes!("../web/logo.png").to_vec())),
             "/favicon.ico" | "/icon.ico" => {
@@ -159,6 +212,18 @@ fn handle(mut request: Request, app: Arc<App>) {
                 app.stop_preview()?;
                 json!({"ok":true})
             }
+            ("GET", "/api/output-addresses") => {
+                let port = config::integer(&app.raw_settings(), "web_server_port", 7788);
+                let port = if (1..=65535).contains(&port) { port } else { 7788 };
+                let addresses: Vec<Value> = output::addresses()
+                    .iter()
+                    .map(|a| {
+                        json!({"interface":a.interface,"address":a.ip.to_string(),
+                            "kind":a.kind(),"url":a.url(port)})
+                    })
+                    .collect();
+                json!({"ok":true,"addresses":addresses})
+            }
             ("GET", "/api/state") => app.state.lock().unwrap().snapshot(),
             ("GET", "/api/settings") => json!({"ok":true,"settings":app.settings()}),
             ("POST", "/api/settings") => json!({"ok":true,"settings":app.save_settings(&body)?}),
@@ -169,6 +234,14 @@ fn handle(mut request: Request, app: Arc<App>) {
             ("POST", "/api/stop") => {
                 app.stop();
                 json!({"ok":true})
+            }
+            ("POST", "/api/pause") => {
+                app.set_paused(true)?;
+                json!({"ok":true,"paused":true})
+            }
+            ("POST", "/api/resume") => {
+                app.set_paused(false)?;
+                json!({"ok":true,"paused":false})
             }
             ("POST", "/api/skip") => {
                 app.skip();
@@ -182,6 +255,10 @@ fn handle(mut request: Request, app: Arc<App>) {
             }
             ("GET", "/api/app-update") => {
                 json!({"ok":true,"app_update":updates::initial_status(&app,true)})
+            }
+            ("GET", "/api/app-update/changelog") => {
+                json!({"ok":true,"current_version":VERSION,
+                    "releases":app.release_notes.lock().unwrap().clone()})
             }
             ("POST", "/api/app-update/check") => {
                 json!({"ok":true,"app_update":updates::trigger(&app,true,false,&body)})

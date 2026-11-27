@@ -1,4 +1,4 @@
-//! Server-managed recovery and transition media. Client filenames never select paths.
+//! Server-managed recovery, transition and standby media. Client filenames never select paths.
 use crate::{process, runtime::App};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -15,18 +15,22 @@ pub const MAX_BYTES: usize = 10 * 1024 * 1024;
 pub enum Role {
     Recovery,
     Transition,
+    /// Shown while the broadcast is paused; plays its own audio when present.
+    Standby,
 }
 impl Role {
     fn name(self) -> &'static str {
         match self {
             Self::Recovery => "recovery",
             Self::Transition => "transition",
+            Self::Standby => "standby",
         }
     }
     fn endpoint(self) -> &'static str {
         match self {
             Self::Recovery => "/api/fallback-image",
             Self::Transition => "/api/transition-media",
+            Self::Standby => "/api/standby-media",
         }
     }
     fn manifest(self, app: &App) -> PathBuf {
@@ -150,8 +154,8 @@ fn stamp(app: &App, role: Role) -> Option<Stamp> {
         bytes: m.len(),
     })
 }
-pub fn revision(app: &App) -> Option<Stamp> {
-    stamp(app, Role::Recovery)
+pub fn revision(app: &App, role: Role) -> Option<Stamp> {
+    stamp(app, role)
 }
 /// Hard-link under the upload lock so replacement/removal cannot invalidate playback.
 pub fn snapshot(app: &App, role: Role) -> Result<Option<Asset>> {

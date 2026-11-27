@@ -4,7 +4,8 @@ A headless streamer and relay with a built-in web dashboard.
 Loop YouTube playlists and videos, relay Twitch or HLS streams, and broadcast to
 RTMP/RTMPS destinations.
 
-- Start, stop, restart, and skip streams from the dashboard.
+- Start, pause, stop, restart, and skip streams from the dashboard.
+- Send the output to OBS or other streaming software over your local or private network.
 - Choose resolution, frame rate, bitrate, and CPU or hardware encoding.
 - Enable title overlays, playlist shuffle, and custom transition or recovery media.
 - Manage app and binary updates, with scheduled app checks and manual installation.
@@ -61,5 +62,6 @@ Run from the installation directory:
 
 ## Notes
 - The dashboard binds to `0.0.0.0` by default; restrict access with a firewall, VPN, or reverse proxy.
+- The streaming software output is only served to private networks; reverse proxies are not blocked but are not recommended. See [Streaming software output](docs.md#streaming-software-output).
 - Source retrieval uses `yt-dlp`.
 - Follow your destination's bitrate and resolution limits.
