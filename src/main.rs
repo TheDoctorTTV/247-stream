@@ -4,6 +4,7 @@ mod debug;
 mod diagnostics;
 mod fallback_image;
 mod logfiles;
+mod output;
 mod process;
 mod runtime;
 mod state;

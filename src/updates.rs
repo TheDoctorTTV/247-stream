@@ -162,8 +162,19 @@ pub fn release(channel: &str, selected: Option<&str>) -> Result<Value> {
         .trim_start_matches(['v', 'V'])
         .to_owned();
     let name = text(&asset, "name", "");
+    // Release notes (Markdown) for the changelog; split off by the caller.
+    let notes: Vec<Value> = releases
+        .iter()
+        .map(|r| {
+            let body: String = text(r, "body", "").chars().take(60_000).collect();
+            json!({"version":text(r,"tag_name","").trim_start_matches(['v','V']),
+                "name":text(r,"name","").trim(),"date":text(r,"published_at",""),
+                "prerelease":boolean(r,"prerelease",false),"url":text(r,"html_url",""),
+                "notes":body})
+        })
+        .collect();
     Ok(
-        json!({"current_version":VERSION,"updater_enabled":true,"disabled_reason":"","selected_version":version,"newest_version":newest_version,"update_available":compare(&newest_version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
+        json!({"releases":notes,"current_version":VERSION,"updater_enabled":true,"disabled_reason":"","selected_version":version,"newest_version":newest_version,"update_available":compare(&newest_version,VERSION)==Ordering::Greater,"release_url":text(chosen,"html_url",""),"channel":channel,"download_url":text(&asset,"browser_download_url",""),"asset_name":name,"asset_supported":installable(&name),"available_versions":releases.iter().map(|r|text(r,"tag_name","").trim_start_matches(['v','V']).to_owned()).collect::<Vec<_>>()}),
     )
 }
 pub fn download(url: &str, path: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
@@ -566,7 +577,10 @@ pub fn trigger(app: &Arc<App>, app_update: bool, install: bool, payload: &Value)
                     !install || selected.is_some(),
                     "Choose a version before installing the app"
                 );
-                let info = release(&channel, selected.as_deref())?;
+                let mut info = release(&channel, selected.as_deref())?;
+                if let Some(notes) = info.as_object_mut().and_then(|o| o.remove("releases")) {
+                    *cloned.release_notes.lock().unwrap() = notes;
+                }
                 let resolved_version = text(&info, "selected_version", "");
                 cloned.remember_update_selection(&channel, &resolved_version)?;
                 cloned.app_job.lock().unwrap()["selected_version"] = json!(resolved_version);

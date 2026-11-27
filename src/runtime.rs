@@ -33,6 +33,8 @@ pub struct App {
     pub provision_lock: Mutex<()>,
     pub fallback_image_lock: Mutex<()>,
     pub app_job: Mutex<Value>,
+    /// Release notes for the checked channel, kept out of the polled job status.
+    pub release_notes: Mutex<Value>,
     pub binary_job: Mutex<Value>,
     pub shutdown: AtomicBool,
     pub restart: AtomicBool,
@@ -54,6 +56,7 @@ impl App {
             provision_lock: Mutex::new(()),
             fallback_image_lock: Mutex::new(()),
             app_job: Mutex::new(updates::empty_job()),
+            release_notes: Mutex::new(json!([])),
             binary_job: Mutex::new(updates::empty_job()),
             shutdown: AtomicBool::new(false),
             restart: AtomicBool::new(false),
@@ -221,13 +224,16 @@ impl App {
             local_preview || !cfg.base.is_empty(),
             "Set a streaming destination before starting"
         );
-        if !local_preview {
+        let local_output = cfg.local_output();
+        if local_output {
+            crate::output::prepare_hls(&crate::output::dir(self), "Local output")?;
+        } else if !local_preview {
             let destination =
                 reqwest::Url::parse(&cfg.base).context("Invalid streaming destination URL")?;
             anyhow::ensure!(
                 matches!(destination.scheme(), "rtmp" | "rtmps")
                     && destination.host_str().is_some(),
-                "Streaming destinations must use RTMP or RTMPS, including custom platforms"
+                "Streaming destinations must use RTMP or RTMPS, including custom platforms, or select Streaming software (OBS, etc.)"
             );
         }
         if !local_preview && (cfg.twitch() || cfg.youtube()) {
@@ -242,10 +248,11 @@ impl App {
             state.files(&self.dir, &settings, true)?;
             state.streaming = true;
             state.status = "Starting".into();
-            state.meta = json!({"mode":if local_preview{"local_preview"}else{"headless"},"source":cfg.source,"resolution":format!("{}p",cfg.height),"fps":cfg.fps.to_string()});
+            state.meta = json!({"mode":if local_preview{"local_preview"}else if local_output{"local_output"}else{"headless"},"source":cfg.source,"resolution":format!("{}p",cfg.height),"fps":cfg.fps.to_string()});
         }
         let control = Arc::new(Control {
             local_preview,
+            local_output,
             preview_id: if local_preview {
                 crate::state::now().to_bits()
             } else {
@@ -259,6 +266,8 @@ impl App {
             "[INFO] Starting {}: app version {}...",
             if local_preview {
                 "local preview of the selected source (no publication to a destination)"
+            } else if local_output {
+                "stream (local output for streaming software)"
             } else {
                 "stream (headless)"
             },
@@ -290,6 +299,12 @@ impl App {
             thread: handle,
         });
         Ok(())
+    }
+    /// True while a stream is publishing to the local output endpoint.
+    pub fn local_output_active(&self) -> bool {
+        self.worker.lock().unwrap().as_ref().is_some_and(|w| {
+            !w.thread.is_finished() && w.control.local_output && !w.control.stopped()
+        })
     }
     pub fn debug_status(&self) -> Value {
         let running = self.worker.lock().unwrap();

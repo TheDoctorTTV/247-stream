@@ -72,12 +72,15 @@
     const STORAGE_TAB_KEY = "stream247.active_tab";
     const STORAGE_SUBTAB_KEY = "stream247.active_subtab";
     const fieldIds = ["playlist_url", "resolution", "framerate", "video_bitrate", "twitch_enhanced_broadcasting", "buffer_mode", "encoder_preference", "overlay_titles", "shuffle", "remember_current_video", "log_to_file", "ffmpeg_log_to_file", "debug_logging", "app_update_check_minutes", "app_update_channel"];
+    const LOCAL_OUTPUT_BASE = "local://output";
+    const LOCAL_OUTPUT_PATH = "/api/output/index.m3u8";
     const STREAM_URL_PRESETS = {
       youtube: { name: "YouTube", rtmp_base: "rtmp://a.rtmp.youtube.com/live2" },
       twitch: { name: "Twitch", rtmp_base: "rtmp://live.twitch.tv/app" },
       kick: { name: "Kick", rtmp_base: "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app" },
       facebook: { name: "Facebook Live", rtmp_base: "rtmps://live-api-s.facebook.com:443/rtmp/" },
-      tiktok: { name: "TikTok Live", rtmp_base: "rtmps://push-rtmp-global.tiktok.com/live/" }
+      tiktok: { name: "TikTok Live", rtmp_base: "rtmps://push-rtmp-global.tiktok.com/live/" },
+      local_output: { name: "Streaming software (OBS, etc.)", rtmp_base: LOCAL_OUTPUT_BASE }
     };
     let streamUrlServicesState = [];
 
@@ -91,6 +94,97 @@
     function streamServiceOptionValue(entry) {
       const url = String(entry && entry.rtmp_base || "").trim();
       return url ? ("saved:" + url) : "";
+    }
+
+    let localOutputAddresses = [];
+    let localOutputAddressSetting = "";
+    const localOutputField = document.getElementById("localOutputField");
+    const localOutputUrlInput = document.getElementById("local_output_url");
+    const localOutputCopyBtn = document.getElementById("local_output_copy");
+    const localOutputAddressSelect = document.getElementById("local_output_address");
+
+    function selectedLocalOutputAddress() {
+      return localOutputAddresses.find((entry) => entry.address === localOutputAddressSetting) ||
+        localOutputAddresses[0] || null;
+    }
+
+    function localOutputUrl() {
+      const entry = selectedLocalOutputAddress();
+      if (entry && entry.url) return entry.url;
+      return window.location.protocol + "//" + window.location.host + LOCAL_OUTPUT_PATH;
+    }
+
+    function renderLocalOutputAddresses() {
+      if (localOutputAddressSelect) {
+        localOutputAddressSelect.innerHTML = "";
+        localOutputAddresses.forEach((entry) => {
+          const opt = document.createElement("option");
+          opt.value = entry.address;
+          opt.textContent = entry.address + " — " + entry.kind + " (" + entry.interface + ")";
+          localOutputAddressSelect.appendChild(opt);
+        });
+        const known = localOutputAddresses.some((entry) => entry.address === localOutputAddressSetting);
+        if (localOutputAddressSetting && !known) {
+          // Keep a saved address that is currently missing instead of silently replacing it.
+          const opt = document.createElement("option");
+          opt.value = localOutputAddressSetting;
+          opt.textContent = localOutputAddressSetting + " — not found on this server";
+          localOutputAddressSelect.appendChild(opt);
+        }
+        if (!localOutputAddressSelect.options.length) {
+          const opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = "No private addresses found";
+          localOutputAddressSelect.appendChild(opt);
+        }
+        const selected = localOutputAddressSetting || (localOutputAddresses[0] && localOutputAddresses[0].address) || "";
+        localOutputAddressSelect.value = selected;
+      }
+      syncLocalOutputField();
+    }
+
+    function syncLocalOutputField() {
+      const local = localOutputSelected();
+      if (localOutputField) localOutputField.hidden = !local;
+      if (!localOutputUrlInput) return;
+      if (localOutputAddressSetting && !localOutputAddresses.some((entry) => entry.address === localOutputAddressSetting)) {
+        const host = localOutputAddressSetting.includes(":") ? "[" + localOutputAddressSetting + "]" : localOutputAddressSetting;
+        const port = window.location.port ? ":" + window.location.port : "";
+        localOutputUrlInput.value = "http://" + host + port + LOCAL_OUTPUT_PATH;
+      } else {
+        localOutputUrlInput.value = localOutputUrl();
+      }
+    }
+
+    async function loadLocalOutputAddresses() {
+      try {
+        const res = await fetch("/api/output-addresses?ts=" + Date.now(), { cache: "no-store" });
+        const payload = await res.json();
+        if (!res.ok || !payload.ok) throw new Error(payload.error || "load failed");
+        localOutputAddresses = Array.isArray(payload.addresses) ? payload.addresses : [];
+      } catch (err) {
+        localOutputAddresses = [];
+      }
+      renderLocalOutputAddresses();
+    }
+
+    async function copyLocalOutputUrl() {
+      if (!localOutputUrlInput || !localOutputCopyBtn) return;
+      localOutputUrlInput.select();
+      const ok = await copyTextToClipboard(localOutputUrlInput.value);
+      localOutputCopyBtn.classList.toggle("copied", ok);
+      localOutputCopyBtn.title = ok ? "Copied" : "Copy failed";
+      localOutputCopyBtn.setAttribute("aria-label", localOutputCopyBtn.title);
+      clearTimeout(copyLocalOutputUrl.timer);
+      copyLocalOutputUrl.timer = setTimeout(() => {
+        localOutputCopyBtn.classList.remove("copied");
+        localOutputCopyBtn.title = "Copy URL";
+        localOutputCopyBtn.setAttribute("aria-label", "Copy URL");
+      }, 1500);
+    }
+
+    function localOutputSelected() {
+      return String(streamUrlPreset && streamUrlPreset.value || "").trim() === "local_output";
     }
 
     function presetUrlForKey(key) {
@@ -275,8 +369,13 @@
         const selected = String(streamUrlPreset.value || "").trim();
         const saved = savedServiceForOption(selected);
         streamPlatformHint.textContent = streamSettingsLockHint("the platform") ||
-          (saved ? String(saved.rtmp_base || "").trim() : presetUrlForKey(selected));
+          (localOutputSelected()
+            ? "Streams to your streaming software instead of a platform."
+            : (saved ? String(saved.rtmp_base || "").trim() : presetUrlForKey(selected)));
       }
+      const streamKeyField = document.getElementById("streamKeyField");
+      if (streamKeyField) streamKeyField.hidden = localOutputSelected();
+      syncLocalOutputField();
     }
 
     function syncEnhancedBroadcastingUI() {
@@ -1078,7 +1177,9 @@
       if (s && Object.prototype.hasOwnProperty.call(s, "theme")) {
         applyTheme(String(s.theme || "purple"));
       }
+      localOutputAddressSetting = String((s && s.local_output_address) || "").trim();
       syncStreamPresetFromRtmpBase(currentRtmpBase);
+      renderLocalOutputAddresses();
       const tracks = Number(s.twitch_enhanced_max_tracks || 0);
       const bandwidth = Number(s.twitch_enhanced_max_bitrate_kbps || 0);
       document.getElementById("twitch_enhanced_tracks_auto").checked = tracks === 0;
@@ -1128,6 +1229,7 @@
         out.rtmp_base = presetUrlForKey("youtube");
       }
       out.theme = String(themeSelect && themeSelect.value || "purple").trim().toLowerCase();
+      out.local_output_address = localOutputAddressSetting;
       out.stream_url_services = streamUrlServicesState.map((entry) => ({
         name: String(entry.name || "").trim(),
         rtmp_base: String(entry.rtmp_base || "").trim()
@@ -1209,6 +1311,15 @@
           queueAutoSave(180);
         });
       }
+      if (localOutputAddressSelect) {
+        localOutputAddressSelect.addEventListener("change", () => {
+          localOutputAddressSetting = String(localOutputAddressSelect.value || "").trim();
+          syncLocalOutputField();
+          queueAutoSave(180);
+        });
+      }
+      if (localOutputUrlInput) localOutputUrlInput.addEventListener("click", copyLocalOutputUrl);
+      if (localOutputCopyBtn) localOutputCopyBtn.addEventListener("click", copyLocalOutputUrl);
     }
 
     function applyTheme(themeName) {
@@ -1711,6 +1822,189 @@
       syncAppInstallButtons();
     }
 
+    // Minimal Markdown for GitHub release notes: headings, lists, code, bold,
+    // italics and http(s) links. Text is escaped before any markup is added.
+    function renderMarkdown(markdown) {
+      const inline = (text) => {
+        const codes = [];
+        let out = escapeHtml(text).replace(/`([^`]+)`/g, (_, code) => {
+          codes.push("<code>" + code + "</code>");
+          return "\u0000" + (codes.length - 1) + "\u0000";
+        });
+        out = out
+          .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+          .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+          .replace(/(^|[^*\w])\*([^*\s][^*]*)\*(?!\*)/g, "$1<em>$2</em>")
+          .replace(/(^|[^_\w])_([^_\s][^_]*)_(?!\w)/g, "$1<em>$2</em>");
+        return out.replace(/\u0000(\d+)\u0000/g, (_, i) => codes[Number(i)]);
+      };
+      const lines = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+      const html = [];
+      let list = "";
+      let paragraph = [];
+      const closeParagraph = () => {
+        if (paragraph.length) html.push("<p>" + inline(paragraph.join(" ")) + "</p>");
+        paragraph = [];
+      };
+      const closeList = () => {
+        if (list) html.push("</" + list + ">");
+        list = "";
+      };
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const fence = line.match(/^\s*```/);
+        if (fence) {
+          closeParagraph();
+          closeList();
+          const code = [];
+          for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) code.push(lines[i]);
+          html.push("<pre><code>" + escapeHtml(code.join("\n")) + "</code></pre>");
+          continue;
+        }
+        const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+        const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+        const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+        if (heading) {
+          closeParagraph();
+          closeList();
+          const level = Math.min(heading[1].length + 1, 4);
+          html.push("<h" + level + ">" + inline(heading[2]) + "</h" + level + ">");
+        } else if (bullet || numbered) {
+          closeParagraph();
+          const kind = bullet ? "ul" : "ol";
+          if (list !== kind) {
+            closeList();
+            html.push("<" + kind + ">");
+            list = kind;
+          }
+          html.push("<li>" + inline((bullet || numbered)[1]) + "</li>");
+        } else if (!line.trim()) {
+          closeParagraph();
+          closeList();
+        } else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+          closeParagraph();
+          closeList();
+        } else {
+          closeList();
+          paragraph.push(line.trim());
+        }
+      }
+      closeParagraph();
+      closeList();
+      return html.join("");
+    }
+
+    const changelogModal = document.getElementById("changelogModal");
+    const changelogBody = document.getElementById("changelogBody");
+    const changelogSubtitle = document.getElementById("changelogSubtitle");
+    const changelogClose = document.getElementById("changelogClose");
+    let changelogReturnFocus = null;
+
+    function changelogEntries(releases, current, target) {
+      const sorted = releases.slice().sort((a, b) => compareVersions(b.version, a.version) || 0);
+      // Updating: everything newer than the running version up to the target.
+      if (target && compareVersions(current, target) === -1) {
+        const between = sorted.filter((r) =>
+          compareVersions(current, r.version) === -1 && compareVersions(r.version, target) !== 1);
+        if (between.length) return between;
+      }
+      // Reinstall, downgrade or unknown: show the selected release only.
+      const exact = sorted.find((r) => compareVersions(r.version, target) === 0);
+      return exact ? [exact] : sorted.slice(0, 1);
+    }
+
+    function formatReleaseDate(value) {
+      const date = new Date(value);
+      if (!value || Number.isNaN(date.getTime())) return "";
+      return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    }
+
+    function renderChangelog(payload) {
+      const releases = Array.isArray(payload && payload.releases) ? payload.releases : [];
+      const current = String(payload && payload.current_version || "");
+      const result = (lastAppUpdateInfo && lastAppUpdateInfo.last_result) || {};
+      const target = String(appUpdateVersion.value || result.selected_version || result.newest_version || "");
+      changelogBody.innerHTML = "";
+      if (!releases.length) {
+        changelogSubtitle.textContent = "";
+        changelogBody.innerHTML = '<p class="changelog-empty">Check for updates to load the changelog.</p>';
+        return;
+      }
+      const entries = changelogEntries(releases, current, target);
+      const order = compareVersions(current, entries[0].version);
+      // Development or unreleased builds have no release notes on GitHub.
+      const published = releases.some((r) => compareVersions(r.version, current) === 0);
+      changelogSubtitle.textContent = order === -1
+        ? "Changes from v" + current + " to v" + entries[0].version
+        : "Version " + entries[0].version + (order === 0 ? " (installed)"
+          : !published && current ? " · installed v" + current + " is not published on GitHub" : "");
+      for (const entry of entries) {
+        const section = document.createElement("section");
+        section.className = "changelog-release";
+        const head = document.createElement("div");
+        head.className = "changelog-release-head";
+        const title = document.createElement("h3");
+        title.textContent = "v" + entry.version;
+        head.appendChild(title);
+        if (entry.prerelease) {
+          const badge = document.createElement("span");
+          badge.className = "changelog-badge";
+          badge.textContent = "Pre-release";
+          head.appendChild(badge);
+        }
+        const date = formatReleaseDate(entry.date);
+        if (date) {
+          const meta = document.createElement("span");
+          meta.className = "changelog-meta";
+          meta.textContent = date;
+          head.appendChild(meta);
+        }
+        if (entry.url) {
+          const link = document.createElement("a");
+          link.className = "changelog-meta";
+          link.href = entry.url;
+          link.target = "_blank";
+          link.rel = "noreferrer";
+          link.textContent = "View on GitHub";
+          head.appendChild(link);
+        }
+        const notes = document.createElement("div");
+        notes.className = "changelog-notes";
+        notes.innerHTML = String(entry.notes || "").trim()
+          ? renderMarkdown(entry.notes)
+          : '<p class="changelog-empty">No release notes.</p>';
+        section.appendChild(head);
+        section.appendChild(notes);
+        changelogBody.appendChild(section);
+      }
+    }
+
+    async function openChangelog() {
+      changelogReturnFocus = document.activeElement;
+      changelogSubtitle.textContent = "";
+      changelogBody.innerHTML = '<p class="changelog-empty">Loading changelog…</p>';
+      changelogModal.hidden = false;
+      document.body.classList.add("modal-open");
+      changelogBody.scrollTop = 0;
+      changelogClose.focus();
+      try {
+        const res = await fetch("/api/app-update/changelog?ts=" + Date.now(), { cache: "no-store" });
+        const payload = await res.json();
+        if (!res.ok || !payload.ok) throw new Error(payload.error || "load failed");
+        if (!changelogModal.hidden) renderChangelog(payload);
+      } catch (err) {
+        changelogBody.innerHTML = '<p class="changelog-empty">Failed to load the changelog.</p>';
+      }
+    }
+
+    function closeChangelog() {
+      if (changelogModal.hidden) return;
+      changelogModal.hidden = true;
+      document.body.classList.remove("modal-open");
+      if (changelogReturnFocus && typeof changelogReturnFocus.focus === "function") changelogReturnFocus.focus();
+    }
+
     function syncAppInstallButtons() {
       const info = lastAppUpdateInfo || {};
       const result = info.last_result || {};
@@ -2011,6 +2305,14 @@
       renderStreamPlatformsList();
     });
     checkAppUpdateBtn.addEventListener("click", () => triggerAppUpdateCheck());
+    document.getElementById("changelogBtn").addEventListener("click", openChangelog);
+    changelogClose.addEventListener("click", closeChangelog);
+    changelogModal.addEventListener("click", (event) => {
+      if (event.target === changelogModal) closeChangelog();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !changelogModal.hidden) closeChangelog();
+    });
     downloadAppUpdateBtn.addEventListener("click", () => triggerAppUpdateDownload());
     appUpdateVersion.addEventListener("change", () => {
       triggerAppUpdateCheck(String(appUpdateVersion.value || "").trim());
@@ -2276,6 +2578,7 @@
     }
     syncActionButtons();
     loadSettings();
+    loadLocalOutputAddresses();
     loadRecoveryMedia();
     loadTransitionMedia();
     loadDebugStatus();

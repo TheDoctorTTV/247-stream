@@ -228,6 +228,13 @@ pub fn normalize(v: &Value) -> Value {
             default_interval
         });
     out["app_update_selected_version"] = json!(text(v, "app_update_selected_version", ""));
+    // Address shown in the dashboard's streaming software URL; empty means automatic.
+    let address = text(v, "local_output_address", "");
+    out["local_output_address"] = json!(if address.parse::<std::net::IpAddr>().is_ok() {
+        address
+    } else {
+        String::new()
+    });
     let fps = integer(v, "framerate", 30);
     out["framerate"] = json!(if [30, 60].contains(&fps) { fps } else { 30 });
     for (k, default) in [
@@ -354,7 +361,15 @@ impl StreamConfig {
             settings: v,
         }
     }
+    /// Output goes to the dashboard's HLS endpoint for streaming software
+    /// (OBS, Streamlabs, etc.) instead of an RTMP platform.
+    pub fn local_output(&self) -> bool {
+        !self.local_preview && self.base.trim().trim_end_matches('/') == crate::output::BASE
+    }
     pub fn url(&self) -> String {
+        if self.local_output() {
+            return crate::output::PLAYLIST_PATH.to_owned();
+        }
         if self.key.is_empty() {
             self.base.clone()
         } else {
@@ -380,6 +395,7 @@ impl StreamConfig {
     }
     pub fn bridge(&self) -> bool {
         self.local_preview
+            || self.local_output()
             || (reqwest::Url::parse(&self.base)
                 .ok()
                 .is_some_and(|url| matches!(url.scheme(), "rtmp" | "rtmps"))

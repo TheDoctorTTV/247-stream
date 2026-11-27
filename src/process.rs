@@ -135,6 +135,7 @@ pub struct Control {
     pub stop: AtomicBool,
     pub skip: AtomicBool,
     pub local_preview: bool,
+    pub local_output: bool,
     pub preview_id: u64,
     pub source_pid: AtomicU32,
     pub output_pid: AtomicU32,

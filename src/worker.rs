@@ -298,17 +298,34 @@ impl Worker {
             mut process, input, ..
         }) = self.bridge.take()
         {
-            self.log("[INFO] Closing RTMP input and draining the output before unpublishing...");
+            let label = if self.cfg.local_preview {
+                "Local preview"
+            } else if self.cfg.local_output() {
+                "Local output"
+            } else {
+                "RTMP"
+            };
+            if self.cfg.local_preview || self.cfg.local_output() {
+                self.log("[INFO] Closing the bridge input and finishing the local HLS output...");
+            } else {
+                self.log("[INFO] Closing RTMP input and draining the output before unpublishing...");
+            }
             drop(input);
             match process.drain(Duration::from_secs(15)) {
                 Ok(Some(status)) => {
-                    self.log(&format!("[INFO] RTMP output closed after EOF: {status}."))
+                    self.log(&format!("[INFO] {label} output closed after EOF: {status}."))
                 }
                 _ => {
-                    self.log("[WARN] RTMP drain exceeded its deadline; requesting FFmpeg cleanup.");
+                    self.log(&format!(
+                        "[WARN] {label} drain exceeded its deadline; requesting FFmpeg cleanup."
+                    ));
                     match process.finish_ffmpeg(Duration::from_secs(5)) {
-                        Ok(true) => self.log("[INFO] RTMP output completed FFmpeg shutdown."),
-                        _ => self.log("[WARN] RTMP output required a forced stop after graceful shutdown timed out."),
+                        Ok(true) => {
+                            self.log(&format!("[INFO] {label} output completed FFmpeg shutdown."))
+                        }
+                        _ => self.log(&format!(
+                            "[WARN] {label} output required a forced stop after graceful shutdown timed out."
+                        )),
                     }
                 }
             }
@@ -476,6 +493,10 @@ impl Worker {
         self.cfg.encoder = "libx264".into();
     }
     fn preflight(&mut self) -> Result<()> {
+        if self.cfg.local_preview || self.cfg.local_output() {
+            self.log("[INFO] Preflight: no RTMP destination for local output; skipping probe.");
+            return Ok(());
+        }
         if !self.cfg.youtube() {
             self.log("[INFO] Preflight: non-YouTube RTMP target detected; skipping probe.");
             return Ok(());
@@ -552,15 +573,21 @@ impl Worker {
         Ok(())
     }
     fn output_options(&self, args: &mut Vec<String>) {
-        if self.cfg.local_preview {
-            let dir = crate::debug::preview_dir(&self.app);
+        if self.cfg.local_preview || self.cfg.local_output() {
+            let (dir, list_size) = if self.cfg.local_preview {
+                (crate::debug::preview_dir(&self.app), "6")
+            } else {
+                // Latency is irrelevant for streaming software; a longer window
+                // tolerates slow or briefly disconnected clients.
+                (crate::output::dir(&self.app), "10")
+            };
             args.extend(process::args(&[
                 "-f",
                 "hls",
                 "-hls_time",
                 "2",
                 "-hls_list_size",
-                "6",
+                list_size,
                 "-hls_delete_threshold",
                 "2",
                 "-hls_start_number_source",
@@ -666,7 +693,7 @@ impl Worker {
                 self.live_opts = false;
                 return self.start_bridge();
             }
-            bail!("RTMP bridge exited early: {status}");
+            bail!("Output bridge exited early: {status}");
         }
         self.bridge = Some(Bridge {
             process: child,
@@ -675,6 +702,8 @@ impl Worker {
         });
         self.log(if self.cfg.local_preview {
             "[INFO] Local preview bridge started; no publication to a streaming destination."
+        } else if self.cfg.local_output() {
+            "[INFO] Local output bridge started; streaming software can connect to the HLS endpoint."
         } else {
             "[INFO] RTMP bridge started (persistent ingest session active)."
         });
@@ -1031,6 +1060,11 @@ impl Worker {
         self.log(&format!("[INFO] Source: {}", self.cfg.source));
         if self.cfg.local_preview {
             self.log("[INFO] Output: local HLS preview only; configured streaming destination is unused.");
+        } else if self.cfg.local_output() {
+            self.log(&format!(
+                "[INFO] Output: local HLS for streaming software at {} (private networks only).",
+                self.cfg.url()
+            ));
         } else {
             self.log(&format!("[INFO] RTMP: {}", self.cfg.url()));
         }
